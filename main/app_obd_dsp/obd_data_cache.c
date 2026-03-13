@@ -5,11 +5,12 @@
 #include "esp_timer.h"
 #include "bsp_obd_dsp/nvs_storage.h"
 #include "esp_log.h"
-// 车辆常量定义 (根据您的东南菱悦V3 11款手动挡 195/55R15轮胎)
-#define FINAL_DRIVE_RATIO      4.052f
-#define TIRE_ROLLING_RADIUS_M  0.298f
+#include <inttypes.h>
+// 车辆常量定义 (Subaru BRZ ZC6 6MT, 215/45R17轮胎)
+#define FINAL_DRIVE_RATIO      4.100f
+#define TIRE_ROLLING_RADIUS_M  0.314f
 #define CONSTANT_C             0.377f
-#define CALCULATION_CONSTANT   5.128f // 1 / (FINAL_DRIVE_RATIO * CONSTANT_C * TIRE_ROLLING_RADIUS_M)
+#define CALCULATION_CONSTANT   2.061f // 1 / (FINAL_DRIVE_RATIO * CONSTANT_C * TIRE_ROLLING_RADIUS_M)
 
  
 // 档位传动比范围结构体
@@ -19,14 +20,14 @@ typedef struct {
     enGear gear;
 } GearRatioRange;
 
-// 各档位理论总传动比范围（根据您的车辆参数预设）
+// 各档位理论总传动比范围 (BRZ ZC6 6MT, gear_ratio * final_drive, ±15%)
 const GearRatioRange gear_ranges[] = {
-    {22.0f,  26.0f,  GEAR_1},     // 1档范围
-    {12.0f,  14.0f,  GEAR_2},     // 2档范围
-    {8.0f,   9.5f,   GEAR_3},     // 3档范围
-    {5.8f,   6.8f,   GEAR_4},     // 4档范围
-    {4.8f,   5.5f,   GEAR_5},     // 5档范围
-    //{21.0f,  25.0f,  GEAR_REVERSE}, // 倒挡范围
+    {12.64f, 17.10f, GEAR_1},     // 1st: 3.626 * 4.100 = 14.867
+    {7.63f,  10.32f, GEAR_2},     // 2nd: 2.188 * 4.100 = 8.971
+    {5.37f,  7.27f,  GEAR_3},     // 3rd: 1.541 * 4.100 = 6.318
+    {4.23f,  5.72f,  GEAR_4},     // 4th: 1.213 * 4.100 = 4.973
+    {3.49f,  4.72f,  GEAR_5},     // 5th: 1.000 * 4.100 = 4.100
+    {2.67f,  3.62f,  GEAR_6},     // 6th: 0.767 * 4.100 = 3.145
 };
 
 #define GEAR_RANGE_COUNT (sizeof(gear_ranges) / sizeof(gear_ranges[0]))
@@ -268,7 +269,7 @@ static void mileage_timer_cb(void* arg)
         if(usPrintCnt >= 20){
             usPrintCnt = 0;
             nvs_stat_t stat = nvs_stat_get_mileage();
-            ESP_LOGI("MileageStat", " odometer: %lld, trip: %lld, run_time: %lld, max_speed: %d, avg_speed: %d, speed: %d", stat.odometer_m, stat.trip_m, stat.run_time_s, stat.max_speed_kmh, stat.avg_speed_kmh, obd_data_get_speed());
+            ESP_LOGI("MileageStat", " odometer: %" PRIu64 ", trip: %" PRIu64 ", run_time: %" PRIu64 ", max_speed: %d, avg_speed: %d, speed: %d", stat.odometer_m, stat.trip_m, stat.run_time_s, stat.max_speed_kmh, stat.avg_speed_kmh, obd_data_get_speed());
         }
     }
 }

@@ -58,6 +58,7 @@ bool elm327_ble_send_ascii_blocking(const char *ascii_cmd);
 #define ACCUM_BUF_SIZE 512
 static char s_accum_buf[ACCUM_BUF_SIZE];
 static size_t s_accum_len = 0;
+static int64_t s_accum_start_us = 0; // 累积开始时间 (us)
 // 默认回调与轮询任务（可选）
 static void default_on_connected(void) { ESP_LOGI(TAG, "OBD BLE connected"); }
 static void default_on_disconnected(void) { ESP_LOGI(TAG, "OBD BLE disconnected"); }
@@ -124,8 +125,12 @@ static void obd_poll_task(void *arg) {
     vTaskDelay(pdMS_TO_TICKS(100));
 
     // 8-slot 轮询: 0=RPM, 1=IAT, 2=Speed, 3=CLT, 4=Load(0x04), 5=TPS(0x11), 6=OIL(22 10 17), 7=BAT(0x42)
-    while (1) 
+    while (1)
     {
+        if (!s_connected) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
         switch(tick_count)
         {
             case 0://发动机转速
@@ -304,12 +309,12 @@ bool elm327_ble_send_command(const uint8_t *data, size_t len) {
 bool elm327_ble_send_ascii_blocking(const char *ascii_cmd)
 {
     uint32_t waited_ms = 0;
-    while (!s_elm_ready && waited_ms < 1000) {
+    while (!s_elm_ready && waited_ms < 3000) {
         vTaskDelay(pdMS_TO_TICKS(10));
         waited_ms += 10;
     }
     if (!s_elm_ready) {
-        ESP_LOGW(TAG, "Timeout (>1s) waiting previous response, forcing send: %s", ascii_cmd);
+        ESP_LOGW(TAG, "Timeout (>3s) waiting previous response, forcing send: %s", ascii_cmd);
         s_elm_ready = true; // 避免死锁，继续发送
     }
     s_elm_ready = false;
@@ -576,6 +581,19 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
         int n = param->notify.value_len;
 
         // ---- 累积多包数据直到收到 '>' （ELM327 提示符） ----
+        // 累积超时保护：5秒内未收到 '>' 则强制刷新
+        if (s_accum_len > 0) {
+            int64_t now_us = esp_timer_get_time();
+            if ((now_us - s_accum_start_us) > 5000000) {
+                ESP_LOGW(TAG, "Accum timeout (>5s), flushing %d bytes", (int)s_accum_len);
+                s_accum_len = 0;
+                s_accum_buf[0] = '\0';
+                s_elm_ready = true;
+            }
+        }
+        if (s_accum_len == 0) {
+            s_accum_start_us = esp_timer_get_time();
+        }
         size_t space_left = ACCUM_BUF_SIZE - 1 - s_accum_len;
         size_t copy_n = ((size_t)n < space_left) ? (size_t)n : space_left;
         memcpy(s_accum_buf + s_accum_len, v, copy_n);

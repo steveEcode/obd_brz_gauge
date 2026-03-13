@@ -28,7 +28,8 @@ typedef struct {
     uint64_t run_time_s;   // 累计行驶时间 (s)
     uint16_t max_speed_kmh; // 最大速度km/h
     uint16_t avg_speed_kmh;
-    uint8_t  rsv[6];
+    uint32_t trip_run_time_s; // 本次行程行驶时间 (s)
+    uint8_t  rsv[2];
 } nvs_stat_t;
 
 esp_err_t nvs_storage_init(void);

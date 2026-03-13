@@ -8,6 +8,7 @@
 // 适配 Waveshare ESP32-S3-Touch-LCD-1.85 by adaptation
 
 #include <stdio.h>
+#include <inttypes.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -167,7 +168,7 @@ void app_main(void)
              str_theme.theme, str_theme.user_theme_domiant_color, str_theme.user_theme_secondary_color);
 
     const nvs_stat_t *stat = nvs_stat_get();
-    ESP_LOGI("NVS", "odo=%d trip=%d max_spd=%d avg_spd=%d runtime=%d",
+    ESP_LOGI("NVS", "odo=%" PRIu64 " trip=%" PRIu64 " max_spd=%d avg_spd=%d runtime=%" PRIu64,
              stat->odometer_m, stat->trip_m, stat->max_speed_kmh, stat->avg_speed_kmh, stat->run_time_s);
 
     /* 2. I2C 总线 0 初始化 (供 TCA9554 IO 扩展器使用, SCL=10 SDA=11) */

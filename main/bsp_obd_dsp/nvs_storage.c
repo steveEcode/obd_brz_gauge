@@ -13,7 +13,7 @@
 #define KEY_CFG               "settings"
 #define NS_STAT               "stat"
 #define KEY_STAT              "runtime"
-#define STAT_FLUSH_PERIOD_MS  5000 //5s 落盘
+#define STAT_FLUSH_PERIOD_MS  30000 //30s 落盘
 
 static nvs_user_cfg_t s_cfg =   { 
                         .protocol = 4, //车辆OBD的协议类型选择 0:自动,1~9:固定协议 默认为 4
@@ -99,13 +99,14 @@ void nvs_stat_update_speed(uint8_t speed_kmh, uint32_t dt_ms)
 
     /* 2. 时间 */
     s_stat.run_time_s += dt_ms/1000;
+    s_stat.trip_run_time_s += dt_ms/1000;
 
     /* 3. 最高速度 */
     if(speed_kmh > s_stat.max_speed_kmh) s_stat.max_speed_kmh = speed_kmh;
 
-    /* 4. 平均速度 = 总距离 / 总时间 (m/s) -> km/h */
-    if(s_stat.run_time_s){
-        double avg_ms = (double)s_stat.odometer_m / (double)s_stat.run_time_s; // m/s
+    /* 4. 平均速度 = 本次行程距离 / 本次行程时间 (m/s) -> km/h */
+    if(s_stat.trip_run_time_s){
+        double avg_ms = (double)s_stat.trip_m / (double)s_stat.trip_run_time_s; // m/s
         s_stat.avg_speed_kmh = (uint16_t)(avg_ms * 3.6 + 0.5);
         if(s_stat.avg_speed_kmh > s_stat.max_speed_kmh) s_stat.avg_speed_kmh = s_stat.max_speed_kmh;
     }
@@ -126,6 +127,7 @@ void nvs_stat_reset_trip(void){
     s_stat.max_speed_kmh=0;
     s_stat.avg_speed_kmh=0;
     s_stat.run_time_s=0;
+    s_stat.trip_run_time_s=0;
     s_stat_dirty=true;
     xSemaphoreGive(s_mux);
 }
