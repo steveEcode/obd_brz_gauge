@@ -4,6 +4,9 @@ OBD BRZ Gauge is an ESP-IDF based round dashboard project for the Waveshare ESP3
 
 这是一个基于 ESP-IDF 的圆形车载仪表项目，目标硬件为微雪 Waveshare ESP32-S3-Touch-LCD-1.85 开发板。项目通过 BLE 连接兼容 ELM327 的 OBD 适配器，读取车辆数据并使用 LVGL 显示触控界面。
 
+效果展示/Demo Video
+https://www.douyin.com/video/7614174567678984187
+
 ## Status
 
 - Hardware platform: Waveshare ESP32-S3-Touch-LCD-1.85
