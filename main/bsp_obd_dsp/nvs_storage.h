@@ -18,7 +18,8 @@ typedef struct {
     char    ble_device_name[32]; // 上次连接的 BLE 设备名，空串表示未配置
     uint8_t default_page;   // 默认页面: 0=Temp, 1=Main, 2=Gear, 3=RPM, 4=Speed, 5=Info
     uint8_t brightness_day; // 亮度 10-100, 0=未配置(用100)
-    uint8_t rsv[8];         // 预留
+    uint8_t vehicle_profile_idx; // 车辆配置索引, 0=BRZ, 1=LANCER, 2=CIVIC
+    uint8_t rsv[7];         // 预留
 } nvs_user_cfg_t;
 
 /*------------------ 运行统计（定期落盘） ------------------*/

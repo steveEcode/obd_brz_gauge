@@ -47,6 +47,7 @@ esp_err_t nvs_storage_init(void)
     /* 新增字段默认值修复 (旧NVS数据中rsv[x]全为0) */
     if(s_cfg.brightness_day == 0) s_cfg.brightness_day = 100;
     if(s_cfg.default_page > 5) s_cfg.default_page = 0; // Temp
+    if(s_cfg.vehicle_profile_idx > 10) s_cfg.vehicle_profile_idx = 0; // BRZ
 
     s_mux = xSemaphoreCreateMutex();
     xTaskCreate(stat_flush_task, "nvs_flush", 2048, NULL, 4, NULL);
