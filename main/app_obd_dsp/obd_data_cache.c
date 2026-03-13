@@ -1,4 +1,5 @@
 #include "obd_data_cache.h"
+#include "vehicle_profiles.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/portmacro.h"
 #include "freertos/task.h"
@@ -6,31 +7,6 @@
 #include "bsp_obd_dsp/nvs_storage.h"
 #include "esp_log.h"
 #include <inttypes.h>
-// 车辆常量定义 (Subaru BRZ ZC6 6MT, 215/45R17轮胎)
-#define FINAL_DRIVE_RATIO      4.100f
-#define TIRE_ROLLING_RADIUS_M  0.314f
-#define CONSTANT_C             0.377f
-#define CALCULATION_CONSTANT   2.061f // 1 / (FINAL_DRIVE_RATIO * CONSTANT_C * TIRE_ROLLING_RADIUS_M)
-
- 
-// 档位传动比范围结构体
-typedef struct {
-    float min_ratio;
-    float max_ratio;
-    enGear gear;
-} GearRatioRange;
-
-// 各档位理论总传动比范围 (BRZ ZC6 6MT, gear_ratio * final_drive, ±15%)
-const GearRatioRange gear_ranges[] = {
-    {12.64f, 17.10f, GEAR_1},     // 1st: 3.626 * 4.100 = 14.867
-    {7.63f,  10.32f, GEAR_2},     // 2nd: 2.188 * 4.100 = 8.971
-    {5.37f,  7.27f,  GEAR_3},     // 3rd: 1.541 * 4.100 = 6.318
-    {4.23f,  5.72f,  GEAR_4},     // 4th: 1.213 * 4.100 = 4.973
-    {3.49f,  4.72f,  GEAR_5},     // 5th: 1.000 * 4.100 = 4.100
-    {2.67f,  3.62f,  GEAR_6},     // 6th: 0.767 * 4.100 = 3.145
-};
-
-#define GEAR_RANGE_COUNT (sizeof(gear_ranges) / sizeof(gear_ranges[0]))
 
 
 // 使用简单全局变量 + 临界区保护
@@ -227,17 +203,21 @@ enGear calculate_gear(float rpm, float speed) {
         s_last_gear = GEAR_NEUTRAL;
         return GEAR_NEUTRAL;
     }
-    
-    // 2. 计算总传动比
-    float total_ratio = rpm / (speed * CALCULATION_CONSTANT);
+
+    // 2. 使用当前车辆配置计算总传动比
+    const vehicle_profile_t *profile = vehicle_profile_get_active();
+    float calc_const = vehicle_profile_calc_constant(profile);
+    float total_ratio = rpm / (speed * calc_const);
     ESP_LOGD("gear", "RPM=%.0f Speed=%.1f ratio=%.2f", rpm, speed, total_ratio);
 
     // 3. 与各档位范围进行比较
-    for (int i = 0; i < GEAR_RANGE_COUNT; i++) {
-        if (total_ratio >= gear_ranges[i].min_ratio && 
-            total_ratio <= gear_ranges[i].max_ratio) {
-            s_last_gear = gear_ranges[i].gear;//记录当前档位
-            return gear_ranges[i].gear;
+    uint8_t range_count = 0;
+    const gear_ratio_range_t *ranges = vehicle_profile_get_gear_ranges(&range_count);
+    for (int i = 0; i < range_count; i++) {
+        if (total_ratio >= ranges[i].min_ratio &&
+            total_ratio <= ranges[i].max_ratio) {
+            s_last_gear = ranges[i].gear;
+            return ranges[i].gear;
         }
     }
     

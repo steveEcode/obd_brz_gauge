@@ -28,6 +28,7 @@
 #include "bsp_obd_dsp/bsp_board.h"
 #include "bsp_obd_dsp/elm327_ble_client.h"
 #include "app_obd_dsp/obd_data_cache.h"
+#include "app_obd_dsp/vehicle_profiles.h"
 
 static const char *TAG = "obd_dsp";
 
@@ -170,6 +171,11 @@ void app_main(void)
     const nvs_stat_t *stat = nvs_stat_get();
     ESP_LOGI("NVS", "odo=%" PRIu64 " trip=%" PRIu64 " max_spd=%d avg_spd=%d runtime=%" PRIu64,
              stat->odometer_m, stat->trip_m, stat->max_speed_kmh, stat->avg_speed_kmh, stat->run_time_s);
+
+    /* 1.5 车辆配置初始化 (从NVS加载保存的车辆索引) */
+    vehicle_profile_set_active(nvs_cfg_get()->vehicle_profile_idx);
+    ESP_LOGI("NVS", "vehicle_profile=%d (%s)",
+             nvs_cfg_get()->vehicle_profile_idx, vehicle_profile_get_active()->name);
 
     /* 2. I2C 总线 0 初始化 (供 TCA9554 IO 扩展器使用, SCL=10 SDA=11) */
     I2C_Init();
