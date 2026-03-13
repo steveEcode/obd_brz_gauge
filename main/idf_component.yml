@@ -1,0 +1,11 @@
+version: "0.1.0"
+dependencies:
+  idf: ">=5.1"
+  espressif/knob: "^1.0.0"
+  espressif/button: "==3.3.1"
+  espressif/esp_lcd_touch:
+    public: true
+    version: "^1"
+  lvgl/lvgl:
+    public: true
+    version: "^8"

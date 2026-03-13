@@ -1,0 +1,6 @@
+menu "OBD DSP Configuration"
+    # Waveshare ESP32-S3-Touch-LCD-1.85
+    # LCD: ST77916 (360x360 QSPI)
+    # Touch: CST816 (I2C)
+    # IO Expander: TCA9554PWR
+endmenu
