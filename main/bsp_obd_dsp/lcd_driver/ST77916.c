@@ -207,7 +207,7 @@ static const st77916_lcd_init_cmd_t vendor_specific_init_new[] = {
   {0x11, (uint8_t []){0x00}, 1, 120},
   {0x29, (uint8_t []){0x00}, 1, 0},  
 };
-void ST7701_Reset(){
+void ST77916_Reset(){
   Set_EXIO(TCA9554_EXIO2,false);
   vTaskDelay(pdMS_TO_TICKS(10));
   Set_EXIO(TCA9554_EXIO2,true);
@@ -285,12 +285,11 @@ int QSPI_Init(void){
   printf("LCD communication parameters are set successfully -- SPI\r\n");
 
   printf("Install LCD driver of st77916\r\n");
-  st77916_vendor_config_t vendor_config={  
+  st77916_vendor_config_t vendor_config={
     .flags = {
       .use_qspi_interface = 1,
     },
   };
-  printf("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\n");
   esp_err_t ret;
   int lcd_cmd = 0x04;
   uint8_t register_data[4]; 
@@ -323,8 +322,7 @@ int QSPI_Init(void){
     vendor_config.init_cmds_size = sizeof(vendor_specific_init_new) / sizeof(st77916_lcd_init_cmd_t);
     printf("Vendor-specific initialization for case 2.\n");
   }
-  printf("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\n");
- 
+
   esp_lcd_panel_dev_config_t panel_config={
     .reset_gpio_num = EXAMPLE_LCD_PIN_NUM_RST,                                
     .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,                   
@@ -347,7 +345,7 @@ int QSPI_Init(void){
 }
 
 void ST77916_Init() {
-  ST7701_Reset();
+  ST77916_Reset();
   if(!QSPI_Init()){
     printf("ST77916 Failed to be initialized\r\n");
   }
