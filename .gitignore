@@ -1,0 +1,24 @@
+
+*.*
+!*.lib
+!*.txt
+!*.c
+!*.h
+!*.s
+!*.csv
+!sdkconfig.*
+!*.json
+!*.gitignore
+# IAR ignore
+!*.eww
+!*.ewd
+!*.ewp
+# MDK ignore
+!*.uvprojx
+!*.mxproject
+!*.ioc
+!*.vscode
+!*.devcontainer
+build/
+managed_components/
+!*post_build.py
