@@ -1,5 +1,9 @@
 # OBD BRZ Gauge
 
+> Based on the open-source project [zhaizhaitao/open_obd_dsp](https://github.com/zhaizhaitao/open_obd_dsp) — original work by zhaizhaitao ([Bilibili demo](https://www.bilibili.com/video/BV18oHXz6EiQ/)). This repository is a derivative with additional vehicle profiles, multi-gauge support, and other changes.
+>
+> 本项目基于开源项目 [zhaizhaitao/open_obd_dsp](https://github.com/zhaizhaitao/open_obd_dsp) 二次开发，原作者 zhaizhaitao（[B 站演示](https://www.bilibili.com/video/BV18oHXz6EiQ/)）。本仓库在其基础上新增了多车型适配、三连表联动等功能。
+
 OBD BRZ Gauge is an ESP-IDF based round dashboard project for the Waveshare ESP32-S3-Touch-LCD-1.85 development board. It connects to an ELM327-compatible BLE OBD adapter, reads vehicle data, and renders a touch UI with LVGL.
 
 这是一个基于 ESP-IDF 的圆形车载仪表项目，目标硬件为微雪 Waveshare ESP32-S3-Touch-LCD-1.85 开发板。项目通过 BLE 连接兼容 ELM327 的 OBD 适配器，读取车辆数据并使用 LVGL 显示触控界面。
