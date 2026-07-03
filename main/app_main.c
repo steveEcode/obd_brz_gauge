@@ -27,11 +27,17 @@
 /* 应用层 */
 #include "bsp_obd_dsp/bsp_board.h"
 #include "bsp_obd_dsp/elm327_ble_client.h"
+#include "bsp_obd_dsp/espnow_link.h"
 #include "bsp_obd_dsp/racechrono_ble_diy.h"
 #include "bsp_obd_dsp/rs485_brake_temp.h"
 #include "bsp_obd_dsp/ads1115_oil_pressure.h"
 #include "app_obd_dsp/obd_data_cache.h"
 #include "app_obd_dsp/vehicle_profiles.h"
+
+// ===== 三连表角色 =====
+// 正常用「设置页 → 下滑进 MULTI-GAUGE 页」选择主/从(存 NVS device_role, 重启生效), 一份固件即可。
+// 下面这个宏只是调试用的强制覆盖: 取消注释会忽略设置、强制本板为从表。平时保持注释。
+// #define ESPNOW_FORCE_SLAVE
 
 static const char *TAG = "obd_dsp";
 
@@ -53,7 +59,7 @@ SemaphoreHandle_t lvgl_mux = NULL; // non-static: used by BLE scan page
 #define LVGL_TASK_MAX_DELAY_MS      500
 #define LVGL_TASK_MIN_DELAY_MS      2
 #define LVGL_TASK_STACK_SIZE        (4 * 1024)
-#define LVGL_TASK_PRIORITY          2
+#define LVGL_TASK_PRIORITY          4   // 提高(原2): 动画时不易被 BLE/OBD(优先级4) 抢占而掉帧
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //////////////////// LVGL 回调函数 /////////////////////////////////////////////////////////////////////////////////////
@@ -201,12 +207,21 @@ void app_main(void)
     ESP_LOGI(TAG, "Initialize LVGL");
     lv_init();
 
-    /* 分配双缓冲 (使用 DMA 内存) */
-    lv_color_t *buf1 = heap_caps_malloc(LVGL_BUFF_SIZE * sizeof(lv_color_t), MALLOC_CAP_DMA);
-    assert(buf1);
-    lv_color_t *buf2 = heap_caps_malloc(LVGL_BUFF_SIZE * sizeof(lv_color_t), MALLOC_CAP_DMA);
-    assert(buf2);
-    lv_disp_draw_buf_init(&disp_buf, buf1, buf2, LVGL_BUFF_SIZE);
+    /* 分配双缓冲 (DMA 内存)。缓冲加大 -> 全屏渲染条带减半 -> 帧率更高。
+       仅影响 LVGL 渲染分块，不改 SPI 单次传输大小(仍走 max_transfer_sz 分块)，故不会花屏。
+       内部 DMA RAM 不足时自动回退到原始 20 行，避免开机 OOM。 */
+    size_t buf_px = LCD_H_RES * 40;
+    lv_color_t *buf1 = heap_caps_malloc(buf_px * sizeof(lv_color_t), MALLOC_CAP_DMA);
+    lv_color_t *buf2 = heap_caps_malloc(buf_px * sizeof(lv_color_t), MALLOC_CAP_DMA);
+    if (!buf1 || !buf2) {
+        heap_caps_free(buf1); heap_caps_free(buf2);
+        buf_px = LVGL_BUFF_SIZE;   // 回退 20 行
+        buf1 = heap_caps_malloc(buf_px * sizeof(lv_color_t), MALLOC_CAP_DMA);
+        buf2 = heap_caps_malloc(buf_px * sizeof(lv_color_t), MALLOC_CAP_DMA);
+    }
+    assert(buf1 && buf2);
+    ESP_LOGI(TAG, "LVGL draw buffer: %d lines x2", (int)(buf_px / LCD_H_RES));
+    lv_disp_draw_buf_init(&disp_buf, buf1, buf2, buf_px);
 
     /* 注册显示驱动 */
     lv_disp_drv_init(&disp_drv);
@@ -248,26 +263,44 @@ void app_main(void)
         lvgl_unlock();
     }
 
-    /* 8. 启动 BLE OBD - 优先使用 NVS 中保存的设备名 */
-    const nvs_user_cfg_t *user_cfg = nvs_cfg_get();
-    const char *ble_name = (user_cfg->ble_device_name[0] != '\0') 
-                            ? user_cfg->ble_device_name 
-                            : "OBDII";
-    ESP_LOGI(TAG, "BLE target device: %s", ble_name);
-    elm327_ble_start_default(ble_name);
+    /* 8. 按角色分支: 主表(连 ELM327 读数 + ESP-NOW 广播) / 从表(只收主表数据显示) */
+    uint8_t dev_role = nvs_cfg_get()->device_role;
+#ifdef ESPNOW_FORCE_SLAVE
+    dev_role = ESPNOW_ROLE_SLAVE;   // 步骤1测试: 强制从表
+#endif
 
-     /* 8.5 启动 RaceChrono BLE DIY 服务（同一 BT 栈下并行，向手机输出传感器数据）
-         延迟 500ms 让 OBD 初始扫描稳定后再启动，避免 GAP 状态混乱 */
-     vTaskDelay(pdMS_TO_TICKS(500));
-    racechrono_ble_diy_start();
+    if (dev_role == ESPNOW_ROLE_SLAVE) {
+        /* ---- 从表: 不连 ELM327, 只启动 ESP-NOW 接收, UI 显示主表广播的数据 ---- */
+        ESP_LOGI(TAG, "Device role: SLAVE (ESP-NOW receiver, no BLE/OBD)");
+        espnow_link_start_slave();
+    } else {
+        /* ---- 主表: 原有 BLE OBD 全链路 + ESP-NOW 广播 ---- */
+        ESP_LOGI(TAG, "Device role: MASTER (BLE/OBD + ESP-NOW broadcast)");
 
-    /* 9. 启动 RS485 刹车温度采集 */
-    rs485_brake_temp_start();
+        /* 8.1 启动 BLE OBD - 优先使用 NVS 中保存的设备名 */
+        const nvs_user_cfg_t *user_cfg = nvs_cfg_get();
+        const char *ble_name = (user_cfg->ble_device_name[0] != '\0')
+                                ? user_cfg->ble_device_name
+                                : "OBDII";
+        ESP_LOGI(TAG, "BLE target device: %s", ble_name);
+        elm327_ble_start_default(ble_name);
 
-    /* 9.5 启动油压采集（ESP32 ADC 直连） */
-    oil_pressure_start();
+        /* 8.5 启动 RaceChrono BLE DIY 服务（同一 BT 栈下并行，向手机输出传感器数据）
+            延迟 500ms 让 OBD 初始扫描稳定后再启动，避免 GAP 状态混乱 */
+        vTaskDelay(pdMS_TO_TICKS(500));
+        racechrono_ble_diy_start();
 
-    /* 10. 里程统计任务 */
-    vMileageDataStatisticTask();
+        /* 9. 启动 RS485 刹车温度采集 */
+        rs485_brake_temp_start();
+
+        /* 9.5 启动油压采集（ESP32 ADC 直连） */
+        oil_pressure_start();
+
+        /* 9.8 启动 ESP-NOW 广播(把本机 OBD 数据缓存发给从表) */
+        espnow_link_start_master();
+
+        /* 10. 里程统计任务(仅主表统计, 避免从表重复计) */
+        vMileageDataStatisticTask();
+    }
 }
 

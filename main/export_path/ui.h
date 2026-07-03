@@ -19,6 +19,9 @@ extern "C" {
 
 #define USE_GIF_LOGO        0
 #define USE_GIF_EASTER_EGG  0
+// 自定义开机图开关: 1=用客户自定义图片(imgBootLogoCustom)作开机动画; 0=用默认 SKY GAUGE
+// 置 1 前需把客户 PNG 转成 LVGL C 数组(变量名 imgBootLogoCustom)放进 images/ 目录
+#define USE_CUSTOM_BOOT_LOGO 0
 
 #define COLOR_MITSUBISHI_RED    0xFFFFFF //主色调白色(原三菱红)
 #define COLOR_DOMIANT_PINK      0xFFFFFF //主色调白色(原粉色)
@@ -110,6 +113,7 @@ extern lv_obj_t * ui_LabelIntakeTempText;
 extern lv_obj_t * ui_LabelTempValue[3];
 extern lv_obj_t * ui_LabelTempName[3];
 extern lv_obj_t * ui_LabelTempUnit[3];
+extern lv_obj_t * ui_LabelTempDot[3];
 void ui_event_temp_background(lv_event_t * e);
 
 // SCREEN: ui_ScreenPageTempCustom
@@ -185,9 +189,16 @@ void ui_ScreenPageNeedleConfig_screen_init(void);
 extern lv_obj_t * ui_ScreenPageNeedleConfig;
 void ui_event_needle_config_background(lv_event_t * e);
 
+// SCREEN: ui_ScreenPageMultiGauge (设置页下滑进入: 三连表 主/从 + 选主表)
+void ui_ScreenPageMultiGauge_screen_init(void);
+extern lv_obj_t * ui_ScreenPageMultiGauge;
+void ui_event_multi_gauge_background(lv_event_t * e);
+
 // 指针页运行时接口 (ui.c 实现, 复用 disp_item 系统)
 void ui_needle_page_update(float sweep_ratio);   // 每帧刷新指针与数值 (sweep_ratio<0=实时, 0~1=刷表自检)
 void ui_needle_apply_source(void);  // 数据源变化后重建量程/名称/单位
+int  ui_sweep_get_step(void);       // 取当前扫表进度(主表广播给从表)
+void ui_sweep_set_step(int step);   // 设扫表进度(从表跟随主表广播, 实现同步扫表)
 const char *ui_disp_item_name(uint8_t item); // 取数据项显示名 (越界返回 "")
 
 // EVENTS
@@ -202,6 +213,9 @@ LV_IMG_DECLARE(gifBlackLeopard);
 LV_IMG_DECLARE(ui_img_pngmainback_png);    // assets/pngMainBack.png
 LV_IMG_DECLARE(pngLogoMITSUBISHI);    // assets/pngLogoMITSUBISHI.png
 LV_IMG_DECLARE(pngLogoSkyGarage);     // assets/sklogo.png (280x280)
+#if USE_CUSTOM_BOOT_LOGO == 1
+LV_IMG_DECLARE(imgBootLogoCustom);    // 客户自定义开机图(需自行转换并放入 images/)
+#endif
 LV_IMG_DECLARE(ui_img_pngblackear_png);    // assets/pngBlackEar.png
 // FONTS
 LV_FONT_DECLARE(ui_font_FontBabyGearNumSize48);

@@ -1,5 +1,6 @@
 // Settings Page
-// Configure: default boot page and screen brightness
+// Configure: default boot page, vehicle and screen brightness
+// 下滑(LV_DIR_BOTTOM)进入三连表设置页 (见 ui_event_settings_background)
 
 #include "../ui.h"
 #include <string.h>
@@ -8,7 +9,7 @@
 #include "app_obd_dsp/vehicle_profiles.h"
 
 // Page names for roller
-static const char *page_names = "TEMP\nINFO\nBRAKE\nOILP\nNEEDLE";
+static const char *page_names = "TEMP\nINFO\nBRAKE\nOILP\nNEEDLE\nGEAR\nRPM\nSPEED";
 
 // Local references for settings widgets
 static lv_obj_t *s_roller_page = NULL;
@@ -59,15 +60,16 @@ void ui_ScreenPageSettings_screen_init(void)
     lv_obj_set_style_bg_opa(ui_ScreenPageSettings, 255, LV_PART_MAIN);
 
     // White border ring
-    lv_obj_t *ring = lv_spinner_create(ui_ScreenPageSettings, 1000, 90);
+    lv_obj_t *ring = lv_obj_create(ui_ScreenPageSettings);   // 白环: 静态圆形 border, 替代旋转 spinner, 消除弧接缝缺口
     lv_obj_set_size(ring, 360, 360);
     lv_obj_set_align(ring, LV_ALIGN_CENTER);
-    lv_obj_clear_flag(ring, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_arc_color(ring, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-    lv_obj_set_style_arc_opa(ring, 255, LV_PART_MAIN);
-    lv_obj_set_style_arc_width(ring, 10, LV_PART_MAIN);
-    lv_obj_set_style_arc_opa(ring, 0, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_width(ring, 10, LV_PART_INDICATOR);
+    lv_obj_clear_flag(ring, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(ring, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(ring, 0, LV_PART_MAIN);
+    lv_obj_set_style_border_color(ring, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_style_border_width(ring, 10, LV_PART_MAIN);
+    lv_obj_set_style_border_opa(ring, 255, LV_PART_MAIN);
 
     // ====== Title ======
     lv_obj_t *title = lv_label_create(ui_ScreenPageSettings);
@@ -123,7 +125,7 @@ void ui_ScreenPageSettings_screen_init(void)
     // 从车型配置动态生成 roller 选项（换行分隔），新增车型自动出现
     uint8_t vehicle_count = 0;
     const vehicle_profile_t *vehicle_list = vehicle_profile_get_all(&vehicle_count);
-    char vehicle_names[128] = {0};
+    char vehicle_names[160] = {0};
     for (uint8_t i = 0; i < vehicle_count; i++) {
         if (i > 0) strlcat(vehicle_names, "\n", sizeof(vehicle_names));
         strlcat(vehicle_names, vehicle_list[i].name, sizeof(vehicle_names));
@@ -134,7 +136,7 @@ void ui_ScreenPageSettings_screen_init(void)
     lv_roller_set_options(s_roller_vehicle, vehicle_names, LV_ROLLER_MODE_NORMAL);
     lv_roller_set_visible_row_count(s_roller_vehicle, 1);
     lv_roller_set_selected(s_roller_vehicle, (cfg->vehicle_profile_idx < vehicle_count) ? cfg->vehicle_profile_idx : 0, LV_ANIM_OFF);
-    lv_obj_set_width(s_roller_vehicle, 140);
+    lv_obj_set_width(s_roller_vehicle, 210);   // 加宽以容纳较长车型名(如 "BMW X1 F48")
     lv_obj_set_style_text_font(s_roller_vehicle, &ui_font_FontTypoderSize20, LV_PART_MAIN);
     lv_obj_set_style_text_color(s_roller_vehicle, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
     lv_obj_set_style_bg_color(s_roller_vehicle, lv_color_hex(0x222222), LV_PART_MAIN);
@@ -189,9 +191,10 @@ void ui_ScreenPageSettings_screen_init(void)
 
     // ====== Hint ======
     lv_obj_t *hint = lv_label_create(ui_ScreenPageSettings);
-    lv_label_set_text(hint, "Swipe to go back\nVehicle applies after reconnect");
+    lv_label_set_text(hint, "Swipe down: multi-gauge\nL/R: back");
     lv_obj_set_style_text_font(hint, &lv_font_montserrat_12, LV_PART_MAIN);
     lv_obj_set_style_text_color(hint, lv_color_hex(0x555555), LV_PART_MAIN);
+    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
     lv_obj_align(hint, LV_ALIGN_CENTER, 0, 124);
 
     // Black ear image at top
@@ -204,6 +207,7 @@ void ui_ScreenPageSettings_screen_init(void)
     lv_obj_add_flag(ear, LV_OBJ_FLAG_ADV_HITTEST);
     lv_obj_clear_flag(ear, LV_OBJ_FLAG_SCROLLABLE);
 
-    // Events - swipe to go back
+    // Events - swipe to go back / down to multi-gauge
+    lv_obj_move_foreground(ring);   // 圆环置顶
     lv_obj_add_event_cb(ui_ScreenPageSettings, ui_event_settings_background, LV_EVENT_GESTURE, NULL);
 }

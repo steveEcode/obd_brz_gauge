@@ -16,14 +16,16 @@ void ui_ScreenPageODBProtocal_screen_init(void)
     lv_obj_set_style_bg_color(ui_ScreenPageODBProtocal, lv_color_hex(0x000000), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(ui_ScreenPageODBProtocal, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    ui_SpinnerODBProtocalEgg = lv_spinner_create(ui_ScreenPageODBProtocal, 1000, 90);
-    lv_obj_set_width(ui_SpinnerODBProtocalEgg, 360);
-    lv_obj_set_height(ui_SpinnerODBProtocalEgg, 360);
+    ui_SpinnerODBProtocalEgg = lv_obj_create(ui_ScreenPageODBProtocal);   // 白环: 静态圆形 border, 替代旋转 spinner, 消除弧接缝缺口
+    lv_obj_set_size(ui_SpinnerODBProtocalEgg, 360, 360);
     lv_obj_set_align(ui_SpinnerODBProtocalEgg, LV_ALIGN_CENTER);
-    lv_obj_clear_flag(ui_SpinnerODBProtocalEgg, LV_OBJ_FLAG_CLICKABLE);      /// Flags
-    lv_obj_set_style_arc_color(ui_SpinnerODBProtocalEgg, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_arc_opa(ui_SpinnerODBProtocalEgg, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_arc_width(ui_SpinnerODBProtocalEgg, 10, LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_clear_flag(ui_SpinnerODBProtocalEgg, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(ui_SpinnerODBProtocalEgg, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(ui_SpinnerODBProtocalEgg, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(ui_SpinnerODBProtocalEgg, 0, LV_PART_MAIN);
+    lv_obj_set_style_border_color(ui_SpinnerODBProtocalEgg, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_style_border_width(ui_SpinnerODBProtocalEgg, 10, LV_PART_MAIN);
+    lv_obj_set_style_border_opa(ui_SpinnerODBProtocalEgg, 255, LV_PART_MAIN);
 
     lv_obj_set_style_arc_color(ui_SpinnerODBProtocalEgg, lv_color_hex(0xFFFFFF), LV_PART_INDICATOR | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_opa(ui_SpinnerODBProtocalEgg, 0, LV_PART_INDICATOR | LV_STATE_DEFAULT);
@@ -111,6 +113,7 @@ void ui_ScreenPageODBProtocal_screen_init(void)
     lv_obj_set_style_text_font(ui_LabelSureTipText, &ui_font_FontTypoderSize20, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     /* 事件回调 */
+    lv_obj_move_foreground(ui_SpinnerODBProtocalEgg);   // 圆环置顶
     lv_obj_add_event_cb(ui_ScreenPageODBProtocal, ui_event_obd_prot_background, LV_EVENT_ALL, NULL);
     /* 根据 NVS 当前协议设置初始滚轮 */
     const nvs_user_cfg_t *cfg = nvs_cfg_get();

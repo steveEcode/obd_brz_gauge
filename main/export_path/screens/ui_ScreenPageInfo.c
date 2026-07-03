@@ -92,16 +92,16 @@ void ui_ScreenPageInfo_screen_init(void)
     lv_obj_set_style_bg_opa(ui_ScreenPageInfo, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     // Outer spinner ring (decorative, white)
-    lv_obj_t *ring = lv_spinner_create(ui_ScreenPageInfo, 1000, 90);
+    lv_obj_t *ring = lv_obj_create(ui_ScreenPageInfo);   // 白环: 静态圆形 border, 替代旋转 spinner, 消除弧接缝缺口
     lv_obj_set_size(ring, 360, 360);
     lv_obj_set_align(ring, LV_ALIGN_CENTER);
-    lv_obj_clear_flag(ring, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_arc_color(ring, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_arc_opa(ring, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_arc_width(ring, 8, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_arc_color(ring, lv_color_hex(0xFFFFFF), LV_PART_INDICATOR | LV_STATE_DEFAULT);
-    lv_obj_set_style_arc_opa(ring, 0, LV_PART_INDICATOR | LV_STATE_DEFAULT);
-    lv_obj_set_style_arc_width(ring, 8, LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    lv_obj_clear_flag(ring, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(ring, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(ring, 0, LV_PART_MAIN);
+    lv_obj_set_style_border_color(ring, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_style_border_width(ring, 8, LV_PART_MAIN);
+    lv_obj_set_style_border_opa(ring, 255, LV_PART_MAIN);
 
     // Page title
     lv_obj_t *title = lv_label_create(ui_ScreenPageInfo);
@@ -169,5 +169,6 @@ void ui_ScreenPageInfo_screen_init(void)
     lv_obj_clear_flag(black_ear, LV_OBJ_FLAG_SCROLLABLE);
 
     // Touch events
+    lv_obj_move_foreground(ring);   // 圆环置顶
     lv_obj_add_event_cb(ui_ScreenPageInfo, ui_event_info_background, LV_EVENT_GESTURE, NULL);
 }

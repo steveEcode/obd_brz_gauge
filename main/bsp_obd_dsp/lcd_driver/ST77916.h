@@ -46,7 +46,9 @@
 #define EXAMPLE_LCD_BK_LIGHT_ON_LEVEL       (1)
 #define EXAMPLE_LCD_BK_LIGHT_OFF_LEVEL !EXAMPLE_LCD_BK_LIGHT_ON_LEVEL
 
-#define ESP_PANEL_HOST_SPI_MAX_TRANSFER_SIZE   (2048)
+// 容下一条 40 行渲染带(28.8KB), 每次刷新单次传输完, 减少事务开销提帧率。
+// (比之前花屏时的整帧/43KB 小; 若仍花屏说明本屏单次传输上限更低, 回退 2048)
+#define ESP_PANEL_HOST_SPI_MAX_TRANSFER_SIZE   (EXAMPLE_LCD_WIDTH * 40 * 2 + 64)
 
 #define LEDC_HS_TIMER          LEDC_TIMER_0
 #define LEDC_LS_MODE           LEDC_LOW_SPEED_MODE

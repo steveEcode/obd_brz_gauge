@@ -24,7 +24,8 @@ typedef struct {
     uint8_t temp_display_map[3]; // TEMP 页三行显示项映射
     uint8_t info_display_map[5]; // INFO 页五宫格显示项映射
     uint8_t needle_source_idx;   // 指针页数据源 (disp_item_t 值, 默认 0=CLT)
-    uint8_t rsv[2];              // 预留
+    uint8_t device_role;         // 三连表角色: 0=主表(连ELM327), 1=从表(收主表数据). 占用原 rsv, 不改结构体大小
+    uint8_t rsv[1];              // 预留
 } nvs_user_cfg_t;
 
 /*------------------ 运行统计（定期落盘） ------------------*/

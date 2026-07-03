@@ -52,6 +52,8 @@ static ble_scan_result_t s_scan_list[BLE_SCAN_MAX_DEVICES];
 static int s_scan_count = 0;
 static bool s_ble_inited = false;  // BLE 协议栈是否已初始化
 static bool s_poll_task_started = false; // 轮询任务是否已创建
+static volatile bool s_notify_ready = false;   // CCCD 通知订阅完成才置位; init/轮询据此放行(防握手响应丢失)
+static volatile int64_t s_last_obd_valid_us = 0; // 最近一次收到有效OBD数据的时间; 超时无数据触发自愈重初始化
 static uint8_t s_oil_query_mode = 0;     // 当前查询模式索引 (0-2)
 static int s_mode21_oil_idx = 33;        // Mode21 机油温字节索引，自适应更新
 static int16_t s_last_mode21_oil = -100; // 上次Mode21解析出的油温
@@ -62,7 +64,7 @@ static oil_temp_query_mode_t s_oil_mode_priority[4] = {
     OIL_TEMP_MODE_UDS_22_10_17,
     OIL_TEMP_MODE_TOYOTA_21_01,
 };  // 默认优先级，启动后从车型配置更新
-static uint32_t s_oil_mode_fail_count[5] = {0};  // 每个模式(poll idx 0~4)的连续失败次数
+static uint32_t s_oil_mode_fail_count[8] = {0};  // 每个模式(poll idx 0~7)的连续失败次数
 #define OIL_MODE_FAIL_THRESHOLD 5  // 某模式失败次数达到此值后才切换到下一个
 static bool s_vehicle_profile_inited = false;
 
@@ -73,11 +75,17 @@ static struct {
     uint32_t mode2_ok;  // 21 01 成功次数
     uint32_t mode3_ok;  // 22 11 1F (Mazda) 成功次数
     uint32_t mode4_ok;  // 22 13 10 (Mazda) 成功次数
+    uint32_t mode5_ok;  // CAN 0x441 (Porsche) 成功次数
+    uint32_t mode6_ok;  // 22 58 22 (MINI/BMW) 成功次数
+    uint32_t mode7_ok;  // 22 44 02 (BMW F系) 成功次数
     uint32_t mode0_fail;
     uint32_t mode1_fail;
     uint32_t mode2_fail;
     uint32_t mode3_fail;
     uint32_t mode4_fail;
+    uint32_t mode5_fail;
+    uint32_t mode6_fail;
+    uint32_t mode7_fail;
     int16_t last_raw_temp; // 原始温度（未过滤）
     int16_t last_filtered_temp; // 过滤后温度
 } s_oil_diag = {0};
@@ -87,6 +95,7 @@ static int8_t s_oil_temp_offset = 0;  // 用户校准偏移量，单位 °C
 // 增加全局 ready 标志
 static volatile bool s_elm_ready = true; // 初始允许发送首条 ATZ
 static volatile bool s_expect_mode21 = false; // true=上条命令是 21 01，等待 61 01 响应
+static volatile bool s_porsche_441_seen = false; // 本次监听是否成功解析到 0x441 帧
 bool elm327_ble_send_ascii_blocking(const char *ascii_cmd);
 
 // 多包响应累积缓冲区（21 01 等长响应分多个BLE包）
@@ -109,6 +118,9 @@ static inline uint8_t oil_mode_to_poll_idx(oil_temp_query_mode_t mode) {
         case OIL_TEMP_MODE_TOYOTA_21_01: return 2;
         case OIL_TEMP_MODE_MAZDA_22_111F: return 3;
         case OIL_TEMP_MODE_MAZDA_22_1310: return 4;
+        case OIL_TEMP_MODE_PORSCHE_CAN_441: return 5;
+        case OIL_TEMP_MODE_MINI_22_5822: return 6;
+        case OIL_TEMP_MODE_BMW_22_4402: return 7;
         default: return 0;
     }
 }
@@ -119,11 +131,11 @@ static uint8_t get_active_vehicle_idx_safe(void) {
 }
 
 static const char *get_vehicle_fixed_header_cmd(void) {
-    uint8_t vidx = get_active_vehicle_idx_safe();
-    if (vidx == 0) {
-        return "ATSH7E0\r"; // ZC6 固定请求头
+    const vehicle_profile_t *vp = vehicle_profile_get_active();
+    if (vp && vp->obd_functional_addr) {
+        return "ATSH7DF\r"; // 功能寻址(全车广播), 同手机 APP; BMW 用此, 否则物理 7E0 可能无响应
     }
-    return "ATSH7E0\r";     // ZD8 先使用同一请求头，避免自动漂移
+    return "ATSH7E0\r";     // 物理寻址发动机 ECU; 斯巴鲁/默认
 }
 
 // 初始化油温查询策略（从车型配置读取 primary/secondary/tertiary 优先级链）
@@ -196,6 +208,15 @@ static void record_oil_temp_success(oil_temp_query_mode_t mode) {
         case OIL_TEMP_MODE_MAZDA_22_1310:
             s_oil_diag.mode4_ok++;
             break;
+        case OIL_TEMP_MODE_PORSCHE_CAN_441:
+            s_oil_diag.mode5_ok++;
+            break;
+        case OIL_TEMP_MODE_MINI_22_5822:
+            s_oil_diag.mode6_ok++;
+            break;
+        case OIL_TEMP_MODE_BMW_22_4402:
+            s_oil_diag.mode7_ok++;
+            break;
         default:
             break;
     }
@@ -222,6 +243,15 @@ static void record_oil_temp_failure(oil_temp_query_mode_t mode) {
             break;
         case OIL_TEMP_MODE_MAZDA_22_1310:
             s_oil_diag.mode4_fail++;
+            break;
+        case OIL_TEMP_MODE_PORSCHE_CAN_441:
+            s_oil_diag.mode5_fail++;
+            break;
+        case OIL_TEMP_MODE_MINI_22_5822:
+            s_oil_diag.mode6_fail++;
+            break;
+        case OIL_TEMP_MODE_BMW_22_4402:
+            s_oil_diag.mode7_fail++;
             break;
         default:
             break;
@@ -432,81 +462,129 @@ static void default_on_parsed_manifold_pressure(uint32_t map_kpa) {
     ESP_LOGD(TAG, "MAP: %u kPa -> boost %d.%d bar", map_kpa, boost_x10/10, boost_x10%10);
     obd_data_set_boost_x10(boost_x10);
 }
- 
-static void obd_poll_task(void *arg) {
-    for(;;)
-    {
-        if(s_connected)
-        {
-            vTaskDelay(pdMS_TO_TICKS(2000));
-            break;
-        }
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
 
-    uint32_t tick_count = 0;
+// 保时捷 997.2/987.2：油温油压在 CAN 广播帧 0x441，需用 ELM327 监听模式抓取。
+// 流程：过滤只收 441 → 开帧头 → 监听若干帧 → 停止 → 还原(关帧头/恢复自动收地址)。
+// 帧解析在通知回调里(见 "441 " 分支)；本函数只负责按时序下发监听指令。
+// 注意：监听模式与普通请求/应答不同，且依赖适配器(廉价克隆可能不支持 ATMA/ATCRA)。
+static void porsche_read_can_441(void) {
+    elm327_ble_send_ascii_blocking("AT CRA 441\r"); // 接收过滤：只收 ID=0x441
+    elm327_ble_send_ascii_blocking("AT H1\r");        // 帧头打开：监听输出带 ID，便于识别 441
+    // 启动监听（ATMA 持续刷帧、不产生 '>'，手动管理 ready 标志）
+    uint8_t cmd[8];
+    size_t n = elm327_ble_ascii_cmd_to_bytes("AT MA\r", cmd, sizeof(cmd));
+    s_porsche_441_seen = false;
+    if (n) { s_elm_ready = false; elm327_ble_send_command(cmd, n); }
+    vTaskDelay(pdMS_TO_TICKS(400));   // 监听窗口拉长到 400ms, 容纳广播较慢的 441 帧
+    uint8_t stop = '\r';
+    elm327_ble_send_command(&stop, 1); // 任意字符停止监听 → ELM 吐出帧 + '>'(触发解析)
+    vTaskDelay(pdMS_TO_TICKS(120));    // 等通知回调解析完该帧
+    // 诊断: 明确打印本轮监听结果, 便于串口排查(抓到=解析问题, 没抓到=总线无441/适配器不支持ATMA)
+    if (s_porsche_441_seen) {
+        ESP_LOGI(TAG, "[441] frame captured & parsed OK");
+    } else {
+        ESP_LOGW(TAG, "[441] NO 441 frame in window (check FULL[] log above: ATMA returned what?)");
+        record_oil_temp_failure(OIL_TEMP_MODE_PORSCHE_CAN_441);
+    }
+    // 还原：关帧头、恢复自动接收地址(否则后续普通 PID 响应被过滤/错解析)
+    elm327_ble_send_ascii_blocking("AT H0\r");
+    elm327_ble_send_ascii_blocking("AT AR\r");
+}
+
+// ELM327 初始化序列(协议选择 + AT 配置 + 总线预热 + 油温策略)。
+// 每次(重)连接、且通知订阅就绪后调用，避免握手响应在订阅前丢失。
+static void do_elm_init(void) {
     char atsp_cmd[16];
     const nvs_user_cfg_t *cfg = nvs_cfg_get();
-    
-    // ---- 协议自动检测 ----
+
+    // ---- 协议选择 ----
     uint8_t protocol_to_use = cfg->protocol;
-    if (protocol_to_use == 0) {
+    // 车型强制协议优先(如 BMW/保时捷 自动探测不稳, 直接锁协议6, 跳过探测)
+    const vehicle_profile_t *vp_proto = vehicle_profile_get_active();
+    if (vp_proto && vp_proto->forced_protocol != 0) {
+        protocol_to_use = vp_proto->forced_protocol;
+        ESP_LOGI(TAG, "Vehicle '%s' forces protocol %d (skip auto-detect)", vp_proto->name, protocol_to_use);
+    } else if (protocol_to_use == 0) {
         // 自动协议检测
         ESP_LOGI(TAG, "Protocol auto-detect enabled (current NVS: 0-auto)");
         int detected_proto = elm327_auto_detect_protocol();
-        
         if (detected_proto > 0) {
             protocol_to_use = (uint8_t)detected_proto;
-            
-            // 保存检测结果到 NVS
             nvs_user_cfg_t new_cfg = *cfg;
             new_cfg.protocol = protocol_to_use;
             nvs_cfg_set(&new_cfg);
-            
             ESP_LOGI(TAG, "Protocol auto-detect SUCCESS! Saving protocol %d to NVS", protocol_to_use);
         } else {
-            // 检测失败，使用默认协议 6
             protocol_to_use = 6;
             ESP_LOGW(TAG, "Protocol auto-detect FAILED, using fallback protocol 6");
         }
     }
-    
+
     snprintf(atsp_cmd, sizeof(atsp_cmd), "ATSP%d\r", protocol_to_use);
     const char *fixed_header_cmd = get_vehicle_fixed_header_cmd();
-
     const char *init_cmds[] = {
-        "ATZ\r",        // 复位
-        "ATE0\r",       // Echo off
-        "ATL0\r",       // 行宽 off
-        "ATS1\r",       // 空格 on/off
-        "ATH0\r",       // 关闭头部数据（可选）ATH1是打開
-        "ATAT1\r",      // 适应时序
-        "ATST 19\r",    // 设置超时
-        atsp_cmd,         // 设置协议
-        fixed_header_cmd, // 按车型固定请求头
+        "ATZ\r", "ATE0\r", "ATL0\r", "ATS1\r", "ATH0\r", "ATAT1\r", "ATST 19\r",
+        atsp_cmd, fixed_header_cmd,
     };
-
     for (size_t i = 0; i < (sizeof(init_cmds) / sizeof(init_cmds[0])); ++i) {
         elm327_ble_send_ascii_blocking(init_cmds[i]);
-        ESP_LOGI(TAG, " AT init Cmd send %s",init_cmds[i]);
+        ESP_LOGI(TAG, " AT init Cmd send %s", init_cmds[i]);
         vTaskDelay(pdMS_TO_TICKS(30));
     }
-    // 协议选择后做一次能力探测，加速稳定
-    elm327_ble_send_ascii_blocking("01 00\r");
-    ESP_LOGI(TAG, " CMD 01 00 send \n");
-    vTaskDelay(pdMS_TO_TICKS(100));
+    // 总线预热: 多发几次 01 00, 给整车 CAN/ELM 协议握手时间(冷启动总线可能还没醒)
+    for (int probe = 0; probe < 3; ++probe) {
+        elm327_ble_send_ascii_blocking("01 00\r");
+        ESP_LOGI(TAG, " CMD 01 00 probe #%d", probe);
+        vTaskDelay(pdMS_TO_TICKS(150));
+    }
 
     // ---- 初始化油温查询策略（基于车型配置） ----
     init_oil_temp_strategy();
-    
     const vehicle_profile_t *active_profile = vehicle_profile_get_active();
     ESP_LOGI(TAG, "Active vehicle profile: %s", active_profile ? active_profile->name : "Unknown");
+    s_last_obd_valid_us = esp_timer_get_time();   // 给一个新的"有效数据"起点, 避免刚初始化就触发自愈
+}
+
+static void obd_poll_task(void *arg) {
+    uint32_t tick_count = 0;
+    bool inited = false;
+    uint8_t heal_attempts = 0;   // 连续自愈次数; 重发ATZ若干次仍无数据则升级为强制重连
 
     // 8-slot 轮询: 0=RPM, 1=IAT, 2=Speed, 3=CLT, 4=Load(0x04), 5=TPS(0x11), 6=OIL(车型策略), 7=BAT(0x42)
     while (1)
     {
-        if (!s_connected) {
-            vTaskDelay(pdMS_TO_TICKS(1000));
+        // 未连接或通知订阅未就绪 → 标记需重新初始化并等待
+        if (!s_connected || !s_notify_ready) {
+            inited = false;
+            vTaskDelay(pdMS_TO_TICKS(300));
+            continue;
+        }
+        // (重)连接后通知就绪才初始化; 每次重连都会重跑(修复"必须断开重连才有读数")
+        if (!inited) {
+            vTaskDelay(pdMS_TO_TICKS(300));   // 给订阅再稳定一点时间
+            do_elm_init();
+            inited = true;
+            tick_count = 0;
+            continue;
+        }
+        // 数据正常流动 → 清零自愈计数
+        if ((esp_timer_get_time() - s_last_obd_valid_us) < 2000000) heal_attempts = 0;
+        // 自愈: 连续 >5s 收不到任何有效数据(没响应/SEARCHING/UNABLE TO CONNECT/NO DATA 全覆盖)。
+        if ((esp_timer_get_time() - s_last_obd_valid_us) > 5000000) {
+            s_last_obd_valid_us = esp_timer_get_time();
+            heal_attempts++;
+            if (heal_attempts >= 3) {
+                // 重发 ATZ 已试几次仍无数据 → 强制断开蓝牙, DISCONNECT 回调会自动重连,
+                // 等于自动执行了"手动断开重连"(重新订阅通知 + 重跑初始化, 此时总线多半已醒)。
+                ESP_LOGW(TAG, "Self-heal escalate: force BLE reconnect (re-init didn't help)");
+                heal_attempts = 0;
+                inited = false;
+                esp_ble_gattc_close(s_gattc_if, s_conn_id);
+                vTaskDelay(pdMS_TO_TICKS(300));
+                continue;
+            }
+            ESP_LOGW(TAG, "No valid OBD data >5s, re-init ELM (self-heal #%u)...", heal_attempts);
+            inited = false;
             continue;
         }
         switch(tick_count)
@@ -544,6 +622,18 @@ static void obd_poll_task(void *arg) {
                         elm327_ble_send_ascii_blocking("22 13 10\r");
                         s_expect_mode21 = false;
                         ESP_LOGI(TAG, "[Slot6] Send 22 13 10 (Mazda oil temp)");
+                    } else if (mode == OIL_TEMP_MODE_PORSCHE_CAN_441) {
+                        s_expect_mode21 = false;
+                        ESP_LOGI(TAG, "[Slot6] Porsche CAN 0x441 monitor (oil temp+press)");
+                        porsche_read_can_441();
+                    } else if (mode == OIL_TEMP_MODE_MINI_22_5822) {
+                        elm327_ble_send_ascii_blocking("22 58 22\r");
+                        s_expect_mode21 = false;
+                        ESP_LOGI(TAG, "[Slot6] Send 22 58 22 (MINI/BMW oil temp)");
+                    } else if (mode == OIL_TEMP_MODE_BMW_22_4402) {
+                        elm327_ble_send_ascii_blocking("22 44 02\r");
+                        s_expect_mode21 = false;
+                        ESP_LOGI(TAG, "[Slot6] Send 22 44 02 (BMW F-series oil temp)");
                     } else {
                         ESP_LOGW(TAG, "[Slot6] No valid oil temp mode available");
                         s_expect_mode21 = false;
@@ -1136,6 +1226,7 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
     case ESP_GATTC_WRITE_DESCR_EVT: {
         if (param->write.status == ESP_GATT_OK) {
             ESP_LOGI(TAG, "Notifications enabled");
+            s_notify_ready = true;   // 订阅就绪 → 放行轮询任务做 ELM 初始化
         } else {
             ESP_LOGW(TAG, "Enable notify failed status=%d", param->write.status);
         }
@@ -1179,8 +1270,45 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
         char *p61 = strstr(buf, "61 01"); // Mode 21 响应头 (精确匹配 "61 01")
         char *p41 = strstr(buf, "41 ");
         char *p62 = strstr(buf, "62 ");
+        // 保时捷 CAN 广播帧 0x441 (ATH1 监听下形如 "441 D0 D1 ... D7")。仅当前车型用此模式才解析，
+        // 且必须先于 p41 判断(因 "441 " 含子串 "41 ")。byte5=油温(x-60°C), byte7=油压(x/25.4 bar)。
+        char *p441 = (s_oil_mode_priority[0] == OIL_TEMP_MODE_PORSCHE_CAN_441) ? strstr(buf, "441 ") : NULL;
 
-        if (p61 != NULL) {
+        // 收到任一有效数据帧头 → 总线在响应, 刷新"有效数据"时间戳(自愈用)
+        if (p41 || p62 || p61 || p441) s_last_obd_valid_us = esp_timer_get_time();
+
+        if (p441 != NULL) {
+            unsigned id=0,b0,b1,b2,b3,b4,b5,b6,b7;
+            int vals = sscanf(p441, "%x %x %x %x %x %x %x %x %x", &id,&b0,&b1,&b2,&b3,&b4,&b5,&b6,&b7);
+            if (vals >= 9 && id == 0x441) {
+                // byte5: 油温, 公式取自当前车型 profile (°C = x*num/den+off); 不同代系数不同
+                const oil_temp_strategy_t *st441 = vehicle_profile_get_oil_temp_strategy();
+                int32_t num = st441 ? st441->can_num : 1;
+                int32_t den = st441 ? st441->can_den : 1;
+                int32_t off = st441 ? st441->can_off : -60;
+                if (den == 0) { num = 1; den = 1; off = -60; }  // 未配置→默认 997.2(x-60)
+                int32_t oil_c = (int32_t)b5 * num / den + off;
+                // 油压: byte/25.4 bar == byte*50/127 (0.1bar). 参考主推 byte7, 部分扫描器在 byte6。
+                // 先用 byte7; 同时把 b6/b7 都打日志, 上车对照实际油压(怠速~1-2bar/高转~4-5bar)确认是哪个字节。
+                int16_t oilp_x10 = (int16_t)((b7 * 50) / 127);  // byte7: 油压, 0x7F(127)=5.0bar
+                s_porsche_441_seen = true;
+                if (oil_c >= -40 && oil_c <= 215 && s_cbs.on_parsed_oil_temp) {
+                    record_oil_temp_success(OIL_TEMP_MODE_PORSCHE_CAN_441);
+                    s_cbs.on_parsed_oil_temp((uint32_t)oil_c);
+                } else {
+                    record_oil_temp_failure(OIL_TEMP_MODE_PORSCHE_CAN_441);
+                }
+                obd_data_set_oil_pressure_x10(oilp_x10);        // 同帧油压 → OILP 显示
+                // 诊断: 完整帧 + 各候选字节, 便于核对油压到底在 byte6 还是 byte7
+                ESP_LOGI(TAG, "[CAN 441] RAW b0..b7=%02X %02X %02X %02X %02X %02X %02X %02X",
+                         b0, b1, b2, b3, b4, b5, b6, b7);
+                ESP_LOGI(TAG, "[CAN 441] oil=%dC | press: byte7=%d.%dbar byte6=%d.%dbar",
+                         (int)oil_c, oilp_x10/10, oilp_x10%10, (b6*50/127)/10, (b6*50/127)%10);
+            } else {
+                ESP_LOGD(TAG, "[CAN 441] parse fail vals=%d", vals);
+                record_oil_temp_failure(OIL_TEMP_MODE_PORSCHE_CAN_441);
+            }
+        } else if (p61 != NULL) {
             // Mode 21 多帧响应 (Toyota 2101)
             // 只有确认发出了 21 01 命令才解析，防止其他响应的数据字节碰巧包含 "61 01"
             s_expect_mode21 = false;
@@ -1307,6 +1435,30 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
                         ESP_LOGD(TAG, "[22 11 1F] Oil temp out of range: %d (raw=%02X)", (int)mazda_oil, (unsigned)d0);
                         record_oil_temp_failure(OIL_TEMP_MODE_MAZDA_22_111F);
                     }
+                } else if (pid16 == 0x5822) {
+                    // MINI/BMW 油温 PID 5822: °C = A - 60 (°F = A*9/5 - 76)
+                    int32_t mini_oil = (int32_t)d0 - 60;
+                    if (mini_oil >= -40 && mini_oil <= 215) {
+                        record_oil_temp_success(OIL_TEMP_MODE_MINI_22_5822);
+                        s_cbs.on_parsed_oil_temp((uint32_t)mini_oil);
+                    } else {
+                        ESP_LOGD(TAG, "[22 58 22] Oil temp out of range: %d (raw=%02X)", (int)mini_oil, (unsigned)d0);
+                        record_oil_temp_failure(OIL_TEMP_MODE_MINI_22_5822);
+                    }
+                } else if (pid16 == 0x4402) {
+                    // BMW F系油温 PID 4402: °C = B - 64 (响应第二个数据字节 d1)
+                    if (values >= 5) {
+                        int32_t bmw_oil = (int32_t)d1 - 64;
+                        if (bmw_oil >= -40 && bmw_oil <= 215) {
+                            record_oil_temp_success(OIL_TEMP_MODE_BMW_22_4402);
+                            s_cbs.on_parsed_oil_temp((uint32_t)bmw_oil);
+                        } else {
+                            ESP_LOGD(TAG, "[22 44 02] Oil temp out of range: %d (A=%02X B=%02X)", (int)bmw_oil, (unsigned)d0, (unsigned)d1);
+                            record_oil_temp_failure(OIL_TEMP_MODE_BMW_22_4402);
+                        }
+                    } else {
+                        record_oil_temp_failure(OIL_TEMP_MODE_BMW_22_4402);
+                    }
                 } else if (pid16 == 0x1017 || pid16 == 0x0011 || pid16 == 0x1C00) {
                     record_oil_temp_success(OIL_TEMP_MODE_UDS_22_10_17);
                     s_cbs.on_parsed_oil_temp((uint32_t)((int32_t)d0 - 40));
@@ -1317,7 +1469,7 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
         } else {
             // 无效数据或纯文本（NO DATA、SEARCHING、OK 等）
             if (strstr(buf, "NO DATA")) {
-                ESP_LOGI(TAG, "NO DATA for last PID"); // 诊断: 哪个PID无数据
+                ESP_LOGI(TAG, "NO DATA for last PID"); // 诊断: 哪个PID无数据(超时由时间戳自愈处理)
             } else if (strstr(buf, "SEARCHING")) {
                 ESP_LOGI(TAG, "ELM327 searching protocol...");
             } else {
@@ -1339,6 +1491,7 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
     }
     case ESP_GATTC_DISCONNECT_EVT: {
         s_connected = false;
+        s_notify_ready = false;   // 断开 → 通知失效, 重连后须重新订阅+重新初始化
         s_conn_id = 0xFFFF;
         s_have_service = false;
         s_service_start = 0x0001;
@@ -1357,11 +1510,10 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
         s_protocol_detect_rpm = -1;
         s_oil_query_mode = 0;  // 重置油温查询计数
         if (s_cbs.on_disconnected) s_cbs.on_disconnected();
-        // Only restart scan if we were in scan-only mode (BLE selection page)
-        // Otherwise, user must manually reconnect from settings
-        if (s_scan_only_mode) {
-            start_scan();
-        }
+        // 断开后总是重新扫描:
+        //  - 扫描模式: 继续列设备
+        //  - 正常模式: 自动重连目标(掉线/自愈强制断开后自动回连, 无需人工重连)
+        start_scan();
         break;
     }
     default:
@@ -1486,9 +1638,10 @@ void elm327_oil_temp_get_diag(elm327_oil_diag_t *out) {
     out->last_filtered = s_oil_diag.last_filtered_temp;
     out->current_mode = s_oil_query_mode;
     
-    ESP_LOGI(TAG, "OIL DIAG: Mode0(01 5C)=%u/%u, Mode1(22 10 17)=%u/%u, Mode2(21 01)=%u/%u, Mode3(22 11 1F)=%u/%u, Mode4(22 13 10)=%u/%u",
+    ESP_LOGI(TAG, "OIL DIAG: Mode0(01 5C)=%u/%u, Mode1(22 10 17)=%u/%u, Mode2(21 01)=%u/%u, Mode3(22 11 1F)=%u/%u, Mode4(22 13 10)=%u/%u, Mode5(CAN 441)=%u/%u, Mode6(22 58 22)=%u/%u, Mode7(22 44 02)=%u/%u",
              out->mode0_ok, out->mode0_fail, out->mode1_ok, out->mode1_fail,
              out->mode2_ok, out->mode2_fail, s_oil_diag.mode3_ok, s_oil_diag.mode3_fail,
-             s_oil_diag.mode4_ok, s_oil_diag.mode4_fail);
+             s_oil_diag.mode4_ok, s_oil_diag.mode4_fail, s_oil_diag.mode5_ok, s_oil_diag.mode5_fail,
+             s_oil_diag.mode6_ok, s_oil_diag.mode6_fail, s_oil_diag.mode7_ok, s_oil_diag.mode7_fail);
 }
 

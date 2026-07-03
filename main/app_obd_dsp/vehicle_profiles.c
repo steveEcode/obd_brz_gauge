@@ -67,6 +67,85 @@ static const vehicle_profile_t s_profiles[] = {
             .offset_c = 0,
         },
         .has_boost = true,                 // 涡轮增压(B48/B58)，读取涡轮压力
+        .forced_protocol = 6,              // ISO 15765-4 CAN 11bit 500k; 锁协议跳过自动探测(BMW探测不稳)
+        .obd_functional_addr = true,       // 用功能寻址 7DF(同手机APP), 物理 7E0 在 BMW 上可能收不到响应
+    },
+    {
+        // BMW X1 F48 (2015-2022, B38 1.5T / B48 2.0T 涡轮, Aisin GA8F22AW 8速自动)
+        .name = "BMW X1 F48",
+        .final_drive_ratio = 3.077f,       // xDrive(AWD) 主减速比 (sDrive/FWD≈2.955, 12%容差可吸收)
+        .tire_rolling_radius_m = 0.330f,   // 225/50R18
+        .gear_count = 8,                   // Aisin 8速自动
+        .gear_ratios = {0, 5.250f, 3.029f, 1.950f, 1.457f, 1.221f, 1.000f, 0.809f, 0.673f},
+        .gear_tolerance = 0.12f,
+        .oil_temp_strategy = {
+            // BMW F系油温: 增强 Mode 22 PID 4402, °C = B-64 (响应第二字节); 读不到回退标准 01 5C。
+            // 油压: BMW 仅有报警开关(非传感器), OBD 读不到数值, 不映射。
+            .primary = OIL_TEMP_MODE_BMW_22_4402,
+            .secondary = OIL_TEMP_MODE_PID_5C,
+            .tertiary = OIL_TEMP_MODE_NONE,
+            .offset_c = 0,
+        },
+        .has_boost = true,                 // B38/B48 涡轮增压, 涡轮压力走标准 010B
+        .forced_protocol = 6,              // ISO 15765-4 CAN 11bit 500k; 锁协议跳过自动探测(BMW探测不稳)
+        .obd_functional_addr = true,       // 用功能寻址 7DF(同手机APP), 物理 7E0 在 BMW 上可能收不到响应
+    },
+    {
+        // 保时捷 Gen2: 987.2/997.2 (2009-2012, DFI 9A1; 自吸; 油温 x-60)
+        .name = "POS 997.2",
+        .final_drive_ratio = 3.44f,        // 997.2 PDK 主减速比(用户实测)
+        .tire_rolling_radius_m = 0.325f,   // 用户实测滚动半径
+        .gear_count = 7,                   // PDK 7速
+        .gear_ratios = {0, 3.91f, 2.29f, 1.65f, 1.30f, 1.08f, 0.88f, 0.62f},
+        .gear_tolerance = 0.15f,
+        .oil_temp_strategy = {
+            // 油温油压在 CAN 广播帧 0x441(byte5油温, byte6油压×5/127)，经 ELM327 监听读取
+            .primary = OIL_TEMP_MODE_PORSCHE_CAN_441,
+            .secondary = OIL_TEMP_MODE_PID_5C,
+            .tertiary = OIL_TEMP_MODE_NONE,
+            .offset_c = 0,
+            .can_num = 1, .can_den = 1, .can_off = -60,   // °C = x - 60
+        },
+        .has_boost = false,                // 自然吸气
+        .forced_protocol = 6,              // 广播帧 0x441 是 11bit/500k, 锁协议6 才能 ATMA 监听到
+    },
+    {
+        // 保时捷 Gen1: 987.1/997.1 (2005-2008, M96/M97; 油温 x*3/4-48)
+        // 注: 档位比暂沿用 Gen2 占位(987.1 实际略有差异)，主要差异是油温公式。
+        .name = "POS 997.1",
+        .final_drive_ratio = 3.89f,
+        .tire_rolling_radius_m = 0.335f,
+        .gear_count = 6,
+        .gear_ratios = {0, 3.67f, 2.05f, 1.46f, 1.13f, 0.97f, 0.84f},
+        .gear_tolerance = 0.15f,
+        .oil_temp_strategy = {
+            .primary = OIL_TEMP_MODE_PORSCHE_CAN_441,
+            .secondary = OIL_TEMP_MODE_PID_5C,
+            .tertiary = OIL_TEMP_MODE_NONE,
+            .offset_c = 0,
+            .can_num = 3, .can_den = 4, .can_off = -48,   // °C = x*3/4 - 48
+        },
+        .has_boost = false,
+        .forced_protocol = 6,              // 广播帧 0x441 是 11bit/500k, 锁协议6 才能 ATMA 监听到
+    },
+    {
+        // MINI John Cooper Works F56 (宝马 B48 2.0T, 前驱横置)
+        .name = "JCW F56",
+        .final_drive_ratio = 3.824f,       // F56 JCW 6MT 主减速比
+        .tire_rolling_radius_m = 0.308f,   // 前轮(前驱驱动轮) 205/45R17
+        .gear_count = 6,
+        .gear_ratios = {0, 3.923f, 2.136f, 1.276f, 0.921f, 0.756f, 0.628f},
+        .gear_tolerance = 0.15f,
+        .oil_temp_strategy = {
+            // 涡轮压力走标准 PID 010B(has_boost)，无需额外适配。
+            // 油温: MINI/BMW 增强 Mode 22 PID 5822, °C = A-60 (社区验证, N18/N16/B48 同款监视器)；
+            // 读不到回退标准 01 5C。
+            .primary = OIL_TEMP_MODE_MINI_22_5822,
+            .secondary = OIL_TEMP_MODE_PID_5C,
+            .tertiary = OIL_TEMP_MODE_NONE,
+            .offset_c = 0,
+        },
+        .has_boost = true,                 // B48 涡轮增压，涡轮压力走标准 010B
     },
 };
 

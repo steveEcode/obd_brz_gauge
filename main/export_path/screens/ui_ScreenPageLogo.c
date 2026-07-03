@@ -12,7 +12,24 @@ void ui_ScreenPageLogo_screen_init(void)
     lv_obj_set_style_radius(ui_ScreenPageLogo, 360, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_color(ui_ScreenPageLogo, lv_color_hex(0x0000), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(ui_ScreenPageLogo, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
-#if USE_GIF_LOGO == 1
+#if USE_CUSTOM_BOOT_LOGO == 1
+    // 客户自定义开机图(静态图片，居中)
+    imageLogo = lv_img_create(ui_ScreenPageLogo);
+    lv_img_set_src(imageLogo, &imgBootLogoCustom);
+    lv_obj_align(imageLogo, LV_ALIGN_CENTER, 0, 0);
+
+    // White border ring (与其它页面一致)
+    lv_obj_t *spinnerLogo = lv_obj_create(ui_ScreenPageLogo);   // 白环: 静态圆形 border
+    lv_obj_set_size(spinnerLogo, 360, 360);
+    lv_obj_set_align(spinnerLogo, LV_ALIGN_CENTER);
+    lv_obj_clear_flag(spinnerLogo, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(spinnerLogo, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(spinnerLogo, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(spinnerLogo, 0, LV_PART_MAIN);
+    lv_obj_set_style_border_color(spinnerLogo, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_style_border_width(spinnerLogo, 10, LV_PART_MAIN);
+    lv_obj_set_style_border_opa(spinnerLogo, 255, LV_PART_MAIN);
+#elif USE_GIF_LOGO == 1
     imageLogo = lv_gif_create(ui_ScreenPageLogo);
     lv_gif_set_src(imageLogo, &gifSnake400);
     lv_obj_align(imageLogo, LV_ALIGN_CENTER, 0, 0);
@@ -35,17 +52,16 @@ void ui_ScreenPageLogo_screen_init(void)
     imageLogo = NULL; // No image logo anymore
 
     // White border ring (same as Gear page style)
-    lv_obj_t *spinnerLogo = lv_spinner_create(ui_ScreenPageLogo, 1000, 90);
-    lv_obj_set_width(spinnerLogo, 360);
-    lv_obj_set_height(spinnerLogo, 360);
+    lv_obj_t *spinnerLogo = lv_obj_create(ui_ScreenPageLogo);   // 白环: 静态圆形 border, 替代旋转 spinner, 消除弧接缝缺口
+    lv_obj_set_size(spinnerLogo, 360, 360);
     lv_obj_set_align(spinnerLogo, LV_ALIGN_CENTER);
-    lv_obj_clear_flag(spinnerLogo, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_arc_color(spinnerLogo, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_arc_opa(spinnerLogo, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_arc_width(spinnerLogo, 10, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_arc_color(spinnerLogo, lv_color_hex(0xFFFFFF), LV_PART_INDICATOR | LV_STATE_DEFAULT);
-    lv_obj_set_style_arc_opa(spinnerLogo, 0, LV_PART_INDICATOR | LV_STATE_DEFAULT);
-    lv_obj_set_style_arc_width(spinnerLogo, 10, LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    lv_obj_clear_flag(spinnerLogo, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(spinnerLogo, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(spinnerLogo, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(spinnerLogo, 0, LV_PART_MAIN);
+    lv_obj_set_style_border_color(spinnerLogo, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_style_border_width(spinnerLogo, 10, LV_PART_MAIN);
+    lv_obj_set_style_border_opa(spinnerLogo, 255, LV_PART_MAIN);
 #endif
     lv_obj_add_event_cb(ui_ScreenPageLogo, ui_event_logo_background, LV_EVENT_ALL, NULL);
 }

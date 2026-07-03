@@ -9,6 +9,7 @@
 #include "esp_idf_version.h"
 #include "bsp_obd_dsp/nvs_storage.h"
 #include "bsp_obd_dsp/elm327_ble_client.h"
+#include "bsp_obd_dsp/espnow_link.h"
 
 void ui_ScreenPageEasterEgg_screen_init(void)
 {
@@ -19,17 +20,16 @@ void ui_ScreenPageEasterEgg_screen_init(void)
     lv_obj_set_style_bg_opa(ui_ScreenPageEasterEgg, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     // White border ring
-    lv_obj_t *spinner_ring = lv_spinner_create(ui_ScreenPageEasterEgg, 1000, 90);
-    lv_obj_set_width(spinner_ring, 360);
-    lv_obj_set_height(spinner_ring, 360);
+    lv_obj_t *spinner_ring = lv_obj_create(ui_ScreenPageEasterEgg);
+    lv_obj_set_size(spinner_ring, 360, 360);
     lv_obj_set_align(spinner_ring, LV_ALIGN_CENTER);
-    lv_obj_clear_flag(spinner_ring, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_arc_color(spinner_ring, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_arc_opa(spinner_ring, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_arc_width(spinner_ring, 10, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_arc_color(spinner_ring, lv_color_hex(0xFFFFFF), LV_PART_INDICATOR | LV_STATE_DEFAULT);
-    lv_obj_set_style_arc_opa(spinner_ring, 0, LV_PART_INDICATOR | LV_STATE_DEFAULT);
-    lv_obj_set_style_arc_width(spinner_ring, 10, LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    lv_obj_clear_flag(spinner_ring, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(spinner_ring, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(spinner_ring, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(spinner_ring, 0, LV_PART_MAIN);
+    lv_obj_set_style_border_color(spinner_ring, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_style_border_width(spinner_ring, 10, LV_PART_MAIN);
+    lv_obj_set_style_border_opa(spinner_ring, 255, LV_PART_MAIN);
 
     /* ---- Device Info Page ---- */
     // Title: OBD DSP
@@ -39,10 +39,23 @@ void ui_ScreenPageEasterEgg_screen_init(void)
     lv_obj_set_style_text_color(label_title, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_align(label_title, LV_ALIGN_CENTER, 0, -70);
 
-    // Device & firmware info
-    const char *ble_name = elm327_ble_get_connected_name();
-    if (!ble_name || ble_name[0] == '\0') ble_name = "Not set";
-    bool connected = elm327_ble_is_connected();
+    // Device & firmware info — 按角色: 主表显示 BLE(ELM327), 从表显示 SLAVE(主表名字)
+    bool is_slave = (nvs_cfg_get()->device_role == ESPNOW_ROLE_SLAVE);
+    const char *mode_str = is_slave ? "SLAVE" : "MASTER";
+    const char *conn_label, *conn_name, *conn_status;
+    if (is_slave) {
+        bool linked = espnow_link_slave_has_data();
+        const char *mname = espnow_link_get_master_name();
+        conn_label  = "SLAVE";
+        conn_name   = (linked && mname[0]) ? mname : "--";
+        conn_status = linked ? "Linked" : "Waiting";
+    } else {
+        const char *ble_name = elm327_ble_get_connected_name();
+        if (!ble_name || ble_name[0] == '\0') ble_name = "Not set";
+        conn_label  = "BLE";
+        conn_name   = ble_name;
+        conn_status = elm327_ble_is_connected() ? "Connected" : "Disconnected";
+    }
 
     ui_LabelEasterEggInfo = lv_label_create(ui_ScreenPageEasterEgg);
     lv_label_set_long_mode(ui_LabelEasterEggInfo, LV_LABEL_LONG_WRAP);
@@ -50,12 +63,12 @@ void ui_ScreenPageEasterEgg_screen_init(void)
     lv_label_set_text_fmt(ui_LabelEasterEggInfo,
         "ESP32-S3  IDF %d.%d.%d\n"
         "LVGL %d.%d.%d\n"
-        "BLE: %s\n"
+        "MODE: %s\n"
+        "%s: %s\n"
         "Status: %s",
         ESP_IDF_VERSION_MAJOR, ESP_IDF_VERSION_MINOR, ESP_IDF_VERSION_PATCH,
         LVGL_VERSION_MAJOR, LVGL_VERSION_MINOR, LVGL_VERSION_PATCH,
-        ble_name,
-        connected ? "Connected" : "Disconnected");
+        mode_str, conn_label, conn_name, conn_status);
     lv_obj_set_style_text_font(ui_LabelEasterEggInfo, &ui_font_FontTypoderSize16, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_color(ui_LabelEasterEggInfo, lv_color_hex(0xAAAAAA), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_align(ui_LabelEasterEggInfo, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_DEFAULT);

@@ -128,15 +128,16 @@ void ui_ScreenPageBLEScan_screen_init(void)
     lv_obj_set_style_pad_all(ui_ScreenPageBLEScan, 0, LV_PART_MAIN);
 
     // White border ring
-    lv_obj_t *spinner_ring = lv_spinner_create(ui_ScreenPageBLEScan, 1000, 90);
+    lv_obj_t *spinner_ring = lv_obj_create(ui_ScreenPageBLEScan);   // 白环: 静态圆形 border, 替代旋转 spinner, 消除弧接缝缺口
     lv_obj_set_size(spinner_ring, 360, 360);
     lv_obj_set_align(spinner_ring, LV_ALIGN_CENTER);
-    lv_obj_clear_flag(spinner_ring, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_set_style_arc_color(spinner_ring, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-    lv_obj_set_style_arc_opa(spinner_ring, 255, LV_PART_MAIN);
-    lv_obj_set_style_arc_width(spinner_ring, 10, LV_PART_MAIN);
-    lv_obj_set_style_arc_opa(spinner_ring, 0, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_width(spinner_ring, 10, LV_PART_INDICATOR);
+    lv_obj_clear_flag(spinner_ring, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(spinner_ring, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(spinner_ring, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(spinner_ring, 0, LV_PART_MAIN);
+    lv_obj_set_style_border_color(spinner_ring, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_style_border_width(spinner_ring, 10, LV_PART_MAIN);
+    lv_obj_set_style_border_opa(spinner_ring, 255, LV_PART_MAIN);
 
     // Title
     lv_obj_t *label_title = lv_label_create(ui_ScreenPageBLEScan);
@@ -241,6 +242,7 @@ void ui_ScreenPageBLEScan_screen_init(void)
     lv_obj_align(label_hint, LV_ALIGN_BOTTOM_MID, 0, -15);
 
     // Gesture event for navigation
+    lv_obj_move_foreground(spinner_ring);   // 圆环置顶
     lv_obj_add_event_cb(ui_ScreenPageBLEScan, ui_event_ble_scan_background, LV_EVENT_GESTURE, NULL);
 
     // Start scanning

@@ -15,6 +15,7 @@ typedef enum {
     GEAR_4,
     GEAR_5,
     GEAR_6,
+    GEAR_7,   // 保时捷 997.2 PDK 等 7 速
 } enGear;
 
 typedef enum {

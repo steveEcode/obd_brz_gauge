@@ -19,6 +19,9 @@ typedef enum {
     OIL_TEMP_MODE_TOYOTA_21_01 = 2, // Toyota Mode 21 01
     OIL_TEMP_MODE_MAZDA_22_111F = 3, // Mazda Skyactiv Mode 22 PID 111F, 单字节 A-50
     OIL_TEMP_MODE_MAZDA_22_1310 = 4, // Mazda Skyactiv Mode 22 PID 1310, 双字节 (A*256+B)/100-40
+    OIL_TEMP_MODE_PORSCHE_CAN_441 = 5, // 保时捷 997.2/987.2 CAN 广播帧 0x441 (byte5油温 x-60, byte6油压)
+    OIL_TEMP_MODE_MINI_22_5822 = 6,    // MINI/BMW Mode 22 PID 5822, 单字节 °C = A-60 (°F=A*9/5-76)
+    OIL_TEMP_MODE_BMW_22_4402 = 7,     // BMW F系(F48等, B38/B48) Mode 22 PID 4402, 第二字节 °C = B-64
 } oil_temp_query_mode_t;
 
 // 车辆档位传动比范围 (用于档位识别)
@@ -34,6 +37,12 @@ typedef struct {
     oil_temp_query_mode_t secondary;   // 备用1
     oil_temp_query_mode_t tertiary;    // 备用2
     uint16_t offset_c;                 // 温度偏移量，单位 0.1°C（有符号）
+    // CAN-441(保时捷)油温线性公式: °C = raw * can_num / can_den + can_off
+    // 仅 OIL_TEMP_MODE_PORSCHE_CAN_441 模式使用; can_den=0 时回退内置默认(x-60)。
+    // 不同代只改这三个系数即可: 997.2/987.2 = 1/1/-60; 997.1/987.1 = 3/4/-48。
+    int16_t can_num;
+    int16_t can_den;
+    int16_t can_off;
 } oil_temp_strategy_t;
 
 // 车辆参数配置
@@ -46,6 +55,8 @@ typedef struct {
     float gear_tolerance;                // 档位识别容差 (e.g. 0.15 = ±15%)
     oil_temp_strategy_t oil_temp_strategy; // 油温查询策略
     bool has_boost;                      // 是否有涡轮增压(决定是否查询/显示涡轮压力)
+    uint8_t forced_protocol;             // 强制 ELM327 协议号(ATSP), 0=自动探测; BMW 等自动探测不稳的车锁 6
+    bool obd_functional_addr;            // true=标准PID用功能寻址(ATSH 7DF, 同手机APP); false=物理寻址(ATSH 7E0, 斯巴鲁等)
 } vehicle_profile_t;
 
 // 获取所有预定义的车辆配置

@@ -10,6 +10,8 @@
 #include "bsp_obd_dsp/nvs_storage.h"
 #include "bsp_obd_dsp/lcd_driver/ST77916.h"
 #include "bsp_obd_dsp/elm327_ble_client.h"
+#include "bsp_obd_dsp/espnow_link.h"
+#include "app_obd_dsp/vehicle_profiles.h"
 #include "esp_system.h"
 #include "esp_idf_version.h"
 
@@ -152,6 +154,10 @@ lv_obj_t * ui_NeedleUnitLabel;
 void ui_ScreenPageNeedleConfig_screen_init(void);
 lv_obj_t * ui_ScreenPageNeedleConfig;
 
+// SCREEN: ui_ScreenPageMultiGauge (三连表设置: 主/从 + 选主表)
+void ui_ScreenPageMultiGauge_screen_init(void);
+lv_obj_t * ui_ScreenPageMultiGauge;
+
 // SCREEN: ui_ScreenPageODBProtocal
 void ui_ScreenPageODBProtocal_screen_init(void);
 lv_obj_t * ui_ScreenPageODBProtocal;
@@ -194,6 +200,10 @@ static uint16_t usSaveProtTimeCnt = 0; //OBD协议保存计时
 static int  s_sweep_step = 0;           // 0=关闭, 1~SWEEP_TOTAL=动画中
 static bool s_sweep_pending = false;    // BLE 在 Logo 期间连上，Logo 消失后再触发
 static bool s_prev_ble_connected = false;
+
+// 三连表扫表同步: 主表广播 sweep_step, 从表收到后用 set 跟随(由 espnow recv 调用)。
+int  ui_sweep_get_step(void) { return s_sweep_step; }
+void ui_sweep_set_step(int step) { if (step >= 0 && step <= SWEEP_TOTAL) s_sweep_step = step; }
 static int16_t s_brake_temp_trend[BRAKE_TEMP_TREND_POINTS];
 static bool s_brake_temp_trend_ready = false;
 static uint32_t s_brake_temp_trend_tick = 0;
@@ -530,16 +540,22 @@ void my_timerMain(lv_timer_t * timer)
     int16_t brake_warn_x10 = (int16_t)(user_cfg->brake_temp_warn_c * 10);
     int16_t oil_warn_x10 = (int16_t)user_cfg->oil_pressure_warn_x10;
 
-    /* ---- 检测 BLE 连接，触发刷表 ---- */
-    bool ble_now = elm327_ble_is_connected();
-    if(ble_now && !s_prev_ble_connected) {
-        if(ui_ScreenPageLogo == NULL) {
-            s_sweep_step = 1;       // Logo 已结束，立即刷表
-        } else {
-            s_sweep_pending = true; // Logo 还在，先挂起
+    /* ---- 触发刷表 ----
+       主表: ELM327 蓝牙连上瞬间触发并自行推进动画;
+       从表: 不自触发, 由主表广播的 sweep_step 同步驱动(espnow recv → ui_sweep_set_step)。 */
+    bool is_slave = (nvs_cfg_get()->device_role == ESPNOW_ROLE_SLAVE);
+    // "已连接"信号: 从表=收到主表数据, 主表=ELM327蓝牙已连(供状态显示与主表扫表触发共用)
+    bool ble_now = is_slave ? espnow_link_slave_has_data() : elm327_ble_is_connected();
+    if(!is_slave) {
+        if(ble_now && !s_prev_ble_connected) {
+            if(ui_ScreenPageLogo == NULL) {
+                s_sweep_step = 1;       // Logo 已结束，立即刷表
+            } else {
+                s_sweep_pending = true; // Logo 还在，先挂起
+            }
         }
+        s_prev_ble_connected = ble_now;
     }
-    s_prev_ble_connected = ble_now;
 
     /* ---- 数据来源：刷表 or 真实 OBD ---- */
     float sweep_ratio = -1.0f;   // <0 = 非刷表(实时数据)
@@ -555,16 +571,30 @@ void my_timerMain(lv_timer_t * timer)
         usRpm   = (uint16_t)(SWEEP_RPM_PEAK * ratio);
         ucSpeed = (uint16_t)(SWEEP_SPEED_PEAK * ratio); // uint16_t 以支持999
         eGear   = (enGear)((int)(6.0f * ratio + 0.5f)); // 最高6档
-        s_sweep_step++;
-        if(s_sweep_step > SWEEP_TOTAL) s_sweep_step = 0; // 动画结束
+        if(!is_slave) {   // 主表自行推进; 从表的 step 由主表广播设置, 不自增(保持同步)
+            s_sweep_step++;
+            if(s_sweep_step > SWEEP_TOTAL) s_sweep_step = 0; // 动画结束
+        }
     } else {
         usRpm   = obd_data_get_rpm();
         ucSpeed = obd_data_get_speed();
         eGear   = calculate_gear(usRpm, ucSpeed);
     }
-    /* Main/Gear/Rpm/Speed 页面已删除，相关刷新逻辑随之移除。
-       usRpm/ucSpeed/eGear 仍在上方计算，供指针页与 disp_item 数据项使用。 */
-    (void)eGear;
+    /*档位页面*/
+    {
+        static const char *pGearNum[] = {"N","1","2","3","4","5","6","7"};
+        enGear g = (eGear <= GEAR_7) ? eGear : GEAR_7;
+        uint8_t gc = vehicle_profile_get_active()->gear_count;  // 按当前车型挡数算满盘(6速/7速通用)
+        if (gc < 1) gc = 6;
+        lv_label_set_text(ui_GearPageArcLabelGearNumText, pGearNum[g]);
+        lv_arc_set_value(ui_GearPageArcGearNumBack, (uint16_t)g * 100 / gc);
+    }
+    /*转速页面*/
+    lv_label_set_text_fmt(ui_RpmPageArcLabelRpmText, "%d", usRpm);
+    lv_arc_set_value(ui_RpmPageArcRpmBack, (uint32_t)usRpm*100/RPM_MAX);
+    /*速度页面*/
+    lv_label_set_text_fmt(ui_SpeedPageArcLabelSpeedText, "%d", ucSpeed);
+    lv_arc_set_value(ui_SpeedPageArcSpeedBack, (uint32_t)ucSpeed*100/SPEED_MAX);
 
  /*指针页 (可配置数据源, 刷表时同步扫表)*/
     ui_needle_page_update(sweep_ratio);
@@ -582,6 +612,7 @@ void my_timerMain(lv_timer_t * timer)
                 lv_label_set_text(ui_LabelTempName[i], s_disp_meta[item].name);
                 lv_label_set_text(ui_LabelTempUnit[i], s_disp_meta[item].unit);
                 lv_obj_set_style_text_color(ui_LabelTempName[i], lv_color_hex(s_disp_meta[item].color), LV_PART_MAIN);
+                if (ui_LabelTempDot[i]) lv_obj_set_style_bg_color(ui_LabelTempDot[i], lv_color_hex(s_disp_meta[item].color), LV_PART_MAIN);
 
                 int32_t sw = disp_item_sweep_value(item, r);
                 disp_item_set_text(ui_LabelTempValue[i], item, sw, true);
@@ -593,6 +624,7 @@ void my_timerMain(lv_timer_t * timer)
                 lv_label_set_text(ui_LabelTempName[i], s_disp_meta[item].name);
                 lv_label_set_text(ui_LabelTempUnit[i], s_disp_meta[item].unit);
                 lv_obj_set_style_text_color(ui_LabelTempName[i], lv_color_hex(s_disp_meta[item].color), LV_PART_MAIN);
+                if (ui_LabelTempDot[i]) lv_obj_set_style_bg_color(ui_LabelTempDot[i], lv_color_hex(s_disp_meta[item].color), LV_PART_MAIN);
 
                 int32_t value = 0;
                 bool valid = disp_item_read_value(item, clt, iat, oil, load_pct, tps, bat_mv, oilp_x10, brake_x10, usRpm, ucSpeed, boost_x10, &value);
@@ -728,19 +760,31 @@ void my_timerMain(lv_timer_t * timer)
         }
     }
 
-    /* 动态更新 EasterEgg 页面 BLE 信息 */
+    /* 动态更新 EasterEgg(版本页)信息: 加 MODE 行, 并按主/从显示 BLE 或 主表链路 */
     if(ui_LabelEasterEggInfo) {
-        const char *dev_name = elm327_ble_get_connected_name();
-        if(!dev_name || dev_name[0] == '\0') dev_name = "Not set";
+        const char *mode_str = is_slave ? "SLAVE" : "MASTER";
+        const char *conn_label, *conn_name;
+        if (is_slave) {
+            const char *mname = espnow_link_get_master_name();
+            conn_label = "SLAVE";
+            conn_name  = (ble_now && mname[0]) ? mname : "--";
+        } else {
+            const char *dev_name = elm327_ble_get_connected_name();
+            if(!dev_name || dev_name[0] == '\0') dev_name = "Not set";
+            conn_label = "BLE";
+            conn_name  = dev_name;
+        }
         lv_label_set_text_fmt(ui_LabelEasterEggInfo,
             "ESP32-S3  IDF %d.%d.%d\n"
             "LVGL %d.%d.%d\n"
-            "BLE: %s\n"
+            "MODE: %s\n"
+            "%s: %s\n"
             "Status: %s",
             ESP_IDF_VERSION_MAJOR, ESP_IDF_VERSION_MINOR, ESP_IDF_VERSION_PATCH,
             LVGL_VERSION_MAJOR, LVGL_VERSION_MINOR, LVGL_VERSION_PATCH,
-            dev_name,
-            ble_now ? "Connected" : "Disconnected");
+            mode_str, conn_label, conn_name,
+            ble_now ? (is_slave ? "Linked" : "Connected")
+                    : (is_slave ? "Waiting" : "Disconnected"));
     }
  
 #if EXAMPLE_PIN_NUM_BK_LIGHT >= 0
@@ -775,13 +819,16 @@ void my_timerMain(lv_timer_t * timer)
             const nvs_user_cfg_t *pg_cfg = nvs_cfg_get();
             lv_obj_t **target_scr = NULL;
             void (*target_init)(void) = NULL;
-            // 默认页: 0=Temp, 1=Info, 2=Brake, 3=OilP, 4=Needle (Main/Gear/Rpm/Speed 已删除)
+            // 默认页: 0=Temp,1=Info,2=Brake,3=OilP,4=Needle,5=Gear,6=Rpm,7=Speed
             switch(pg_cfg->default_page) {
                 case 0: target_scr = &ui_ScreenPageTemp;  target_init = ui_ScreenPageTemp_screen_init;  break;
                 case 1: target_scr = &ui_ScreenPageInfo;  target_init = ui_ScreenPageInfo_screen_init;  break;
                 case 2: target_scr = &ui_ScreenPageBrakeTemp; target_init = ui_ScreenPageBrakeTemp_screen_init;  break;
                 case 3: target_scr = &ui_ScreenPageOilPressure; target_init = ui_ScreenPageOilPressure_screen_init;  break;
                 case 4: target_scr = &ui_ScreenPageNeedle; target_init = ui_ScreenPageNeedle_screen_init;  break;
+                case 5: target_scr = &ui_ScreenPageGear;  target_init = ui_ScreenPageGear_screen_init;  break;
+                case 6: target_scr = &ui_ScreenPageRpm;   target_init = ui_ScreenPageRpm_screen_init;   break;
+                case 7: target_scr = &ui_ScreenPageSpeed; target_init = ui_ScreenPageSpeed_screen_init; break;
                 default: target_scr = &ui_ScreenPageTemp; target_init = ui_ScreenPageTemp_screen_init;  break;
             }
             if(*target_scr == NULL) target_init();
@@ -830,8 +877,53 @@ void ui_event_logo_background(lv_event_t * e)
     }   
 }
 
-// Main / Gear / Rpm / Speed 页面已删除，对应手势处理函数一并移除。
-// 轮播顺序: Temp → Info → Needle → OilPressure → BrakeTemp → EasterEgg(版本,最后) → 回到 Temp
+// 档位/转速/车速 三页位于轮播最前：档位→转速→车速→Temp→… (左滑下一页/右滑上一页)
+void ui_event_gear_background(lv_event_t * e)
+{
+    lv_event_code_t event_code = lv_event_get_code(e);
+    if(event_code == LV_EVENT_GESTURE) {
+        lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
+        if(dir == LV_DIR_RIGHT) {
+            lv_indev_wait_release(lv_indev_get_act());
+            _ui_screen_change(&ui_ScreenPageEasterEgg, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageEasterEgg_screen_init);
+        }
+        else if(dir == LV_DIR_LEFT) {
+            lv_indev_wait_release(lv_indev_get_act());
+            _ui_screen_change(&ui_ScreenPageRpm, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageRpm_screen_init);
+        }
+    }
+}
+void ui_event_rpm_background(lv_event_t * e)
+{
+    lv_event_code_t event_code = lv_event_get_code(e);
+    if(event_code == LV_EVENT_GESTURE) {
+        lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
+        if(dir == LV_DIR_RIGHT) {
+            lv_indev_wait_release(lv_indev_get_act());
+            _ui_screen_change(&ui_ScreenPageGear, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageGear_screen_init);
+        }
+        else if(dir == LV_DIR_LEFT) {
+            lv_indev_wait_release(lv_indev_get_act());
+            _ui_screen_change(&ui_ScreenPageSpeed, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageSpeed_screen_init);
+        }
+    }
+}
+void ui_event_speed_background(lv_event_t * e)
+{
+    lv_event_code_t event_code = lv_event_get_code(e);
+    if(event_code == LV_EVENT_GESTURE) {
+        lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
+        if(dir == LV_DIR_RIGHT) {
+            lv_indev_wait_release(lv_indev_get_act());
+            _ui_screen_change(&ui_ScreenPageRpm, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageRpm_screen_init);
+        }
+        else if(dir == LV_DIR_LEFT) {
+            lv_indev_wait_release(lv_indev_get_act());
+            _ui_screen_change(&ui_ScreenPageTemp, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageTemp_screen_init);
+        }
+    }
+}
+// 轮播顺序: 档位 → 转速 → 车速 → Temp → Info → 仪表 → 机油压 → 刹车温度 → 版本页 → 回到 档位
 // 左滑=下一页, 右滑=上一页
 void ui_event_temp_background(lv_event_t * e)
 {
@@ -840,7 +932,7 @@ void ui_event_temp_background(lv_event_t * e)
         lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
         if(dir == LV_DIR_RIGHT) {
             lv_indev_wait_release(lv_indev_get_act());
-            _ui_screen_change(&ui_ScreenPageEasterEgg, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageEasterEgg_screen_init);
+            _ui_screen_change(&ui_ScreenPageSpeed, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageSpeed_screen_init);
         }
         else if(dir == LV_DIR_LEFT) {
             lv_indev_wait_release(lv_indev_get_act());
@@ -1003,7 +1095,7 @@ void ui_event_easter_egg_background(lv_event_t * e)
         }
         else if(dir == LV_DIR_LEFT) {
             lv_indev_wait_release(lv_indev_get_act());
-            _ui_screen_change(&ui_ScreenPageTemp, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageTemp_screen_init);
+            _ui_screen_change(&ui_ScreenPageGear, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageGear_screen_init);
         }
         else if(dir == LV_DIR_TOP) {
             // 上滑 → BLE 扫描页面
@@ -1026,7 +1118,10 @@ void ui_init(void)
                                                false, LV_FONT_DEFAULT);
     lv_disp_set_theme(dispp, theme);
     ui_ScreenPageLogo_screen_init();
-    // Main / Gear / Rpm / Speed 页面已删除
+    // Main 三合一页仍移除；车速/转速/档位三页恢复
+    ui_ScreenPageGear_screen_init();
+    ui_ScreenPageRpm_screen_init();
+    ui_ScreenPageSpeed_screen_init();
     ui_ScreenPageTemp_screen_init();
     ui_ScreenPageBrakeTemp_screen_init();
     ui_ScreenPageOilPressure_screen_init();
@@ -1039,7 +1134,15 @@ void ui_init(void)
     ui_ScreenPageTempCustom = NULL;
     ui_ScreenPageInfoCustom = NULL;
     ui_ScreenPageNeedleConfig = NULL;   // 配置页懒加载
+    ui_ScreenPageMultiGauge = NULL;     // 三连表设置页懒加载
     ui____initial_actions0 = lv_obj_create(NULL);
+
+    // 预创建默认启动页：开机切换前就建好，避免在过渡那一刻才同步创建导致卡顿。
+    // 其余默认页(Temp/Brake/OilP/Needle/Gear/Rpm/Speed)上面已 eager 创建；只有 Info 是懒加载。
+    if (nvs_cfg_get()->default_page == 1 && ui_ScreenPageInfo == NULL) {
+        ui_ScreenPageInfo_screen_init();
+    }
+
     lv_disp_load_scr(ui_ScreenPageLogo);
 
     lv_timer_create(my_timerMain, 200, NULL);  //200 ms 周期
@@ -1094,6 +1197,23 @@ void ui_event_settings_background(lv_event_t * e)
         if(dir == LV_DIR_LEFT || dir == LV_DIR_RIGHT){
             lv_indev_wait_release(lv_indev_get_act());
             _ui_screen_change(&ui_ScreenPageEasterEgg, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageEasterEgg_screen_init);
+        }
+        else if(dir == LV_DIR_BOTTOM){   // 下滑进入三连表设置页
+            lv_indev_wait_release(lv_indev_get_act());
+            _ui_screen_change(&ui_ScreenPageMultiGauge, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageMultiGauge_screen_init);
+        }
+    }
+}
+
+// 三连表设置页手势: 上滑/左右滑 → 返回设置页
+void ui_event_multi_gauge_background(lv_event_t * e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if(code == LV_EVENT_GESTURE){
+        lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
+        if(dir == LV_DIR_TOP || dir == LV_DIR_LEFT || dir == LV_DIR_RIGHT){
+            lv_indev_wait_release(lv_indev_get_act());
+            _ui_screen_change(&ui_ScreenPageSettings, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageSettings_screen_init);
         }
     }
 }
