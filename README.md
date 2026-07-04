@@ -100,3 +100,9 @@ An ELM327 BLE adapter accepts only one client, so multiple gauges cannot each co
 
 - 仓库内包含针对当前开发板的适配代码和 UI 资源；如果迁移到其他 ESP32-S3 开发板或其他车型，需要重新检查引脚定义、屏幕参数和 OBD 解析逻辑。
 - 当前解析和验证重点面向 Subaru BRZ ZC6，其他车型可能需要额外调整协议、PID 或适配器兼容性。
+
+## Acknowledgments
+
+- [Hokori23](https://github.com/Hokori23) — performance optimization suggestions and contributions (NVS flush lock hold-time, page-aware refresh cadence, and OBD polling throughput).
+
+- [Hokori23](https://github.com/Hokori23) —— 性能优化建议与贡献者（NVS 落盘锁优化、按页面自适应刷新频率、OBD 轮询效率提升）。
