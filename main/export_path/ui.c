@@ -708,16 +708,19 @@ void my_timerMain(lv_timer_t * timer)
         lv_obj_set_style_text_font(ui_LabelOilPressureText, &ui_font_FontTypoderSize36, LV_PART_MAIN); // 曲线页数值字号(加大)
         disp_item_set_value_color(ui_LabelOilPressureText, citem, cval, cvalid, brake_warn_x10, oil_warn_x10);
 
-        uint32_t now = lv_tick_get();
-        if (s_oil_pressure_trend_tick == 0) {
-            oil_pressure_trend_init();
-            s_oil_pressure_trend_tick = now;
+        // 仅非扫表时喂曲线并刷新: 开机扫表动画那一下曲线保持不动(扫表是给指针/数字用的, 趋势图不参与)
+        if (s_sweep_step == 0) {
+            uint32_t now = lv_tick_get();
+            if (s_oil_pressure_trend_tick == 0) {
+                oil_pressure_trend_init();
+                s_oil_pressure_trend_tick = now;
+            }
+            while ((now - s_oil_pressure_trend_tick) >= OIL_PRESS_TREND_SAMPLE_MS) {
+                oil_pressure_trend_push(cvalid ? (int16_t)cval : CHART_INVALID);
+                s_oil_pressure_trend_tick += OIL_PRESS_TREND_SAMPLE_MS;
+            }
+            oil_pressure_chart_refresh();
         }
-        while ((now - s_oil_pressure_trend_tick) >= OIL_PRESS_TREND_SAMPLE_MS) {
-            oil_pressure_trend_push(cvalid ? (int16_t)cval : CHART_INVALID);
-            s_oil_pressure_trend_tick += OIL_PRESS_TREND_SAMPLE_MS;
-        }
-        oil_pressure_chart_refresh();
     }
 
     /* 刹车温度页面更新 */
