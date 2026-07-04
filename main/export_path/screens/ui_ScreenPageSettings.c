@@ -8,8 +8,10 @@
 #include "bsp_obd_dsp/lcd_driver/ST77916.h"
 #include "app_obd_dsp/vehicle_profiles.h"
 
-// Page names for roller
-static const char *page_names = "TEMP\nINFO\nBRAKE\nOILP\nNEEDLE\nGEAR\nRPM\nSPEED";
+// Page names for roller (刹车温已并入曲线页 CHART; 顺序须与 ui.c 开机默认页 switch 一致)
+// 0=TEMP 1=INFO 2=CHART 3=NEEDLE 4=GEAR 5=RPM 6=SPEED
+static const char *page_names = "TEMP\nINFO\nCHART\nNEEDLE\nGEAR\nRPM\nSPEED";
+#define BOOT_PAGE_COUNT 7
 
 // Local references for settings widgets
 static lv_obj_t *s_roller_page = NULL;
@@ -89,7 +91,7 @@ void ui_ScreenPageSettings_screen_init(void)
     lv_obj_clear_flag(s_roller_page, LV_OBJ_FLAG_GESTURE_BUBBLE); // 滚动选值时不触发页面手势
     lv_roller_set_options(s_roller_page, page_names, LV_ROLLER_MODE_NORMAL);
     lv_roller_set_visible_row_count(s_roller_page, 1);
-    lv_roller_set_selected(s_roller_page, cfg->default_page, LV_ANIM_OFF);
+    lv_roller_set_selected(s_roller_page, (cfg->default_page < BOOT_PAGE_COUNT) ? cfg->default_page : 0, LV_ANIM_OFF);
     lv_obj_set_width(s_roller_page, 140);
     lv_obj_set_style_text_font(s_roller_page, &ui_font_FontTypoderSize20, LV_PART_MAIN);
     lv_obj_set_style_text_color(s_roller_page, lv_color_hex(0xFFFFFF), LV_PART_MAIN);

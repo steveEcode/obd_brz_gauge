@@ -14,6 +14,8 @@
 #define KEY_CFG               "settings"
 #define NS_STAT               "stat"
 #define KEY_STAT              "runtime"
+#define KEY_CHART_ALARM       "chartalarm"
+#define CHART_ALARM_N         11   // = DISP_ITEM_COUNT (需与 ui.c disp_item_t 同步)
 #define STAT_FLUSH_PERIOD_MS  30000 //30s 落盘
 
 static nvs_user_cfg_t s_cfg =   { 
@@ -30,6 +32,12 @@ static nvs_user_cfg_t s_cfg =   {
 static nvs_stat_t     s_stat = {0};
 static bool           s_stat_dirty = false;
 static SemaphoreHandle_t s_mux;
+
+// 每数据项报警阈值(原始值单位), 索引=disp_item_t: CLT,IAT,OIL,LOD,TPS,RPM,SPD,BAT,OIP,BKT,BST
+// 默认只给油压(8.0bar=x10 80)和刹车温(600°C=x10 6000)保留旧报警值, 其余 32767=关闭(不误红)
+static int16_t s_chart_alarm[CHART_ALARM_N] = {
+    32767, 32767, 32767, 32767, 32767, 32767, 32767, 32767, 80, 6000, 32767
+};
 
 /* 前向声明 */
 static esp_err_t load_blob(const char *ns,const char *key,void *out,size_t len);
@@ -48,12 +56,20 @@ esp_err_t nvs_storage_init(void)
 
     load_blob(NS_CFG, KEY_CFG, &s_cfg, sizeof(s_cfg));
     load_blob(NS_STAT, KEY_STAT, &s_stat, sizeof(s_stat));
+    {   // 曲线报警阈值: NVS 有则加载, 无/长度不符则保持静态默认(不覆盖, 故不会全变0)
+        nvs_handle_t h; size_t sz = sizeof(s_chart_alarm);
+        if (nvs_open(NS_CFG, NVS_READONLY, &h) == ESP_OK) {
+            nvs_get_blob(h, KEY_CHART_ALARM, s_chart_alarm, &sz);
+            nvs_close(h);
+        }
+    }
 
     /* 新增字段默认值修复 (旧NVS数据中rsv[x]全为0) */
     if(s_cfg.brightness_day == 0) s_cfg.brightness_day = 100;
-    if(s_cfg.default_page > 7) s_cfg.default_page = 0; // 0=Temp,1=Info,2=Brake,3=OilP,4=Needle,5=Gear,6=Rpm,7=Speed
+    if(s_cfg.default_page > 6) s_cfg.default_page = 0; // 0=Temp,1=Info,2=Chart,3=Needle,4=Gear,5=Rpm,6=Speed(刹车温已并入Chart)
     if(s_cfg.needle_source_idx >= 10) s_cfg.needle_source_idx = 0; // DISP_ITEM_COUNT=10
     if(s_cfg.device_role > 1) s_cfg.device_role = 0; // 三连表角色: 0=主 1=从, 越界归零到主表
+    if(s_cfg.chart_source_idx >= 11) s_cfg.chart_source_idx = 8; // 曲线数据项越界→默认 OILP(旧NVS该字节为0=CLT亦可, 这里统一到OILP)
     // 车型索引按已注册的 profile 数量限界（越界归零到 ZC6）
     uint8_t vehicle_count = 0;
     vehicle_profile_get_all(&vehicle_count);
@@ -86,6 +102,17 @@ esp_err_t nvs_cfg_set(const nvs_user_cfg_t *cfg)
     if(memcmp(cfg,&s_cfg,sizeof(s_cfg))==0) return ESP_OK;
     s_cfg=*cfg;
     return save_blob(NS_CFG, KEY_CFG, &s_cfg, sizeof(s_cfg));
+}
+
+/* 曲线报警阈值 */
+int16_t nvs_chart_alarm_get(uint8_t item){
+    return (item < CHART_ALARM_N) ? s_chart_alarm[item] : 32767;
+}
+void nvs_chart_alarm_set(uint8_t item, int16_t raw_threshold){
+    if(item >= CHART_ALARM_N) return;
+    if(s_chart_alarm[item] == raw_threshold) return;
+    s_chart_alarm[item] = raw_threshold;
+    save_blob(NS_CFG, KEY_CHART_ALARM, s_chart_alarm, sizeof(s_chart_alarm));
 }
 
 /* 统计 */

@@ -129,13 +129,27 @@ extern lv_obj_t * ui_ChartBrakeTemp;
 extern lv_chart_series_t * ui_BrakeTempChartSeries;
 void ui_event_brake_temp_background(lv_event_t * e);
 
-// SCREEN: ui_ScreenPageOilPressure
+// SCREEN: ui_ScreenPageOilPressure —— 现为「通用可配置曲线页」(数据源由 chart_source_idx 决定)
 void ui_ScreenPageOilPressure_screen_init(void);
 extern lv_obj_t * ui_ScreenPageOilPressure;
-extern lv_obj_t * ui_LabelOilPressureText;
-extern lv_obj_t * ui_ChartOilPressure;
+extern lv_obj_t * ui_LabelOilPressureText;   // 数值
+extern lv_obj_t * ui_ChartOilPressure;       // 趋势曲线
 extern lv_chart_series_t * ui_OilPressureChartSeries;
+extern lv_obj_t * ui_LabelChartTitle;        // 标题(数据项名, 随数据源变)
+extern lv_obj_t * ui_ChartDot;               // 行首彩色圆点
+extern lv_obj_t * ui_LabelChartUnit;         // 单位
 void ui_event_oil_pressure_background(lv_event_t * e);
+void ui_chart_apply_source(void);            // 按 chart_source_idx 应用标题/颜色/单位/量程(数据源变化后调用)
+
+// SCREEN: ui_ScreenPageChartConfig (曲线页下滑进入: 选择显示的数据项)
+void ui_ScreenPageChartConfig_screen_init(void);
+extern lv_obj_t * ui_ScreenPageChartConfig;
+void ui_event_chart_config_background(lv_event_t * e);
+
+// SCREEN: ui_ScreenPageChartAlarm (曲线页上滑进入: 设置当前数据项的报警阈值)
+void ui_ScreenPageChartAlarm_screen_init(void);
+extern lv_obj_t * ui_ScreenPageChartAlarm;
+void ui_event_chart_alarm_background(lv_event_t * e);
 
 // SCREEN: ui_ScreenPageInfo
 void ui_ScreenPageInfo_screen_init(void);
@@ -200,6 +214,9 @@ void ui_needle_apply_source(void);  // 数据源变化后重建量程/名称/单
 int  ui_sweep_get_step(void);       // 取当前扫表进度(主表广播给从表)
 void ui_sweep_set_step(int step);   // 设扫表进度(从表跟随主表广播, 实现同步扫表)
 const char *ui_disp_item_name(uint8_t item); // 取数据项显示名 (越界返回 "")
+const char *ui_disp_item_unit(uint8_t item); // 取数据项单位
+uint32_t ui_disp_item_color(uint8_t item);   // 取数据项主题色
+void ui_disp_item_range(uint8_t item, int32_t *nmin, int32_t *nmax, int32_t *div); // 自然量程 + div(原始=自然×div)
 
 // EVENTS
 

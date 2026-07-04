@@ -158,6 +158,14 @@ lv_obj_t * ui_ScreenPageNeedleConfig;
 void ui_ScreenPageMultiGauge_screen_init(void);
 lv_obj_t * ui_ScreenPageMultiGauge;
 
+// SCREEN: ui_ScreenPageChartConfig (曲线数据源选择)
+void ui_ScreenPageChartConfig_screen_init(void);
+lv_obj_t * ui_ScreenPageChartConfig;
+
+// SCREEN: ui_ScreenPageChartAlarm (曲线报警阈值设置)
+void ui_ScreenPageChartAlarm_screen_init(void);
+lv_obj_t * ui_ScreenPageChartAlarm;
+
 // SCREEN: ui_ScreenPageODBProtocal
 void ui_ScreenPageODBProtocal_screen_init(void);
 lv_obj_t * ui_ScreenPageODBProtocal;
@@ -210,6 +218,10 @@ static uint32_t s_brake_temp_trend_tick = 0;
 static int16_t s_oil_pressure_trend[OIL_PRESS_TREND_POINTS];
 static bool s_oil_pressure_trend_ready = false;
 static uint32_t s_oil_pressure_trend_tick = 0;
+// 通用曲线页: 无效样本哨兵(区别于合法负值如水温-10) + 当前数据项的原始值量程(刷新时钳位/设Y轴)
+#define CHART_INVALID (-32768)
+static int32_t s_chart_ymin = 0;
+static int32_t s_chart_ymax = 100;
 
 typedef enum {
     DISP_ITEM_CLT = 0,
@@ -325,14 +337,10 @@ static void disp_item_set_text(lv_obj_t *label, disp_item_t item, int32_t value,
 static void disp_item_set_value_color(lv_obj_t *label, disp_item_t item, int32_t value, bool valid,
                                       int16_t brake_warn_x10, int16_t oil_warn_x10)
 {
+    (void)brake_warn_x10; (void)oil_warn_x10;   // 已改为每项独立阈值(NVS chart_alarm), 旧参数保留兼容
     if (!label) return;
-
-    lv_color_t color = lv_color_hex(0xFFFFFF);
-    if (valid && item == DISP_ITEM_BKT && value >= brake_warn_x10) {
-        color = lv_color_hex(0xFF4D4D);
-    } else if (valid && item == DISP_ITEM_OILP && value >= oil_warn_x10) {
-        color = lv_color_hex(0xFF4D4D);
-    }
+    int16_t thr = nvs_chart_alarm_get((uint8_t)item);   // 原始值单位; 32767=关闭
+    lv_color_t color = (valid && value >= (int32_t)thr) ? lv_color_hex(0xFF4D4D) : lv_color_hex(0xFFFFFF);
     lv_obj_set_style_text_color(label, color, LV_PART_MAIN);
 }
 
@@ -363,6 +371,26 @@ const char *ui_disp_item_name(uint8_t item)
 {
     if (item >= DISP_ITEM_COUNT) return "";
     return s_disp_meta[item].name;
+}
+
+// 供报警设置页使用: 取数据项的单位/颜色/量程(自然单位 + div: 原始值=自然值×div)
+const char *ui_disp_item_unit(uint8_t item)
+{
+    if (item >= DISP_ITEM_COUNT) item = 0;
+    return s_disp_meta[item].unit;
+}
+uint32_t ui_disp_item_color(uint8_t item)
+{
+    if (item >= DISP_ITEM_COUNT) item = 0;
+    return s_disp_meta[item].color;
+}
+void ui_disp_item_range(uint8_t item, int32_t *nmin, int32_t *nmax, int32_t *div)
+{
+    if (item >= DISP_ITEM_COUNT) item = 0;
+    const needle_scale_meta_t *ns = &s_needle_scale_meta[item];
+    if (nmin) *nmin = ns->nmin;
+    if (nmax) *nmax = ns->nmax;
+    if (div)  *div  = ns->div;
 }
 
 static uint8_t needle_active_source(void)
@@ -471,7 +499,7 @@ static void oil_pressure_trend_init(void)
     if (s_oil_pressure_trend_ready) return;
 
     for (uint32_t i = 0; i < OIL_PRESS_TREND_POINTS; ++i) {
-        s_oil_pressure_trend[i] = OIL_PRESS_TREND_INVALID;
+        s_oil_pressure_trend[i] = CHART_INVALID;
     }
 
     s_oil_pressure_trend_ready = true;
@@ -487,35 +515,61 @@ static void oil_pressure_trend_push(int16_t sample_x10)
     s_oil_pressure_trend[OIL_PRESS_TREND_POINTS - 1] = sample_x10;
 }
 
+// 通用曲线刷新: Y 量程 = s_chart_ymin..s_chart_ymax(由 ui_chart_apply_source 按数据项设),
+// 无效样本(CHART_INVALID)保持上一个有效值; 支持合法负值(如水温)。
 static void oil_pressure_chart_refresh(void)
 {
     if (!ui_ChartOilPressure || !ui_OilPressureChartSeries) return;
 
-    int16_t last_valid = 0;
+    int32_t last_valid = s_chart_ymin;
     bool has_last = false;
 
-    lv_chart_set_range(ui_ChartOilPressure, LV_CHART_AXIS_PRIMARY_Y, 0, OIL_PRESS_MAX_BAR_X10);
+    lv_chart_set_range(ui_ChartOilPressure, LV_CHART_AXIS_PRIMARY_Y, s_chart_ymin, s_chart_ymax);
 
     for (uint32_t i = 0; i < OIL_PRESS_TREND_POINTS; ++i) {
         int16_t sample = s_oil_pressure_trend[i];
-        int32_t pressure_x10;
+        int32_t v;
 
-        if (sample >= 0) {
+        if (sample != CHART_INVALID) {
             last_valid = sample;
             has_last = true;
         }
 
-        pressure_x10 = has_last ? last_valid : 0;
-        if (pressure_x10 < 0) pressure_x10 = 0;
-        if (pressure_x10 > OIL_PRESS_MAX_BAR_X10) pressure_x10 = OIL_PRESS_MAX_BAR_X10;
+        v = has_last ? last_valid : s_chart_ymin;
+        if (v < s_chart_ymin) v = s_chart_ymin;
+        if (v > s_chart_ymax) v = s_chart_ymax;
 
-        lv_chart_set_value_by_id(ui_ChartOilPressure,
-                                 ui_OilPressureChartSeries,
-                                 i,
-                                 pressure_x10);
+        lv_chart_set_value_by_id(ui_ChartOilPressure, ui_OilPressureChartSeries, i, v);
     }
 
     lv_chart_refresh(ui_ChartOilPressure);
+}
+
+// 按 chart_source_idx 应用曲线页的标题/圆点/单位/颜色/Y量程(数据源变化后调用)
+void ui_chart_apply_source(void)
+{
+    uint8_t src = nvs_cfg_get()->chart_source_idx;
+    if (src >= DISP_ITEM_COUNT) src = DISP_ITEM_OILP;
+    const disp_item_meta_t *m = &s_disp_meta[src];
+    const needle_scale_meta_t *ns = &s_needle_scale_meta[src];
+    s_chart_ymin = ns->nmin * ns->div;   // 原始值量程(与喂入曲线的原始值一致)
+    s_chart_ymax = ns->nmax * ns->div;
+    if (ui_LabelChartTitle) {
+        lv_label_set_text(ui_LabelChartTitle, m->name);
+        lv_obj_set_style_text_color(ui_LabelChartTitle, lv_color_hex(m->color), LV_PART_MAIN);
+    }
+    if (ui_ChartDot) lv_obj_set_style_bg_color(ui_ChartDot, lv_color_hex(m->color), LV_PART_MAIN);
+    if (ui_LabelChartUnit) lv_label_set_text(ui_LabelChartUnit, m->unit);
+    if (ui_ChartOilPressure) {
+        lv_obj_set_style_line_color(ui_ChartOilPressure, lv_color_hex(m->color), LV_PART_ITEMS);
+        // 折线实际用 series 自己的颜色(会覆盖 ITEMS 样式), 必须直接改 series 颜色才会变色
+        if (ui_OilPressureChartSeries) ui_OilPressureChartSeries->color = lv_color_hex(m->color);
+        lv_chart_set_range(ui_ChartOilPressure, LV_CHART_AXIS_PRIMARY_Y, s_chart_ymin, s_chart_ymax);
+        lv_chart_refresh(ui_ChartOilPressure);
+    }
+    // 重置趋势缓冲, 避免切换数据源后残留旧曲线
+    s_oil_pressure_trend_ready = false;
+    s_oil_pressure_trend_tick = 0;
 }
 
 void my_timerMain(lv_timer_t * timer)
@@ -634,33 +688,25 @@ void my_timerMain(lv_timer_t * timer)
         }
     }
 
-    /* 油压页面更新 */
+    /* 通用曲线页更新: 显示的数据项由 chart_source_idx 决定(合并了原油压/刹车温两页) */
     if (ui_LabelOilPressureText) {
-        int16_t display_oilp_x10 = -1;
-        lv_color_t oilp_color = lv_color_hex(0xFFFFFF);
-
+        disp_item_t citem = (disp_item_t)(user_cfg->chart_source_idx % DISP_ITEM_COUNT);
+        int32_t cval = 0;
+        bool cvalid;
         if (s_sweep_step > 0) {
             int step = s_sweep_step - 1;
             float r;
             if (step <= SWEEP_STEPS_UP) r = (float)step / (float)SWEEP_STEPS_UP;
             else r = (float)(SWEEP_TOTAL - step) / (float)SWEEP_STEPS_DOWN;
-            int16_t sw_oilp_x10 = (int16_t)(100.0f * r);
-            lv_label_set_text_fmt(ui_LabelOilPressureText, "%d.%d", (int)(sw_oilp_x10 / 10), (int)(sw_oilp_x10 % 10));
-            display_oilp_x10 = sw_oilp_x10;
+            cval = disp_item_sweep_value(citem, r);
+            cvalid = true;
         } else {
-            if (oilp_x10 >= 0) {
-                int16_t abs_val = (oilp_x10 < 0) ? (int16_t)(-oilp_x10) : oilp_x10;
-                lv_label_set_text_fmt(ui_LabelOilPressureText, "%d.%d", (int)(oilp_x10 / 10), (int)(abs_val % 10));
-                display_oilp_x10 = oilp_x10;
-            } else {
-                lv_label_set_text(ui_LabelOilPressureText, "--.-");
-            }
+            cvalid = disp_item_read_value(citem, clt, iat, oil, load_pct, tps, bat_mv,
+                                          oilp_x10, brake_x10, usRpm, ucSpeed, boost_x10, &cval);
         }
-
-        if (display_oilp_x10 >= oil_warn_x10 && display_oilp_x10 >= 0) {
-            oilp_color = lv_color_hex(0xFF4D4D);
-        }
-        lv_obj_set_style_text_color(ui_LabelOilPressureText, oilp_color, LV_PART_MAIN);
+        disp_item_set_text(ui_LabelOilPressureText, citem, cval, cvalid);
+        lv_obj_set_style_text_font(ui_LabelOilPressureText, &ui_font_FontTypoderSize36, LV_PART_MAIN); // 曲线页数值字号(加大)
+        disp_item_set_value_color(ui_LabelOilPressureText, citem, cval, cvalid, brake_warn_x10, oil_warn_x10);
 
         uint32_t now = lv_tick_get();
         if (s_oil_pressure_trend_tick == 0) {
@@ -668,10 +714,9 @@ void my_timerMain(lv_timer_t * timer)
             s_oil_pressure_trend_tick = now;
         }
         while ((now - s_oil_pressure_trend_tick) >= OIL_PRESS_TREND_SAMPLE_MS) {
-            oil_pressure_trend_push(display_oilp_x10);
+            oil_pressure_trend_push(cvalid ? (int16_t)cval : CHART_INVALID);
             s_oil_pressure_trend_tick += OIL_PRESS_TREND_SAMPLE_MS;
         }
-
         oil_pressure_chart_refresh();
     }
 
@@ -819,16 +864,15 @@ void my_timerMain(lv_timer_t * timer)
             const nvs_user_cfg_t *pg_cfg = nvs_cfg_get();
             lv_obj_t **target_scr = NULL;
             void (*target_init)(void) = NULL;
-            // 默认页: 0=Temp,1=Info,2=Brake,3=OilP,4=Needle,5=Gear,6=Rpm,7=Speed
+            // 默认页(合并刹车温后重新编号): 0=Temp,1=Info,2=Chart(曲线),3=Needle,4=Gear,5=Rpm,6=Speed
             switch(pg_cfg->default_page) {
                 case 0: target_scr = &ui_ScreenPageTemp;  target_init = ui_ScreenPageTemp_screen_init;  break;
                 case 1: target_scr = &ui_ScreenPageInfo;  target_init = ui_ScreenPageInfo_screen_init;  break;
-                case 2: target_scr = &ui_ScreenPageBrakeTemp; target_init = ui_ScreenPageBrakeTemp_screen_init;  break;
-                case 3: target_scr = &ui_ScreenPageOilPressure; target_init = ui_ScreenPageOilPressure_screen_init;  break;
-                case 4: target_scr = &ui_ScreenPageNeedle; target_init = ui_ScreenPageNeedle_screen_init;  break;
-                case 5: target_scr = &ui_ScreenPageGear;  target_init = ui_ScreenPageGear_screen_init;  break;
-                case 6: target_scr = &ui_ScreenPageRpm;   target_init = ui_ScreenPageRpm_screen_init;   break;
-                case 7: target_scr = &ui_ScreenPageSpeed; target_init = ui_ScreenPageSpeed_screen_init; break;
+                case 2: target_scr = &ui_ScreenPageOilPressure; target_init = ui_ScreenPageOilPressure_screen_init;  break; // 曲线页
+                case 3: target_scr = &ui_ScreenPageNeedle; target_init = ui_ScreenPageNeedle_screen_init;  break;
+                case 4: target_scr = &ui_ScreenPageGear;  target_init = ui_ScreenPageGear_screen_init;  break;
+                case 5: target_scr = &ui_ScreenPageRpm;   target_init = ui_ScreenPageRpm_screen_init;   break;
+                case 6: target_scr = &ui_ScreenPageSpeed; target_init = ui_ScreenPageSpeed_screen_init; break;
                 default: target_scr = &ui_ScreenPageTemp; target_init = ui_ScreenPageTemp_screen_init;  break;
             }
             if(*target_scr == NULL) target_init();
@@ -1008,13 +1052,42 @@ void ui_event_oil_pressure_background(lv_event_t * e)
             _ui_screen_change(&ui_ScreenPageNeedle, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageNeedle_screen_init);
         }
         else if(dir == LV_DIR_LEFT) {
+            // 刹车温页已并入曲线页, 左滑到环下一个可见页(版本页)
             lv_indev_wait_release(lv_indev_get_act());
-            _ui_screen_change(&ui_ScreenPageBrakeTemp, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageBrakeTemp_screen_init);
+            _ui_screen_change(&ui_ScreenPageEasterEgg, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageEasterEgg_screen_init);
         }
         else if(dir == LV_DIR_BOTTOM) {
+            // 下滑 → 曲线数据源选择页(删旧实例强制重建, 反映当前数据项/选择)
             lv_indev_wait_release(lv_indev_get_act());
-            _ui_screen_change(&ui_ScreenPageOilWarn, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageOilWarn_screen_init);
+            if (ui_ScreenPageChartConfig) { lv_obj_del(ui_ScreenPageChartConfig); ui_ScreenPageChartConfig = NULL; }
+            _ui_screen_change(&ui_ScreenPageChartConfig, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageChartConfig_screen_init);
         }
+        else if(dir == LV_DIR_TOP) {
+            // 上滑 → 报警阈值设置页(删旧实例强制重建, 按当前数据项)
+            lv_indev_wait_release(lv_indev_get_act());
+            if (ui_ScreenPageChartAlarm) { lv_obj_del(ui_ScreenPageChartAlarm); ui_ScreenPageChartAlarm = NULL; }
+            _ui_screen_change(&ui_ScreenPageChartAlarm, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageChartAlarm_screen_init);
+        }
+    }
+}
+
+// 曲线数据源选择页手势: 任意方向返回曲线页
+void ui_event_chart_config_background(lv_event_t * e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if(code == LV_EVENT_GESTURE){
+        lv_indev_wait_release(lv_indev_get_act());
+        _ui_screen_change(&ui_ScreenPageOilPressure, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageOilPressure_screen_init);
+    }
+}
+
+// 曲线报警设置页手势: 任意方向返回曲线页
+void ui_event_chart_alarm_background(lv_event_t * e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if(code == LV_EVENT_GESTURE){
+        lv_indev_wait_release(lv_indev_get_act());
+        _ui_screen_change(&ui_ScreenPageOilPressure, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageOilPressure_screen_init);
     }
 }
 
@@ -1111,8 +1184,9 @@ void ui_event_easter_egg_background(lv_event_t * e)
     if(event_code == LV_EVENT_GESTURE) {
         lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
         if(dir == LV_DIR_RIGHT) {
+            // 刹车温页已并入曲线页, 版本页右滑回到曲线页
             lv_indev_wait_release(lv_indev_get_act());
-            _ui_screen_change(&ui_ScreenPageBrakeTemp, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageBrakeTemp_screen_init);
+            _ui_screen_change(&ui_ScreenPageOilPressure, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageOilPressure_screen_init);
         }
         else if(dir == LV_DIR_LEFT) {
             lv_indev_wait_release(lv_indev_get_act());
@@ -1144,9 +1218,8 @@ void ui_init(void)
     ui_ScreenPageRpm_screen_init();
     ui_ScreenPageSpeed_screen_init();
     ui_ScreenPageTemp_screen_init();
-    ui_ScreenPageBrakeTemp_screen_init();
-    ui_ScreenPageOilPressure_screen_init();
-    ui_ScreenPageBrakeWarn_screen_init();
+    // 刹车温独立页已并入通用曲线页, 不再创建(其数据可在曲线页选择显示)
+    ui_ScreenPageOilPressure_screen_init();   // 通用曲线页(内部按 chart_source_idx 配置)
     ui_ScreenPageOilWarn_screen_init();
     ui_ScreenPageODBProtocal_screen_init();
     ui_ScreenPageNeedle_screen_init();
@@ -1156,6 +1229,10 @@ void ui_init(void)
     ui_ScreenPageInfoCustom = NULL;
     ui_ScreenPageNeedleConfig = NULL;   // 配置页懒加载
     ui_ScreenPageMultiGauge = NULL;     // 三连表设置页懒加载
+    ui_ScreenPageChartConfig = NULL;    // 曲线数据源选择页懒加载
+    ui_ScreenPageChartAlarm = NULL;     // 曲线报警设置页懒加载
+    ui_ScreenPageBrakeTemp = NULL;      // 刹车温页已并入曲线页, 不创建
+    ui_ScreenPageBrakeWarn = NULL;
     ui____initial_actions0 = lv_obj_create(NULL);
 
     // 预创建默认启动页：开机切换前就建好，避免在过渡那一刻才同步创建导致卡顿。
