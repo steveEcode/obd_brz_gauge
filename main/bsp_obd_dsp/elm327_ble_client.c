@@ -66,6 +66,7 @@ static oil_temp_query_mode_t s_oil_mode_priority[4] = {
 };  // 默认优先级，启动后从车型配置更新
 static uint32_t s_oil_mode_fail_count[8] = {0};  // 每个模式(poll idx 0~7)的连续失败次数
 #define OIL_MODE_FAIL_THRESHOLD 5  // 某模式失败次数达到此值后才切换到下一个
+#define OBD_POLL_SLOT_GAP_MS   30  // 轮询槽间空等(ms); 原100, 调小提高刷新率, 太小压垮克隆头
 static bool s_vehicle_profile_inited = false;
 
 // 油温诊断统计
@@ -680,7 +681,9 @@ static void obd_poll_task(void *arg) {
             tick_count = 0;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(100)); // 100ms per slot, IAT ~200ms refresh
+        // 槽间空等: 原为 100ms(纯空转, 加在"等响应"之上)。调小可显著提高刷新率,
+        // 仍轮询全部 PID → 不影响三连表主表广播。太小会压垮廉价克隆头, 30ms 为稳妥折中。
+        vTaskDelay(pdMS_TO_TICKS(OBD_POLL_SLOT_GAP_MS));
     }
 }
 

@@ -843,6 +843,27 @@ void my_timerMain(lv_timer_t * timer)
         }
     }
 
+    /* ---- 自适应刷新频率: 配置/静态页降频省重绘, 其余保持 200ms ----
+       仅调整本 UI 定时器周期(纯重绘节奏), 不影响任何 OBD/RS485/ESP-NOW 查询与广播。
+       数据是 OBD 限速的, 数据页刷更快无收益; 只对静态页降频, 纯赚 CPU/功耗。 */
+    if (timer) {
+        static uint32_t s_refresh_ms = 200;
+        uint32_t want_ms = 200;
+        if (s_sweep_step == 0) {   // 扫表动画期间固定 200ms, 保证动画时长一致
+            lv_obj_t *scr = lv_scr_act();
+            if (scr == ui_ScreenPageSettings || scr == ui_ScreenPageMultiGauge ||
+                scr == ui_ScreenPageEasterEgg || scr == ui_ScreenPageNeedleConfig ||
+                scr == ui_ScreenPageBLEScan || scr == ui_ScreenPageODBProtocal ||
+                scr == ui_ScreenPageTempCustom || scr == ui_ScreenPageInfoCustom ||
+                scr == ui_ScreenPageBrakeWarn || scr == ui_ScreenPageOilWarn) {
+                want_ms = 400;   // 设置/信息/配置/警告类静态页: 降频
+            }
+        }
+        if (want_ms != s_refresh_ms) {
+            s_refresh_ms = want_ms;
+            lv_timer_set_period(timer, want_ms);
+        }
+    }
 }
 ///////////////////// ANIMATIONS ////////////////////
 

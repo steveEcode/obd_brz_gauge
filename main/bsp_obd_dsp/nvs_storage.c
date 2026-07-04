@@ -174,9 +174,20 @@ static void stat_flush_task(void *arg){
     while(1){
         vTaskDelay(pdMS_TO_TICKS(STAT_FLUSH_PERIOD_MS));
         if(!s_stat_dirty) continue;
-        xSemaphoreTake(s_mux,portMAX_DELAY);
-        if(save_blob(NS_STAT,KEY_STAT,&s_stat,sizeof(s_stat))==ESP_OK) s_stat_dirty=false;
+        // 锁内只做快照 + 清脏标志(极短临界区); 真正耗时的 flash 写入放到锁外,
+        // 避免持锁跨越 NVS I/O 阻塞里程统计等写 s_stat 的任务。
+        nvs_stat_t snapshot;
+        xSemaphoreTake(s_mux, portMAX_DELAY);
+        snapshot = s_stat;
+        s_stat_dirty = false;   // 若写盘期间有新数据写入, 写方会再置脏, 下一轮再落盘(不丢更新)
         xSemaphoreGive(s_mux);
+
+        if (save_blob(NS_STAT, KEY_STAT, &snapshot, sizeof(snapshot)) != ESP_OK) {
+            // 写失败 → 重新标脏, 下一轮重试
+            xSemaphoreTake(s_mux, portMAX_DELAY);
+            s_stat_dirty = true;
+            xSemaphoreGive(s_mux);
+        }
     }
 }
 
