@@ -191,12 +191,15 @@ static uint16_t usSaveProtTimeCnt = 0; //OBD协议保存计时
 #define RPM_MAX 5000
 #define SPEED_MAX 160
 
-/* ---- Gauge sweep (刷表) animation ---- */
+/* ---- Gauge sweep (刷表) animation ----
+   新动画: 数字从最小递增到最大(约1秒), 到顶后立即结束→闪回初始值(无平滑回落段)。 */
 #define SWEEP_RPM_PEAK   8000   // 刷表最高转速
 #define SWEEP_SPEED_PEAK 999    // 刷表最高车速
-#define SWEEP_STEPS_UP   6      // 上升步数 (6×200ms = 1.2s)
-#define SWEEP_STEPS_DOWN 6      // 下降步数
-#define SWEEP_TOTAL      (SWEEP_STEPS_UP + SWEEP_STEPS_DOWN)
+#define SWEEP_TICK_MS    40     // 扫表期间刷新周期(高刷让数字平滑递增)
+#define SWEEP_STEPS_UP   25     // 25×40ms ≈ 1s 从最小递增到最大
+#define SWEEP_STEPS_HOLD 13     // 13×40ms ≈ 0.5s 在最大值保持
+#define SWEEP_STEPS_DOWN 6      // (已弃用: 无平滑下降段)
+#define SWEEP_TOTAL      (SWEEP_STEPS_UP + SWEEP_STEPS_HOLD)  // 递增1s + 保持0.5s, 到顶后闪回初始值
 #define BRAKE_TEMP_TREND_POINTS 30
 #define BRAKE_TEMP_TREND_SAMPLE_MS 1000
 #define BRAKE_TEMP_TREND_INVALID (-1000)
@@ -617,9 +620,9 @@ void my_timerMain(lv_timer_t * timer)
         int step = s_sweep_step;
         float ratio;
         if(step <= SWEEP_STEPS_UP) {
-            ratio = (float)step / (float)SWEEP_STEPS_UP;    // 0→1
+            ratio = (float)step / (float)SWEEP_STEPS_UP;    // 0→1 递增
         } else {
-            ratio = (float)(SWEEP_TOTAL - step) / (float)SWEEP_STEPS_DOWN; // 1→0
+            ratio = 1.0f;   // 保持最大值(hold 阶段)
         }
         sweep_ratio = ratio;
         usRpm   = (uint16_t)(SWEEP_RPM_PEAK * ratio);
@@ -659,7 +662,7 @@ void my_timerMain(lv_timer_t * timer)
             int step = s_sweep_step - 1; // already incremented
             float r;
             if(step <= SWEEP_STEPS_UP) r = (float)step / (float)SWEEP_STEPS_UP;
-            else r = (float)(SWEEP_TOTAL - step) / (float)SWEEP_STEPS_DOWN;
+            else r = 1.0f;   // 保持最大值(hold 阶段)
 
             for (int i = 0; i < 3; ++i) {
                 disp_item_t item = (disp_item_t)(user_cfg->temp_display_map[i] % DISP_ITEM_COUNT);
@@ -697,7 +700,7 @@ void my_timerMain(lv_timer_t * timer)
             int step = s_sweep_step - 1;
             float r;
             if (step <= SWEEP_STEPS_UP) r = (float)step / (float)SWEEP_STEPS_UP;
-            else r = (float)(SWEEP_TOTAL - step) / (float)SWEEP_STEPS_DOWN;
+            else r = 1.0f;   // 保持最大值(hold 阶段)
             cval = disp_item_sweep_value(citem, r);
             cvalid = true;
         } else {
@@ -732,7 +735,7 @@ void my_timerMain(lv_timer_t * timer)
             int step = s_sweep_step - 1;
             float r;
             if (step <= SWEEP_STEPS_UP) r = (float)step / (float)SWEEP_STEPS_UP;
-            else r = (float)(SWEEP_TOTAL - step) / (float)SWEEP_STEPS_DOWN;
+            else r = 1.0f;   // 保持最大值(hold 阶段)
             int16_t sw_brake_x10 = (int16_t)(600.0f * r); // 0.0 -> 60.0 -> 0.0
             int16_t abs_val = (sw_brake_x10 < 0) ? (int16_t)(-sw_brake_x10) : sw_brake_x10;
             lv_label_set_text_fmt(ui_LabelBrakeTempText, "%d.%d", (int)(sw_brake_x10 / 10), (int)(abs_val % 10));
@@ -781,7 +784,7 @@ void my_timerMain(lv_timer_t * timer)
             int step = s_sweep_step - 1; // already incremented above
             float r;
             if (step <= SWEEP_STEPS_UP) r = (float)step / (float)SWEEP_STEPS_UP;
-            else r = (float)(SWEEP_TOTAL - step) / (float)SWEEP_STEPS_DOWN;
+            else r = 1.0f;   // 保持最大值(hold 阶段)
 
             for (int i = 0; i < 5; ++i) {
                 disp_item_t item = (disp_item_t)(user_cfg->info_display_map[i] % DISP_ITEM_COUNT);
@@ -895,8 +898,11 @@ void my_timerMain(lv_timer_t * timer)
        数据是 OBD 限速的, 数据页刷更快无收益; 只对静态页降频, 纯赚 CPU/功耗。 */
     if (timer) {
         static uint32_t s_refresh_ms = 200;
-        uint32_t want_ms = 200;
-        if (s_sweep_step == 0) {   // 扫表动画期间固定 200ms, 保证动画时长一致
+        uint32_t want_ms;
+        if (s_sweep_step > 0) {
+            want_ms = SWEEP_TICK_MS;   // 扫表动画期间高刷, 让数字平滑递增
+        } else {
+            want_ms = 200;
             lv_obj_t *scr = lv_scr_act();
             if (scr == ui_ScreenPageSettings || scr == ui_ScreenPageMultiGauge ||
                 scr == ui_ScreenPageEasterEgg || scr == ui_ScreenPageNeedleConfig ||
