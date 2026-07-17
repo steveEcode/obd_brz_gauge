@@ -1,0 +1,6 @@
+[submodule "simulator/third_party/lvgl"]
+	path = simulator/third_party/lvgl
+	url = https://github.com/lvgl/lvgl.git
+[submodule "simulator/third_party/lv_drivers"]
+	path = simulator/third_party/lv_drivers
+	url = https://github.com/lvgl/lv_drivers.git
