@@ -11,6 +11,7 @@
 #include "mock_ecu.h"
 #include "vehicle_state.h"
 #include "keyboard.h"
+#include "simulator_role.h"
 
 #define SIM_WIDTH  360
 #define SIM_HEIGHT 360
@@ -47,8 +48,32 @@ static void create_round_preview(void)
     lv_obj_align(subtitle, LV_ALIGN_CENTER, 0, 18);
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    simulator_role_t simulator_role;
+
+    if (
+        simulator_role_parse(
+            argc,
+            argv,
+            &simulator_role
+        ) != 0
+    ) {
+        fprintf(
+            stderr,
+            "Usage: %s "
+            "[--role master|slave-left|slave-right]\n",
+            argv[0]
+        );
+
+        return 2;
+    }
+
+    printf(
+        "Simulator role: %s\n",
+        simulator_role_name(simulator_role)
+    );
+
     lv_init();
     simulator_keyboard_init();
     sdl_init();

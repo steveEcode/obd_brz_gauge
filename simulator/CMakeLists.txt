@@ -59,6 +59,7 @@ add_executable(BRZGaugeSimulator
     src/main.c
     ../platform/simulator/mock_ecu.c
     ../platform/simulator/keyboard.c
+    ../platform/simulator/simulator_role.c
 )
 
 target_include_directories(BRZGaugeSimulator PRIVATE
