@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <stdint.h>
 #include <unistd.h>
 
@@ -7,8 +8,13 @@
 #include "lv_drv_conf.h"
 #include "sdl/sdl.h"
 
+#include "mock_ecu.h"
+#include "vehicle_state.h"
+#include "keyboard.h"
+
 #define SIM_WIDTH  360
 #define SIM_HEIGHT 360
+
 
 static void create_round_preview(void)
 {
@@ -44,6 +50,7 @@ static void create_round_preview(void)
 int main(void)
 {
     lv_init();
+    simulator_keyboard_init();
     sdl_init();
 
     static lv_disp_draw_buf_t draw_buffer;
@@ -71,7 +78,8 @@ int main(void)
     lv_indev_drv_register(&pointer_driver);
 
     create_round_preview();
-
+    mock_ecu_init();
+    
     uint32_t previous_ms = SDL_GetTicks();
 
     while (1) {
@@ -83,6 +91,56 @@ int main(void)
             lv_tick_inc(elapsed_ms);
         }
 
+        simulator_keyboard_update();
+
+        const simulator_keyboard_state_t *keyboard =
+            simulator_keyboard_get_state();
+
+        mock_ecu_set_throttle(
+            keyboard->throttle_pressed ? 100.0f : 0.0f
+        );
+
+        mock_ecu_set_brake(
+            keyboard->brake_pressed
+        );
+
+        float steering = 0.0f;
+
+        if (keyboard->steer_left_pressed) {
+            steering -= 1.0f;
+        }
+
+        if (keyboard->steer_right_pressed) {
+            steering += 1.0f;
+        }
+
+        mock_ecu_set_steering(steering);
+
+        mock_ecu_set_traffic_mode(
+            keyboard->traffic_mode_enabled
+        );
+
+        if (keyboard->quit_requested) {
+            break;
+        }
+
+        mock_ecu_update(elapsed_ms);
+
+        const vehicle_state_t *vehicle = mock_ecu_get_state();
+        const float speed_mph = vehicle->speed_kph * 0.621371f;
+
+        printf(
+            "RPM: %6.0f  Speed: %6.1f mph  Coolant: %5.1f C  "
+            "Gear: %d  Lat G: %+5.2f  Traffic: %s\r",
+            vehicle->rpm,
+            speed_mph,
+            vehicle->coolant_temp_c,
+            (int) vehicle->gear,
+            vehicle->lateral_g,
+            keyboard->traffic_mode_enabled ? "ON " : "OFF"
+        );
+
+        fflush(stdout);
         lv_timer_handler();
         usleep(5000);
     }

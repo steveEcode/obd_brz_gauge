@@ -57,12 +57,16 @@ target_link_libraries(lv_drivers PUBLIC
 
 add_executable(BRZGaugeSimulator
     src/main.c
+    ../platform/simulator/mock_ecu.c
+    ../platform/simulator/keyboard.c
 )
 
 target_include_directories(BRZGaugeSimulator PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lvgl
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lv_drivers
+    ${CMAKE_CURRENT_SOURCE_DIR}/../common/model
+    ${CMAKE_CURRENT_SOURCE_DIR}/../platform/simulator
 )
 
 target_compile_definitions(BRZGaugeSimulator PRIVATE
