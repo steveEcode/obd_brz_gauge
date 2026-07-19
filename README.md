@@ -92,6 +92,7 @@ An ELM327 BLE adapter accepts only one client, so multiple gauges cannot each co
 - 中文说明：[docs/README.zh-CN.md](docs/README.zh-CN.md)
 - English documentation: [docs/README.en.md](docs/README.en.md)
 - 发布结构说明：[docs/PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md)
+- 桌面三联表模拟器：[docs/DESKTOP_SIMULATOR.md](docs/DESKTOP_SIMULATOR.md)
 
 ## Notes
 
