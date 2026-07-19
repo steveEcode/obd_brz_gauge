@@ -14,7 +14,7 @@ static void on_brake_warn_slider_change(lv_event_t *e)
     if (val > 1200) val = 1200;
 
     lv_slider_set_value(s_slider_brake_warn, val, LV_ANIM_OFF);
-    lv_label_set_text_fmt(s_label_brake_warn_val, "%ldC", val);
+    lv_label_set_text_fmt(s_label_brake_warn_val, "%dC", (int)val);
 
     nvs_user_cfg_t cfg = *nvs_cfg_get();
     cfg.brake_temp_warn_c = (uint16_t)val;

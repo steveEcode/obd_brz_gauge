@@ -49,7 +49,7 @@ static void create_row(lv_obj_t *parent, int idx, const char *title, lv_coord_t 
     lv_obj_set_style_bg_color(s_info_rollers[idx], lv_color_hex(0xFFFFFF), LV_PART_SELECTED);
     lv_obj_set_style_text_color(s_info_rollers[idx], lv_color_hex(0x000000), LV_PART_SELECTED);
     lv_obj_align(s_info_rollers[idx], LV_ALIGN_CENTER, 30, y);
-    lv_obj_add_event_cb(s_info_rollers[idx], on_info_map_changed, LV_EVENT_VALUE_CHANGED, (void *)idx);
+    lv_obj_add_event_cb(s_info_rollers[idx], on_info_map_changed, LV_EVENT_VALUE_CHANGED, (void *)(uintptr_t)idx);
 }
 
 void ui_ScreenPageInfoCustom_screen_init(void)

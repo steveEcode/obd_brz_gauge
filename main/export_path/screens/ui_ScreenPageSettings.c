@@ -31,7 +31,7 @@ static void on_bright_slider_change(lv_event_t *e)
 {
     int32_t val = lv_slider_get_value(s_slider_bright);
     if(val < 10) val = 10;
-    lv_label_set_text_fmt(s_label_bright_val, "%ld%%", val);
+    lv_label_set_text_fmt(s_label_bright_val, "%d%%", (int)val);
     nvs_user_cfg_t cfg = *nvs_cfg_get();
     cfg.brightness_day = (uint8_t)val;
     nvs_cfg_set(&cfg);

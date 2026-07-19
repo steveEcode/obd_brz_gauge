@@ -2,6 +2,7 @@
 // 一主多从, 广播(1对多), 与 BLE 共存(主表)。步骤1: 广播+无MAC过滤(同车单主表场景足够)。
 
 #include "espnow_link.h"
+#include "espnow_protocol.h"
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -22,9 +23,6 @@ extern void ui_sweep_set_step(int step);
 #define TAG "espnow_link"
 
 #define ESPNOW_CHANNEL          1       // 主从必须同信道(STA 不连AP时固定在此)
-#define ESPNOW_MAGIC            0x4F42  // 'OB' 包头校验
-#define ESPNOW_VER              3       // v3: 追加主表名字 name[]
-#define MASTER_NAME_LEN         12
 static const char MASTER_NAME[] = "SkyGauge";   // 主表广播的名字(从表显示用); 后续可做成可配置
 #define BROADCAST_INTERVAL_MS   100     // 主表广播周期(10Hz, 仪表足够)
 
@@ -32,28 +30,9 @@ static const uint8_t s_broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 static volatile int64_t s_last_rx_us = 0;
 static uint32_t s_tx_seq = 0;
 
-// 广播包: 镜像 obd_data_cache 的可用字段(packed, 主从一致)。
-typedef struct __attribute__((packed)) {
-    uint16_t magic;
-    uint8_t  version;
-    uint8_t  flags;             // bit0: 主表已连上 ELM327
-    uint32_t seq;               // 递增序号(丢包诊断)
-    uint16_t rpm;
-    uint8_t  speed;
-    uint8_t  sweep_step;        // 主表当前扫表进度(0=无), 从表跟随实现同步扫表
-    int16_t  coolant_temp;
-    int16_t  intake_temp;
-    int16_t  oil_temp;
-    int16_t  oil_pressure_x10;
-    int16_t  boost_x10;
-    int16_t  brake_temp_x10;
-    int16_t  load_pct;
-    int16_t  tps;
-    int32_t  bat_mv;
-    char     name[MASTER_NAME_LEN];  // 主表名字(从表信息页显示 "SLAVE: <name>")
-} espnow_obd_packet_t;
+/* 广播包结构由 espnow_protocol.h 统一定义。 */
 
-static char s_master_name[MASTER_NAME_LEN] = {0};  // 从表侧: 最近收到的主表名字
+static char s_master_name[ESPNOW_MASTER_NAME_LEN] = {0};  // 从表侧: 最近收到的主表名字
 
 // ---- WiFi + ESP-NOW 底层初始化(主从共用) ----
 static void wifi_espnow_init(void) {
@@ -73,8 +52,8 @@ static void wifi_espnow_init(void) {
 
 // ========================= 主表 =========================
 static void master_pack(espnow_obd_packet_t *p) {
-    p->magic   = ESPNOW_MAGIC;
-    p->version = ESPNOW_VER;
+    p->magic   = ESPNOW_PROTOCOL_MAGIC;
+    p->version = ESPNOW_PROTOCOL_VERSION;
     p->flags   = elm327_ble_is_connected() ? 0x01 : 0x00;
     p->seq     = ++s_tx_seq;
     p->rpm              = obd_data_get_rpm();
@@ -89,7 +68,7 @@ static void master_pack(espnow_obd_packet_t *p) {
     p->load_pct         = obd_data_get_load_pct();
     p->tps              = obd_data_get_tps();
     p->bat_mv           = obd_data_get_bat_mv();
-    strncpy(p->name, MASTER_NAME, MASTER_NAME_LEN);   // 广播主表名字
+    strncpy(p->name, MASTER_NAME, ESPNOW_MASTER_NAME_LEN);   // 广播主表名字
 }
 
 static void master_task(void *arg) {
@@ -137,14 +116,14 @@ static void apply_packet(const espnow_obd_packet_t *p) {
     obd_data_set_tps(p->tps);
     obd_data_set_bat_mv(p->bat_mv);
     ui_sweep_set_step(p->sweep_step);   // 跟随主表扫表进度, 实现三连表同步扫表
-    memcpy(s_master_name, p->name, MASTER_NAME_LEN);
-    s_master_name[MASTER_NAME_LEN - 1] = '\0';   // 记录主表名字(信息页显示)
+    memcpy(s_master_name, p->name, ESPNOW_MASTER_NAME_LEN);
+    s_master_name[ESPNOW_MASTER_NAME_LEN - 1] = '\0';   // 记录主表名字(信息页显示)
 }
 
 static void handle_rx(const uint8_t *data, int len) {
     if (len != (int)sizeof(espnow_obd_packet_t)) return;
     const espnow_obd_packet_t *p = (const espnow_obd_packet_t *)data;
-    if (p->magic != ESPNOW_MAGIC || p->version != ESPNOW_VER) return;
+    if (p->magic != ESPNOW_PROTOCOL_MAGIC || p->version != ESPNOW_PROTOCOL_VERSION) return;
     s_last_rx_us = esp_timer_get_time();
     apply_packet(p);
     static uint32_t rx_n = 0;

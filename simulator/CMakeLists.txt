@@ -60,6 +60,8 @@ add_executable(BRZGaugeSimulator
     ../platform/simulator/mock_ecu.c
     ../platform/simulator/keyboard.c
     ../platform/simulator/simulator_role.c
+    ../platform/simulator/simulator_role_runtime.c
+    ../platform/simulator/simulator_bus.c
 )
 
 target_include_directories(BRZGaugeSimulator PRIVATE
@@ -84,3 +86,7 @@ target_link_libraries(BRZGaugeSimulator PRIVATE
     m
     pthread
 )
+
+# Optional compile probe for the original GitHub UI.
+# Disabled during normal simulator builds.
+include(cmake/github_ui_probe.cmake)

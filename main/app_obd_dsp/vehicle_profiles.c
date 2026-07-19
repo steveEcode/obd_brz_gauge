@@ -206,7 +206,7 @@ void vehicle_profile_set_active(uint8_t index)
 float vehicle_profile_calc_constant(const vehicle_profile_t *p)
 {
     if (!p) return 0;
-    float denom = p->final_drive_ratio * 0.377f * p->tire_rolling_radius_m;
+    float denom = 0.377f * p->tire_rolling_radius_m;
     if (denom == 0) return 0;
     return 1.0f / denom;
 }

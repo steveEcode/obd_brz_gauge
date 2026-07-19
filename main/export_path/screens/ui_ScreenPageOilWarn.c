@@ -15,7 +15,12 @@ static void on_oil_warn_slider_change(lv_event_t *e)
     if (val > 100) val = 100;
 
     lv_slider_set_value(s_slider_oil_warn, val, LV_ANIM_OFF);
-    lv_label_set_text_fmt(s_label_oil_warn_val, "%ld.%ldbar", val / 10, val % 10);
+    lv_label_set_text_fmt(
+        s_label_oil_warn_val,
+        "%d.%dbar",
+        (int)(val / 10),
+        (int)(val % 10)
+    );
 
     nvs_user_cfg_t cfg = *nvs_cfg_get();
     cfg.oil_pressure_warn_x10 = (uint16_t)val;

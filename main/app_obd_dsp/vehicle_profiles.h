@@ -71,7 +71,7 @@ const vehicle_profile_t *vehicle_profile_get_active(void);
 // 设置激活的车辆配置 (同时保存到 NVS)
 void vehicle_profile_set_active(uint8_t index);
 
-// 计算速度常数: 1 / (final_drive * 0.377 * tire_radius)
+// 计算总传动比常数: 1 / (0.377 * tire_radius)
 float vehicle_profile_calc_constant(const vehicle_profile_t *p);
 
 // 根据当前激活的车辆配置生成档位范围数组
