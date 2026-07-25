@@ -8,6 +8,7 @@
 #include <string.h>
 #include "export_path/ui.h"
 #include "app_obd_dsp/vehicle_profiles.h"
+#include "espnow_link.h"   // ESPNOW_ROLE_* (device_role 默认/边界)
 
 #define TAG                   "nvs_storage"
 #define NS_CFG                "cfg"
@@ -16,6 +17,7 @@
 #define KEY_STAT              "runtime"
 #define KEY_CHART_ALARM       "chartalarm"
 #define CHART_ALARM_N         11   // = DISP_ITEM_COUNT (需与 ui.c disp_item_t 同步)
+#define KEY_MG_EXTRA          "mgextra"   // 三连表开机动画设置
 #define STAT_FLUSH_PERIOD_MS  30000 //30s 落盘
 
 static nvs_user_cfg_t s_cfg =   { 
@@ -28,6 +30,9 @@ static nvs_user_cfg_t s_cfg =   {
                         .info_display_map = {0, 2, 3, 4, 1}, // CLT, OIL, LOAD, TPS, IAT
                         .brake_temp_warn_c = 600,
                         .oil_pressure_warn_x10 = 80,
+                        .device_role = ESPNOW_ROLE_STANDALONE, // 新设备(NVS无cfg)默认单机, 不启WiFi/ESP-NOW; 老设备被load_blob覆盖回原值
+                        .rpm_warn_threshold = 6000,
+                        .rpm_warn_anim_en = 0,
                     };
 static nvs_stat_t     s_stat = {0};
 static bool           s_stat_dirty = false;
@@ -38,6 +43,12 @@ static SemaphoreHandle_t s_mux;
 static int16_t s_chart_alarm[CHART_ALARM_N] = {
     32767, 32767, 32767, 32767, 32767, 32767, 32767, 32767, 80, 6000, 32767
 };
+
+// 三连表开机动画设置(独立 blob): 默认 关闭, 位置 1
+static struct __attribute__((packed)) {
+    uint8_t intro_enable;   // 0/1
+    uint8_t device_position; // 1/2/3
+} s_mg = { 0, 1 };
 
 /* 前向声明 */
 static esp_err_t load_blob(const char *ns,const char *key,void *out,size_t len);
@@ -63,12 +74,21 @@ esp_err_t nvs_storage_init(void)
             nvs_close(h);
         }
     }
+    {   // 三连表开机动画设置: 同上, 有则加载否则保持默认
+        nvs_handle_t h; size_t sz = sizeof(s_mg);
+        if (nvs_open(NS_CFG, NVS_READONLY, &h) == ESP_OK) {
+            nvs_get_blob(h, KEY_MG_EXTRA, &s_mg, &sz);
+            nvs_close(h);
+        }
+        if (s_mg.device_position < 1 || s_mg.device_position > 3) s_mg.device_position = 1;
+        if (s_mg.intro_enable > 1) s_mg.intro_enable = 0;
+    }
 
     /* 新增字段默认值修复 (旧NVS数据中rsv[x]全为0) */
     if(s_cfg.brightness_day == 0) s_cfg.brightness_day = 100;
     if(s_cfg.default_page > 6) s_cfg.default_page = 0; // 0=Temp,1=Info,2=Chart,3=Needle,4=Gear,5=Rpm,6=Speed(刹车温已并入Chart)
     if(s_cfg.needle_source_idx >= 10) s_cfg.needle_source_idx = 0; // DISP_ITEM_COUNT=10
-    if(s_cfg.device_role > 1) s_cfg.device_role = 0; // 三连表角色: 0=主 1=从, 越界归零到主表
+    if(s_cfg.device_role > 2) s_cfg.device_role = ESPNOW_ROLE_STANDALONE; // 角色: 0=主 1=从 2=单机, 越界归单机
     if(s_cfg.chart_source_idx >= 11) s_cfg.chart_source_idx = 8; // 曲线数据项越界→默认 OILP(旧NVS该字节为0=CLT亦可, 这里统一到OILP)
     // 车型索引按已注册的 profile 数量限界（越界归零到 ZC6）
     uint8_t vehicle_count = 0;
@@ -113,6 +133,22 @@ void nvs_chart_alarm_set(uint8_t item, int16_t raw_threshold){
     if(s_chart_alarm[item] == raw_threshold) return;
     s_chart_alarm[item] = raw_threshold;
     save_blob(NS_CFG, KEY_CHART_ALARM, s_chart_alarm, sizeof(s_chart_alarm));
+}
+
+/* 三连表开机动画设置 */
+uint8_t nvs_intro_enable_get(void){ return s_mg.intro_enable; }
+void nvs_intro_enable_set(uint8_t en){
+    en = en ? 1 : 0;
+    if(s_mg.intro_enable == en) return;
+    s_mg.intro_enable = en;
+    save_blob(NS_CFG, KEY_MG_EXTRA, &s_mg, sizeof(s_mg));
+}
+uint8_t nvs_device_position_get(void){ return s_mg.device_position; }
+void nvs_device_position_set(uint8_t pos){
+    if(pos < 1 || pos > 3) return;
+    if(s_mg.device_position == pos) return;
+    s_mg.device_position = pos;
+    save_blob(NS_CFG, KEY_MG_EXTRA, &s_mg, sizeof(s_mg));
 }
 
 /* 统计 */
@@ -221,11 +257,26 @@ static void stat_flush_task(void *arg){
 /* 工具函数 */
 static esp_err_t load_blob(const char *ns,const char *key,void *out,size_t len)
 {
-    nvs_handle_t h; size_t size=len; esp_err_t err;
+    nvs_handle_t h; esp_err_t err;
     if(nvs_open(ns,NVS_READONLY,&h)==ESP_OK){
-        err=nvs_get_blob(h,key,out,&size);
+        // 先查实际存储长度
+        size_t stored_len = 0;
+        err = nvs_get_blob(h, key, NULL, &stored_len);
+        if(err == ESP_OK && stored_len > 0){
+            size_t copy_len = (stored_len < len) ? stored_len : len;
+            // 部分加载: 旧数据拷贝能拷的, 新字段保持静态默认值
+            err = nvs_get_blob(h, key, out, &copy_len);
+            nvs_close(h);
+            if(err == ESP_OK){
+                if(stored_len < len){
+                    // struct 变大了, 用新大小重写一次 NVS(保留已加载的旧字段+默认新字段)
+                    save_blob(ns, key, out, len);
+                }
+                return ESP_OK;
+            }
+            return err;
+        }
         nvs_close(h);
-        if(err==ESP_OK && size==len) return ESP_OK;
     }
     memset(out,0,len);
     return save_blob(ns,key,out,len);

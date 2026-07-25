@@ -111,14 +111,8 @@ static void oil_pressure_task(void *arg)
             int16_t pressure_x10 = mv_to_oil_pressure_x10(mv);
             obd_data_set_oil_pressure_x10(pressure_x10);
 
-            // 诊断模式：每 10 次输出一次原始电压和最终压力值
-            if ((log_count++ % 10) == 0) {
-                ESP_LOGI(TAG, "[OIL] AIN0=%ldmV => pressure_x10=%d (%.1fbar) [range: %d-%dmV -> 0.0-10.0bar]",
-                         (long)mv, pressure_x10, (float)pressure_x10 / 10.0f,
-                         OIL_PRESS_ADC_MIN_MV, OIL_PRESS_ADC_MAX_MV);
-            }
+            (void)log_count;
         } else {
-            ESP_LOGW(TAG, "[OIL] ADS1115 read failed: %s (addr=0x48)", esp_err_to_name(err));
             obd_data_set_oil_pressure_x10(-1);
         }
 
@@ -134,12 +128,6 @@ void oil_pressure_start(void)
 
     s_started = true;
     xTaskCreate(oil_pressure_task, "oil_press", 3072, NULL, 4, NULL);
-    ESP_LOGI(TAG, "=== ADS1115 Oil Pressure Init ===");
-    ESP_LOGI(TAG, "I2C Addr: 0x%02X | Channel: AIN0", ADS1115_ADDR);
-    ESP_LOGI(TAG, "Voltage Range: %dmV ~ %dmV", OIL_PRESS_ADC_MIN_MV, OIL_PRESS_ADC_MAX_MV);
-    ESP_LOGI(TAG, "Pressure Range: 0.0 ~ 10.0 bar");
-    ESP_LOGI(TAG, "Poll Interval: %dms", OIL_PRESS_POLL_MS);
-    ESP_LOGI(TAG, "Task started. Check [OIL] logs for readings.");
 }
 
 void ads1115_oil_pressure_start(void)

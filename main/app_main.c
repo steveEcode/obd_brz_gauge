@@ -58,7 +58,7 @@ SemaphoreHandle_t lvgl_mux = NULL; // non-static: used by BLE scan page
 #define LVGL_TICK_PERIOD_MS         2
 #define LVGL_TASK_MAX_DELAY_MS      500
 #define LVGL_TASK_MIN_DELAY_MS      2
-#define LVGL_TASK_STACK_SIZE        (4 * 1024)
+#define LVGL_TASK_STACK_SIZE        (8 * 1024)
 #define LVGL_TASK_PRIORITY          4   // 提高(原2): 动画时不易被 BLE/OBD(优先级4) 抢占而掉帧
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -254,7 +254,11 @@ void app_main(void)
     /* 6. 启动 LVGL 任务 */
     lvgl_mux = xSemaphoreCreateMutex();
     assert(lvgl_mux);
-    xTaskCreate(lvgl_port_task, "LVGL", LVGL_TASK_STACK_SIZE, NULL, LVGL_TASK_PRIORITY, NULL);
+    static TaskHandle_t s_lvgl_task_handle = NULL;
+    xTaskCreate(lvgl_port_task, "LVGL", LVGL_TASK_STACK_SIZE, NULL, LVGL_TASK_PRIORITY, &s_lvgl_task_handle);
+    // 暴露给 ui.c 用于闪烁期间临时提优先级
+    extern TaskHandle_t g_lvgl_task_handle;
+    g_lvgl_task_handle = s_lvgl_task_handle;
 
     /* 7. 启动 UI */
     ESP_LOGI(TAG, "Start UI");
@@ -274,21 +278,27 @@ void app_main(void)
         ESP_LOGI(TAG, "Device role: SLAVE (ESP-NOW receiver, no BLE/OBD)");
         espnow_link_start_slave();
     } else {
-        /* ---- 主表: 原有 BLE OBD 全链路 + ESP-NOW 广播 ---- */
-        ESP_LOGI(TAG, "Device role: MASTER (BLE/OBD + ESP-NOW broadcast)");
+        /* ---- 主表 / 单机: 都是 BLE OBD 全链路; 区别仅 ESP-NOW(=WiFi)是否启动 ----
+           STANDALONE: 不启 WiFi/ESP-NOW, 现有(已选主/从)设备不受影响。 */
+        bool espnow_on = (dev_role == ESPNOW_ROLE_MASTER);
+        ESP_LOGI(TAG, "Device role: %s (BLE/OBD%s)",
+                 espnow_on ? "MASTER" : "STANDALONE",
+                 espnow_on ? " + ESP-NOW broadcast" : ", no WiFi/ESP-NOW");
 
-        /* 8.1 启动 BLE OBD - 优先使用 NVS 中保存的设备名 */
+        /* 8.1 启动 BLE OBD - 仅 NVS 有保存设备名时自动连; 否则等用户在扫描页手动选 */
         const nvs_user_cfg_t *user_cfg = nvs_cfg_get();
-        const char *ble_name = (user_cfg->ble_device_name[0] != '\0')
-                                ? user_cfg->ble_device_name
-                                : "OBDII";
-        ESP_LOGI(TAG, "BLE target device: %s", ble_name);
-        elm327_ble_start_default(ble_name);
+        if (user_cfg->ble_device_name[0] != '\0') {
+            ESP_LOGI(TAG, "BLE target device: %s", user_cfg->ble_device_name);
+            elm327_ble_start_default(user_cfg->ble_device_name);
+        } else {
+            ESP_LOGI(TAG, "No saved BLE device, waiting for user selection");
+        }
 
-        /* 8.5 启动 RaceChrono BLE DIY 服务（同一 BT 栈下并行，向手机输出传感器数据）
-            延迟 500ms 让 OBD 初始扫描稳定后再启动，避免 GAP 状态混乱 */
-        vTaskDelay(pdMS_TO_TICKS(500));
-        racechrono_ble_diy_start();
+        /* 8.5 启动 RaceChrono BLE DIY 服务（仅 BT 栈已初始化时） */
+        if (user_cfg->ble_device_name[0] != '\0') {
+            vTaskDelay(pdMS_TO_TICKS(500));
+            racechrono_ble_diy_start();
+        }
 
         /* 9. 启动 RS485 刹车温度采集 */
         rs485_brake_temp_start();
@@ -296,8 +306,11 @@ void app_main(void)
         /* 9.5 启动油压采集（ESP32 ADC 直连） */
         oil_pressure_start();
 
-        /* 9.8 启动 ESP-NOW 广播(把本机 OBD 数据缓存发给从表) */
-        espnow_link_start_master();
+        /* 9.8 启动 ESP-NOW 广播(把本机 OBD 数据缓存发给从表) —— 仅 MASTER;
+               STANDALONE 跳过, 全程不初始化 WiFi(省射频/功耗, 且不干扰 BLE)。 */
+        if (espnow_on) {
+            espnow_link_start_master();
+        }
 
         /* 10. 里程统计任务(仅主表统计, 避免从表重复计) */
         vMileageDataStatisticTask();

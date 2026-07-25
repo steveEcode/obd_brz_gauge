@@ -24,17 +24,53 @@ static volatile int16_t  s_boost_x10 = -32768; // 涡轮表压, 0.1bar(可为负
 static volatile brake_rs485_status_t s_brake_rs485_status = BRAKE_RS485_IDLE;
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 
+#define RPM_SMOOTH_TIME_MS   100   // 转速时间常数 (ms); CAN 100Hz 下 ~300ms 达 95%
+#define SPEED_SMOOTH_TIME_MS 1000  // 速度缓升缓降时间常数 (ms)
+#define FALL_TO_ZERO_MS      500   // 归零缓降时间常数 (ms)
+
+// 平滑状态(在 setter 侧推进, getter 只读, 不受调用者数量影响)
+static volatile uint16_t s_rpm_smooth = 0;
+static volatile uint8_t  s_speed_smooth = 0;
+static TickType_t s_rpm_last_tick = 0;
+static TickType_t s_speed_last_tick = 0;
+static float s_rpm_smooth_f = 0.f;
+static float s_speed_smooth_f = 0.f;
+
 void obd_data_set_rpm(uint16_t rpm)
 {
+    TickType_t now_tick = xTaskGetTickCount();
+    uint32_t dt_ms = (now_tick - s_rpm_last_tick) * portTICK_PERIOD_MS;
+    if (dt_ms > 1000) dt_ms = 1000;
+    s_rpm_last_tick = now_tick;
+
+    uint32_t tc = (rpm == 0) ? FALL_TO_ZERO_MS : RPM_SMOOTH_TIME_MS;
+    float alpha = (float)dt_ms / (float)tc;
+    if (alpha > 1.0f) alpha = 1.0f;
+    s_rpm_smooth_f += alpha * ((float)rpm - s_rpm_smooth_f);
+
+    uint16_t smoothed = (uint16_t)(s_rpm_smooth_f + 0.5f);
     portENTER_CRITICAL(&s_mux);
     s_rpm = rpm;
+    s_rpm_smooth = smoothed;
     portEXIT_CRITICAL(&s_mux);
 }
 
 void obd_data_set_speed(uint8_t kmh)
 {
+    TickType_t now_tick = xTaskGetTickCount();
+    uint32_t dt_ms = (now_tick - s_speed_last_tick) * portTICK_PERIOD_MS;
+    if (dt_ms > 1000) dt_ms = 1000;
+    s_speed_last_tick = now_tick;
+
+    uint32_t tc = (kmh == 0) ? FALL_TO_ZERO_MS : SPEED_SMOOTH_TIME_MS;
+    float alpha = (float)dt_ms / (float)tc;
+    if (alpha > 1.0f) alpha = 1.0f;
+    s_speed_smooth_f += alpha * ((float)kmh - s_speed_smooth_f);
+
+    uint8_t smoothed = (uint8_t)(s_speed_smooth_f + 0.5f);
     portENTER_CRITICAL(&s_mux);
     s_speed = kmh;
+    s_speed_smooth = smoothed;
     portEXIT_CRITICAL(&s_mux);
 }
 
@@ -61,62 +97,23 @@ void obd_data_set_intake_temp(int16_t temp)
     portEXIT_CRITICAL(&s_mux);
 }
 
-#define RPM_SMOOTH_TIME_MS   1000  // 转速缓升缓降时间常数 (ms)
-#define SPEED_SMOOTH_TIME_MS 1000  // 速度缓升缓降时间常数 (ms)
-#define FALL_TO_ZERO_MS      500  // 归零缓降时间常数 (ms)
-
-// 实时转速（缓升缓降）获取
+// 转速/速度: 平滑已在 setter 侧完成, getter 直接返回平滑值(多调用者安全)
 uint16_t obd_data_get_rpm(void)
 {
-    static TickType_t last_tick = 0;
-    static float smooth = 0.f;
-
-    uint16_t raw;
+    uint16_t val;
     portENTER_CRITICAL(&s_mux);
-    raw = s_rpm;
+    val = s_rpm_smooth;
     portEXIT_CRITICAL(&s_mux);
-
-    TickType_t now_tick = xTaskGetTickCount();
-    uint32_t dt_ms = (now_tick - last_tick) * portTICK_PERIOD_MS;
-    if (dt_ms > 1000) dt_ms = 1000;
-
-    uint32_t tc = (raw == 0) ? FALL_TO_ZERO_MS : RPM_SMOOTH_TIME_MS;
-    float alpha = (float)dt_ms / (float)tc;
-    if (alpha > 1.0f) alpha = 1.0f;
-
-    smooth += alpha * ((float)raw - smooth);
-    last_tick = now_tick;
-
-    return (uint16_t)(smooth + 0.5f);
+    return val;
 }
 
-
-// 实时速度（缓升缓降）获取
 uint8_t obd_data_get_speed(void)
 {
-    static TickType_t last_tick = 0;
-    static float smooth = 0.f; // 保留小数以获得更细腻的过渡
-
-    // 1. 取原始速度
-    uint8_t raw;
+    uint8_t val;
     portENTER_CRITICAL(&s_mux);
-    raw = s_speed;
+    val = s_speed_smooth;
     portEXIT_CRITICAL(&s_mux);
-
-    // 2. 计算距离上次调用的时间，单位 ms
-    TickType_t now_tick = xTaskGetTickCount();
-    uint32_t dt_ms = (now_tick - last_tick) * portTICK_PERIOD_MS;
-    if (dt_ms > 1000) dt_ms = 1000; // 限制单次过大步长，防止休眠后跳变
-
-    // 3. 时间常数的一阶滤波 alpha = dt / SPEED_SMOOTH_TIME_MS
-    uint32_t tc = (raw == 0) ? FALL_TO_ZERO_MS : SPEED_SMOOTH_TIME_MS;
-    float alpha = (float)dt_ms / (float)tc;
-    if (alpha > 1.0f) alpha = 1.0f;
-
-    // 4. 更新平滑值
-    smooth += alpha * ((float)raw - smooth);
-    last_tick = now_tick;
-    return (uint8_t)(smooth + 0.5f); // 四舍五入返回
+    return val;
 }
 
 int16_t obd_data_get_coolant_temp(void)

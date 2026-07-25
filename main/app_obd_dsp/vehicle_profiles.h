@@ -22,6 +22,10 @@ typedef enum {
     OIL_TEMP_MODE_PORSCHE_CAN_441 = 5, // 保时捷 997.2/987.2 CAN 广播帧 0x441 (byte5油温 x-60, byte6油压)
     OIL_TEMP_MODE_MINI_22_5822 = 6,    // MINI/BMW Mode 22 PID 5822, 单字节 °C = A-60 (°F=A*9/5-76)
     OIL_TEMP_MODE_BMW_22_4402 = 7,     // BMW F系(F48等, B38/B48) Mode 22 PID 4402, 第二字节 °C = B-64
+    OIL_TEMP_MODE_BMW_22_03F3 = 8,     // BMW G系 Mode 22 PID 03F3, 单字节 °C = A-40
+    OIL_TEMP_MODE_BMW_G_22_4402 = 9,   // BMW G系 Mode 22 PID 4402, 双字节 °C = (A*256+B)*191.25/255-48
+    OIL_TEMP_MODE_BMW_22_D002 = 10,    // BMW G系 Mode 22 PID D002, 双字节 °C = (A*256+B)*191.25/255-48
+    OIL_TEMP_MODE_BMW_22_111F = 11,    // BMW Mode 22 PID 111F (Header 7E0), 单字节 °C = A-50
 } oil_temp_query_mode_t;
 
 // 车辆档位传动比范围 (用于档位识别)
@@ -36,6 +40,7 @@ typedef struct {
     oil_temp_query_mode_t primary;     // 首选查询模式
     oil_temp_query_mode_t secondary;   // 备用1
     oil_temp_query_mode_t tertiary;    // 备用2
+    oil_temp_query_mode_t quaternary;  // 备用3（最终兜底）
     uint16_t offset_c;                 // 温度偏移量，单位 0.1°C（有符号）
     // CAN-441(保时捷)油温线性公式: °C = raw * can_num / can_den + can_off
     // 仅 OIL_TEMP_MODE_PORSCHE_CAN_441 模式使用; can_den=0 时回退内置默认(x-60)。
@@ -57,6 +62,10 @@ typedef struct {
     bool has_boost;                      // 是否有涡轮增压(决定是否查询/显示涡轮压力)
     uint8_t forced_protocol;             // 强制 ELM327 协议号(ATSP), 0=自动探测; BMW 等自动探测不稳的车锁 6
     bool obd_functional_addr;            // true=标准PID用功能寻址(ATSH 7DF, 同手机APP); false=物理寻址(ATSH 7E0, 斯巴鲁等)
+    float speed_scale;                   // 车速校正系数(读取值×此系数), 0 或未设=1.0(不校正)
+    uint8_t obd_timeout;                 // ATST 超时值(ELM327 单位, 0=默认 0x19); BMW G CAN 快速响应可设 0x0F 减少 NO DATA 等待
+    uint8_t poll_gap_ms;                 // 轮询槽间隔(ms), 0=使用默认 OBD_POLL_SLOT_GAP_MS(30ms)
+    bool can_broadcast_mode;             // true=通过 ATMA 监听 CAN 广播帧读取数据(FT86 0x140/360/D1/141), 替代标准 OBD PID 轮询
 } vehicle_profile_t;
 
 // 获取所有预定义的车辆配置
