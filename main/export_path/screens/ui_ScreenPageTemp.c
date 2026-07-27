@@ -36,7 +36,7 @@ static void make_row(lv_obj_t *parent, lv_obj_t **name_out, lv_obj_t **val_out, 
     *val_out = lv_label_create(parent);
     lv_label_set_long_mode(*val_out, LV_LABEL_LONG_CLIP);   // 数值过长不换行
     lv_label_set_text(*val_out, "--");
-    lv_obj_set_style_text_font(*val_out, &ui_font_FontTypoderSize36, LV_PART_MAIN);
+    lv_obj_set_style_text_font(*val_out, &ui_font_FontTypoderSize40, LV_PART_MAIN);
     lv_obj_set_style_text_color(*val_out, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
     lv_obj_set_width(*val_out, 110);
     lv_obj_set_style_text_align(*val_out, LV_TEXT_ALIGN_LEFT, LV_PART_MAIN);
@@ -50,7 +50,7 @@ static void make_row(lv_obj_t *parent, lv_obj_t **name_out, lv_obj_t **val_out, 
     *name_out = lv_label_create(parent);
     lv_label_set_long_mode(*name_out, LV_LABEL_LONG_CLIP);   // 不换行
     lv_label_set_text(*name_out, name_str);
-    lv_obj_set_style_text_font(*name_out, &ui_font_FontTypoderSize16, LV_PART_MAIN);
+    lv_obj_set_style_text_font(*name_out, &ui_font_FontTypoderSize20, LV_PART_MAIN);
     lv_obj_set_style_text_color(*name_out, color, LV_PART_MAIN);
     lv_obj_set_width(*name_out, LV_SIZE_CONTENT);            // 宽度随文字, 长名(BOOST/SPEED)不换行
     lv_obj_set_style_text_align(*name_out, LV_TEXT_ALIGN_LEFT, LV_PART_MAIN);
@@ -59,7 +59,7 @@ static void make_row(lv_obj_t *parent, lv_obj_t **name_out, lv_obj_t **val_out, 
     *unit_out = lv_label_create(parent);
     lv_label_set_long_mode(*unit_out, LV_LABEL_LONG_CLIP);   // 不换行
     lv_label_set_text(*unit_out, unit_str);
-    lv_obj_set_style_text_font(*unit_out, &ui_font_FontTypoderSize16, LV_PART_MAIN);
+    lv_obj_set_style_text_font(*unit_out, &ui_font_FontTypoderSize20, LV_PART_MAIN);
     lv_obj_set_style_text_color(*unit_out, lv_color_hex(0x666666), LV_PART_MAIN);
     lv_obj_set_width(*unit_out, LV_SIZE_CONTENT);            // 宽度随文字 (km/h 等)
     lv_obj_set_style_text_align(*unit_out, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);

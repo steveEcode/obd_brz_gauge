@@ -7,7 +7,7 @@ extern "C" {
 #endif
 
 #define ESPNOW_PROTOCOL_MAGIC       0x4F42u
-#define ESPNOW_PROTOCOL_VERSION     3u
+#define ESPNOW_PROTOCOL_VERSION     4u
 #define ESPNOW_MASTER_NAME_LEN      12u
 
 /*
@@ -26,6 +26,7 @@ typedef struct __attribute__((packed)) {
     uint16_t rpm;
     uint8_t speed;
     uint8_t sweep_step;
+    uint8_t intro_step;
 
     int16_t coolant_temp;
     int16_t intake_temp;
@@ -40,6 +41,16 @@ typedef struct __attribute__((packed)) {
 
     char name[ESPNOW_MASTER_NAME_LEN];
 } espnow_obd_packet_t;
+
+/*
+ * 从表周期发送给主表的在线状态包。
+ * position 为设备设置中的表位编号。
+ */
+typedef struct __attribute__((packed)) {
+    uint16_t magic;
+    uint8_t version;
+    uint8_t position;
+} espnow_presence_t;
 
 #ifdef __cplusplus
 }

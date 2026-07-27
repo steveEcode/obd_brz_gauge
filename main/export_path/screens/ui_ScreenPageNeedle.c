@@ -89,16 +89,16 @@ void ui_ScreenPageNeedle_screen_init(void)
     lv_obj_set_style_border_width(ui_NeedleMeter, 0, LV_PART_MAIN);
     // 刻度数字字体
     lv_obj_set_style_text_font(ui_NeedleMeter, &ui_font_FontTypoderSize16, LV_PART_TICKS);
-    lv_obj_set_style_text_color(ui_NeedleMeter, lv_color_hex(0xCCCCCC), LV_PART_TICKS);
+    lv_obj_set_style_text_color(ui_NeedleMeter, lv_color_hex(0x666666), LV_PART_TICKS);
 
     ui_NeedleScale = lv_meter_add_scale(ui_NeedleMeter);
-    // 21 条刻度，每 5 条一个主刻度（共 5 个数字标签）
-    lv_meter_set_scale_ticks(ui_NeedleMeter, ui_NeedleScale, 21, 2, 8, lv_color_hex(0x666666));
-    lv_meter_set_scale_major_ticks(ui_NeedleMeter, ui_NeedleScale, 5, 4, 14, lv_color_hex(0xFFFFFF), 14);
+    // 刻度调暗, 突出指针
+    lv_meter_set_scale_ticks(ui_NeedleMeter, ui_NeedleScale, 21, 1, 6, lv_color_hex(0x333333));
+    lv_meter_set_scale_major_ticks(ui_NeedleMeter, ui_NeedleScale, 5, 2, 10, lv_color_hex(0x555555), 14);
     lv_meter_set_scale_range(ui_NeedleMeter, ui_NeedleScale, 0, 100, 270, 135); // 占位，apply_source 重设
 
-    // 指针改短（r_mod 更负 = 指针尖回缩，避免压住中心区域）
-    ui_NeedleIndic = lv_meter_add_needle_line(ui_NeedleMeter, ui_NeedleScale, 4, lv_color_hex(0xFF3030), -70);
+    // 指针: 加粗+加长+亮色, 更醒目
+    ui_NeedleIndic = lv_meter_add_needle_line(ui_NeedleMeter, ui_NeedleScale, 10, lv_color_hex(0xFF1010), -10);
 
     // 三个中心标签居中对齐自身，避免不同文本长度造成左右偏移/重合
     // ====== 名称标签（上方）======
@@ -112,7 +112,7 @@ void ui_ScreenPageNeedle_screen_init(void)
     // ====== 数值标签（下方，位于 270° 表盘底部开口处，指针扫不到此处，不与指针重叠）======
     ui_NeedleValueLabel = lv_label_create(ui_ScreenPageNeedle);
     lv_label_set_text(ui_NeedleValueLabel, "--");
-    lv_obj_set_style_text_font(ui_NeedleValueLabel, &ui_font_FontTypoderSize36, LV_PART_MAIN);
+    lv_obj_set_style_text_font(ui_NeedleValueLabel, &ui_font_FontTypoderSize40, LV_PART_MAIN);
     lv_obj_set_style_text_color(ui_NeedleValueLabel, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
     lv_obj_set_style_text_align(ui_NeedleValueLabel, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
     lv_obj_align(ui_NeedleValueLabel, LV_ALIGN_CENTER, 0, 54);

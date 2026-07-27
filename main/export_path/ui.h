@@ -22,6 +22,9 @@ extern "C" {
 // 自定义开机图开关: 1=用客户自定义图片(imgBootLogoCustom)作开机动画; 0=用默认 SKY GAUGE
 // 置 1 前需把客户 PNG 转成 LVGL C 数组(变量名 imgBootLogoCustom)放进 images/ 目录
 #define USE_CUSTOM_BOOT_LOGO 0
+// 自定义转速报警闪烁图: 1=用3张图片循环闪(替代红/黑); 0=默认红黑闪
+// 置 1 前需把 3 张 PNG 转成 LVGL C 数组放进 images/ 目录
+#define USE_CUSTOM_RPM_FLASH 0
 
 #define COLOR_MITSUBISHI_RED    0xFFFFFF //主色调白色(原三菱红)
 #define COLOR_DOMIANT_PINK      0xFFFFFF //主色调白色(原粉色)
@@ -151,6 +154,14 @@ void ui_ScreenPageChartAlarm_screen_init(void);
 extern lv_obj_t * ui_ScreenPageChartAlarm;
 void ui_event_chart_alarm_background(lv_event_t * e);
 
+// SCREEN: ui_ScreenPageIntro (三连表开机动画 RACE / AS / ONE)
+void ui_ScreenPageIntro_screen_init(void);
+extern lv_obj_t * ui_ScreenPageIntro;
+extern lv_obj_t * ui_LabelIntroWord;      // 显示本机位置对应的词(由 my_timerMain 更新)
+// 开机动画进度同步(ESP-NOW): 主表广播 / 从表跟随
+int  ui_intro_get_step(void);
+void ui_intro_set_step(int step);
+
 // SCREEN: ui_ScreenPageInfo
 void ui_ScreenPageInfo_screen_init(void);
 extern lv_obj_t * ui_ScreenPageInfo;
@@ -185,6 +196,11 @@ void ui_event_brake_warn_background(lv_event_t * e);
 void ui_ScreenPageOilWarn_screen_init(void);
 extern lv_obj_t * ui_ScreenPageOilWarn;
 void ui_event_oil_warn_background(lv_event_t * e);
+
+// SCREEN: ui_ScreenPageRpmWarn (转速报警设置)
+void ui_ScreenPageRpmWarn_screen_init(void);
+extern lv_obj_t * ui_ScreenPageRpmWarn;
+void ui_event_rpm_warn_background(lv_event_t * e);
 
 // SCREEN: ui_ScreenPageNeedle (指针式可配置仪表)
 void ui_ScreenPageNeedle_screen_init(void);
@@ -233,6 +249,20 @@ LV_IMG_DECLARE(pngLogoSkyGarage);     // assets/sklogo.png (280x280)
 #if USE_CUSTOM_BOOT_LOGO == 1
 LV_IMG_DECLARE(imgBootLogoCustom);    // 客户自定义开机图(需自行转换并放入 images/)
 #endif
+#if USE_CUSTOM_RPM_FLASH == 1
+LV_IMG_DECLARE(imgRpmFlash1);
+LV_IMG_DECLARE(imgRpmFlash2);
+LV_IMG_DECLARE(imgRpmFlash3);
+#endif
+
+// 转速报警测试: 设置 >0 后强制触发闪烁, 每拍自减, 归零停止
+extern volatile int s_rpm_flash_test_ticks;
+void ui_rpm_flash_test_start(void);
+
+// Showroom 模式
+bool ui_showroom_is_active(void);
+void ui_showroom_set_active(bool en);
+void ui_showroom_set_page_from_sync(int sweep_step);
 LV_IMG_DECLARE(ui_img_pngblackear_png);    // assets/pngBlackEar.png
 // FONTS
 LV_FONT_DECLARE(ui_font_FontBabyGearNumSize48);

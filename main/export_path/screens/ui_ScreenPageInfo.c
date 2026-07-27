@@ -32,7 +32,7 @@ static lv_obj_t *create_info_tile(lv_obj_t *parent,
     // Name label
     lv_obj_t *lbl_name = lv_label_create(parent);
     lv_label_set_text(lbl_name, name);
-    lv_obj_set_style_text_font(lbl_name, &ui_font_FontTypoderSize16, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_name, &ui_font_FontTypoderSize20, LV_PART_MAIN);
     lv_obj_set_style_text_color(lbl_name, name_color, LV_PART_MAIN);
     lv_obj_align(lbl_name, LV_ALIGN_CENTER, cx, cy - 28);
     if (name_out) *name_out = lbl_name;
@@ -40,7 +40,7 @@ static lv_obj_t *create_info_tile(lv_obj_t *parent,
     // Value label (returned so caller can update it)
     lv_obj_t *lbl_val = lv_label_create(parent);
     lv_label_set_text(lbl_val, "--");
-    lv_obj_set_style_text_font(lbl_val, &ui_font_FontTypoderSize36, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_val, &ui_font_FontTypoderSize40, LV_PART_MAIN);
     lv_obj_set_style_text_color(lbl_val, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
     lv_obj_set_width(lbl_val, 120);
     lv_obj_set_style_text_align(lbl_val, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
@@ -49,7 +49,7 @@ static lv_obj_t *create_info_tile(lv_obj_t *parent,
     // Unit label
     lv_obj_t *lbl_unit = lv_label_create(parent);
     lv_label_set_text(lbl_unit, unit);
-    lv_obj_set_style_text_font(lbl_unit, &ui_font_FontTypoderSize16, LV_PART_MAIN);
+    lv_obj_set_style_text_font(lbl_unit, &ui_font_FontTypoderSize20, LV_PART_MAIN);
     lv_obj_set_style_text_color(lbl_unit, lv_color_hex(0x888888), LV_PART_MAIN);
     lv_obj_align(lbl_unit, LV_ALIGN_CENTER, cx, cy + 34);
     if (unit_out) *unit_out = lbl_unit;

@@ -22,6 +22,8 @@
  */
 extern int ui_sweep_get_step(void);
 extern void ui_sweep_set_step(int step);
+extern int ui_intro_get_step(void);
+extern void ui_intro_set_step(int step);
 
 #define SIM_ESPNOW_INTERVAL_MS 100u
 #define SIM_ESPNOW_TIMEOUT_MS 2000u
@@ -138,6 +140,8 @@ static void simulator_master_publish(void)
     packet.speed = obd_data_get_speed();
     packet.sweep_step =
         (uint8_t)ui_sweep_get_step();
+    packet.intro_step =
+        (uint8_t)ui_intro_get_step();
 
     packet.coolant_temp =
         obd_data_get_coolant_temp();
@@ -244,6 +248,7 @@ static void simulator_slave_apply(
     obd_data_set_bat_mv(packet->bat_mv);
 
     ui_sweep_set_step(packet->sweep_step);
+    ui_intro_set_step(packet->intro_step);
 
     memcpy(
         s_master_name,
@@ -452,6 +457,15 @@ bool espnow_link_slave_has_data(void)
         s_mode == SIM_ESPNOW_SLAVE &&
         s_have_slave_data &&
         s_rx_age_ms < SIM_ESPNOW_TIMEOUT_MS;
+}
+
+uint8_t espnow_master_online_slaves(void)
+{
+    /*
+     * 桌面三联模拟器固定启动两个从表。
+     * Master 返回 2，使 RACE / AS / ONE 动画能够启动。
+     */
+    return s_mode == SIM_ESPNOW_MASTER ? 2u : 0u;
 }
 
 const char *espnow_link_get_master_name(void)

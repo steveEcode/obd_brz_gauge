@@ -11,11 +11,12 @@ typedef enum {
     GEAR_NEUTRAL, // 空档或无法识别
     GEAR_1,
     GEAR_2,
-    GEAR_3, 
+    GEAR_3,
     GEAR_4,
     GEAR_5,
     GEAR_6,
     GEAR_7,   // 保时捷 997.2 PDK 等 7 速
+    GEAR_8,   // BMW ZF 8HP 等 8 速
 } enGear;
 
 typedef enum {

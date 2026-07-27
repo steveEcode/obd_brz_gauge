@@ -8,29 +8,79 @@
 // 预定义车辆配置
 static const vehicle_profile_t s_profiles[] = {
     {
-        .name = "BRZ ZC6",
+        // 通用 OBD2 标准配置 (SAE J1979 / ISO 15031-5)
+        // 仅使用标准 PID，不依赖任何厂商私有协议:
+        //   转速 010C, 车速 010D, 水温 0105, 油温 015C, 进气 010F, 负荷 0104, TPS 0111, 电压 0142
+        // 档位比为常见 6MT 占位(仅影响档位识别精度, 不影响数据读取)。
+        .name = "OBD2 Generic",
+        .final_drive_ratio = 3.500f,       // 通用占位
+        .tire_rolling_radius_m = 0.315f,   // 205/55R16 常见
+        .gear_count = 6,
+        .gear_ratios = {0, 3.500f, 2.000f, 1.400f, 1.100f, 0.900f, 0.750f},
+        .gear_tolerance = 0.15f,
+        .oil_temp_strategy = {
+            .primary = OIL_TEMP_MODE_PID_5C,        // 标准 OBD2 油温 PID (°C = A - 40)
+            .secondary = OIL_TEMP_MODE_NONE,
+            .tertiary = OIL_TEMP_MODE_NONE,
+            .offset_c = 0,
+        },
+        .has_boost = false,                // 通用默认自吸; 涡轮车标准 010B 仍可读(需手动开启)
+    },
+    {
+        // BRZ ZC6 CAN (2013-2020, FA20 自吸, Gen1)
+        // ATMA 监听: 0x140(100Hz 转速+节气门), 0x360(20Hz 油温+水温)
+        // 其余走标准 OBD PID
+        // 参考: https://github.com/timurrrr/ft86/blob/main/can_bus/gen1.md
+        .name = "ZC6 CAN",
         .final_drive_ratio = 4.100f,
         .tire_rolling_radius_m = 0.314f,   // 215/45R17
         .gear_count = 6,
         .gear_ratios = {0, 3.626f, 2.188f, 1.541f, 1.213f, 1.000f, 0.767f},
         .gear_tolerance = 0.15f,
         .oil_temp_strategy = {
-            .primary = OIL_TEMP_MODE_TOYOTA_21_01,  // BRZ ZC6 固定 Mode 21(单一模式，不回退)
+            .primary = OIL_TEMP_MODE_TOYOTA_21_01,
             .secondary = OIL_TEMP_MODE_NONE,
             .tertiary = OIL_TEMP_MODE_NONE,
-            .offset_c = 0,  // 无偏移
+            .offset_c = 0,
         },
+        .forced_protocol = 6,
+        .can_broadcast_mode = true,
+        .poll_gap_ms = 1,
     },
     {
-        .name = "BRZ ZD8",
-        .final_drive_ratio = 3.700f,       // ZD8 新代差速比
+        // BRZ ZD8 CAN (2022+, FA24 自吸, Gen2)
+        // ATMA 监听: 0x40(100Hz 转速+节气门), 0x345(10Hz 油温+水温)
+        // 其余走标准 OBD PID
+        // 参考: https://github.com/timurrrr/ft86/blob/main/can_bus/gen2.md
+        .name = "ZD8 CAN",
+        .final_drive_ratio = 3.700f,       // ZD8 主减速比
         .tire_rolling_radius_m = 0.318f,   // 225/40R18
         .gear_count = 6,
         .gear_ratios = {0, 3.765f, 2.476f, 1.633f, 1.190f, 0.932f, 0.751f},
         .gear_tolerance = 0.15f,
         .oil_temp_strategy = {
-            .primary = OIL_TEMP_MODE_PID_5C,        // ZD8 固定标准 PID(单一模式，不回退)
+            .primary = OIL_TEMP_MODE_PID_5C,        // ZD8 用标准 PID 5C
             .secondary = OIL_TEMP_MODE_NONE,
+            .tertiary = OIL_TEMP_MODE_NONE,
+            .offset_c = 0,
+        },
+        .forced_protocol = 6,
+        .can_broadcast_mode = true,
+        .poll_gap_ms = 1,
+    },
+    {
+        // Toyota GT86 / 86 ZN6 (2012-2021, FA20 自吸)
+        // Toyota ECU 的 Mode 21 01 响应只有 31 字节，布局与 Subaru ECU(ZC6 d[33]) 不同：
+        // 水温在 d[9]，油温在 d[27](≈86°C when coolant=91°C，实测稳定).
+        .name = "GT86 ZN6",
+        .final_drive_ratio = 4.100f,
+        .tire_rolling_radius_m = 0.314f,   // 215/45R17 (原厂同 BRZ ZC6)
+        .gear_count = 6,
+        .gear_ratios = {0, 3.626f, 2.188f, 1.541f, 1.213f, 1.000f, 0.767f},
+        .gear_tolerance = 0.15f,
+        .oil_temp_strategy = {
+            .primary = OIL_TEMP_MODE_TOYOTA_21_01,
+            .secondary = OIL_TEMP_MODE_PID_5C,        // gt96 等适配器可能不支持 Mode 21，回退标准 PID
             .tertiary = OIL_TEMP_MODE_NONE,
             .offset_c = 0,
         },
@@ -50,45 +100,50 @@ static const vehicle_profile_t s_profiles[] = {
             .offset_c = 0,
         },
         // .has_boost 默认 false (自吸)
+        .obd_timeout = 0x0A,  // 40ms 超时; Mazda CAN 通常 5-15ms 响应, 减少 NO DATA 等待
+        .poll_gap_ms = 1,     // 槽间最小间隔 1ms(0=跳过 vTaskDelay, 1ms 让调度器有机会切换)
     },
     {
-        .name = "BMW G",
+        // BMW G系 (G20/G21/G22等, B48/B58 涡轮, ZF 8HP)
+        // 标准 OBD 只响应 7DF 功能寻址，7E0 物理寻址无响应; 故 obd_functional_addr=true。
+        // Mode 22 厂商 PID 轮询时代码会在 Slot6 中临时切换到 ATSH7E0，发完再恢复 ATSH7DF。
+        // 油温: 先试 PID 4402 (双字节公式), 再试 PID D002(油底壳备用通道), 最后回退 PID 03F3。
+        .name = "BMW F/G",
         .final_drive_ratio = 2.813f,       // G20 330i 主减速比
         .tire_rolling_radius_m = 0.330f,   // 225/45R18
         .gear_count = 8,                   // ZF 8HP 8速
-        .gear_ratios = {0, 5.250f, 3.360f, 2.172f, 1.720f, 1.316f, 1.000f, 0.822f, 0.640f},
-        .gear_tolerance = 0.12f,
+        .gear_ratios = {0, 5.250f, 3.360f, 2.172f, 1.720f, 1.316f, 1.000f, 0.822f, 0.640f},  // ZF 8HP75
+        .gear_tolerance = 0.09f,
         .oil_temp_strategy = {
-            // BMW 油温多需厂商协议(F系 Mode 22 PID 4402, B-64)，通用 OBD 下常读不到，
-            // 这里先用标准 PID 兜底，读不到则显示无效，后续可加 BMW 专用模式。
-            .primary = OIL_TEMP_MODE_PID_5C,
-            .secondary = OIL_TEMP_MODE_NONE,
+            .primary = OIL_TEMP_MODE_BMW_22_4402,    // F/G系 Mode 22 PID 4402
+            .secondary = OIL_TEMP_MODE_PID_5C,       // 回退标准 01 5C
             .tertiary = OIL_TEMP_MODE_NONE,
+            .quaternary = OIL_TEMP_MODE_NONE,
             .offset_c = 0,
         },
-        .has_boost = true,                 // 涡轮增压(B48/B58)，读取涡轮压力
-        .forced_protocol = 6,              // ISO 15765-4 CAN 11bit 500k; 锁协议跳过自动探测(BMW探测不稳)
-        .obd_functional_addr = true,       // 用功能寻址 7DF(同手机APP), 物理 7E0 在 BMW 上可能收不到响应
+        .has_boost = true,
+        .forced_protocol = 6,
+        .obd_functional_addr = true,
+        .obd_timeout = 0x0F,
     },
     {
-        // BMW X1 F48 (2015-2022, B38 1.5T / B48 2.0T 涡轮, Aisin GA8F22AW 8速自动)
-        .name = "BMW X1 F48",
-        .final_drive_ratio = 3.077f,       // xDrive(AWD) 主减速比 (sDrive/FWD≈2.955, 12%容差可吸收)
-        .tire_rolling_radius_m = 0.330f,   // 225/50R18
-        .gear_count = 8,                   // Aisin 8速自动
-        .gear_ratios = {0, 5.250f, 3.029f, 1.950f, 1.457f, 1.221f, 1.000f, 0.809f, 0.673f},
-        .gear_tolerance = 0.12f,
+        // MINI John Cooper Works F56 (宝马 B48 2.0T, 前驱横置)
+        .name = "JCW F56",
+        .final_drive_ratio = 3.824f,       // F56 JCW 6MT 主减速比
+        .tire_rolling_radius_m = 0.308f,   // 前轮(前驱驱动轮) 205/45R17
+        .gear_count = 6,
+        .gear_ratios = {0, 3.923f, 2.136f, 1.276f, 0.921f, 0.756f, 0.628f},
+        .gear_tolerance = 0.15f,
         .oil_temp_strategy = {
-            // BMW F系油温: 增强 Mode 22 PID 4402, °C = B-64 (响应第二字节); 读不到回退标准 01 5C。
-            // 油压: BMW 仅有报警开关(非传感器), OBD 读不到数值, 不映射。
-            .primary = OIL_TEMP_MODE_BMW_22_4402,
+            // 涡轮压力走标准 PID 010B(has_boost)，无需额外适配。
+            // 油温: MINI/BMW 增强 Mode 22 PID 5822, °C = A-60 (社区验证, N18/N16/B48 同款监视器)；
+            // 读不到回退标准 01 5C。
+            .primary = OIL_TEMP_MODE_MINI_22_5822,
             .secondary = OIL_TEMP_MODE_PID_5C,
             .tertiary = OIL_TEMP_MODE_NONE,
             .offset_c = 0,
         },
-        .has_boost = true,                 // B38/B48 涡轮增压, 涡轮压力走标准 010B
-        .forced_protocol = 6,              // ISO 15765-4 CAN 11bit 500k; 锁协议跳过自动探测(BMW探测不稳)
-        .obd_functional_addr = true,       // 用功能寻址 7DF(同手机APP), 物理 7E0 在 BMW 上可能收不到响应
+        .has_boost = true,                 // B48 涡轮增压，涡轮压力走标准 010B
     },
     {
         // 保时捷 Gen2: 987.2/997.2 (2009-2012, DFI 9A1; 自吸; 油温 x-60)
@@ -127,25 +182,6 @@ static const vehicle_profile_t s_profiles[] = {
         },
         .has_boost = false,
         .forced_protocol = 6,              // 广播帧 0x441 是 11bit/500k, 锁协议6 才能 ATMA 监听到
-    },
-    {
-        // MINI John Cooper Works F56 (宝马 B48 2.0T, 前驱横置)
-        .name = "JCW F56",
-        .final_drive_ratio = 3.824f,       // F56 JCW 6MT 主减速比
-        .tire_rolling_radius_m = 0.308f,   // 前轮(前驱驱动轮) 205/45R17
-        .gear_count = 6,
-        .gear_ratios = {0, 3.923f, 2.136f, 1.276f, 0.921f, 0.756f, 0.628f},
-        .gear_tolerance = 0.15f,
-        .oil_temp_strategy = {
-            // 涡轮压力走标准 PID 010B(has_boost)，无需额外适配。
-            // 油温: MINI/BMW 增强 Mode 22 PID 5822, °C = A-60 (社区验证, N18/N16/B48 同款监视器)；
-            // 读不到回退标准 01 5C。
-            .primary = OIL_TEMP_MODE_MINI_22_5822,
-            .secondary = OIL_TEMP_MODE_PID_5C,
-            .tertiary = OIL_TEMP_MODE_NONE,
-            .offset_c = 0,
-        },
-        .has_boost = true,                 // B48 涡轮增压，涡轮压力走标准 010B
     },
 };
 

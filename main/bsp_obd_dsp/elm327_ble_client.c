@@ -11,6 +11,7 @@
 #include "nvs_flash.h"
 #include "app_obd_dsp/obd_data_cache.h"
 #include "app_obd_dsp/vehicle_profiles.h"
+#include "app_obd_dsp/zc6_can_monitor_decode.h"
 #include "racechrono_ble_diy.h"
 #include <string.h>
 #include <stdlib.h>
@@ -52,11 +53,18 @@ static ble_scan_result_t s_scan_list[BLE_SCAN_MAX_DEVICES];
 static int s_scan_count = 0;
 static bool s_ble_inited = false;  // BLE 协议栈是否已初始化
 static bool s_poll_task_started = false; // 轮询任务是否已创建
+static TaskHandle_t s_poll_task_handle = NULL; // poll task 句柄，用于 task notification 唤醒
 static volatile bool s_notify_ready = false;   // CCCD 通知订阅完成才置位; init/轮询据此放行(防握手响应丢失)
 static volatile int64_t s_last_obd_valid_us = 0; // 最近一次收到有效OBD数据的时间; 超时无数据触发自愈重初始化
 static uint8_t s_oil_query_mode = 0;     // 当前查询模式索引 (0-2)
 static int s_mode21_oil_idx = 33;        // Mode21 机油温字节索引，自适应更新
 static int16_t s_last_mode21_oil = -100; // 上次Mode21解析出的油温
+static int s_mode21_hold_cnt = 0;        // ZC6 一致性 hold 计数；持续噪声帧数，超阈值才采纳新值
+static int64_t s_last_mode21_oil_us = 0; // 上次接受油温值的时间戳(us)
+// GT86 Mode21 油温字节距响应末尾的固定偏移: 满帧 count=31 时油温在 d[27] -> 31-27=4。
+// ECU 有时会省略尾部若干可选字节导致总长度变化(如 31 -> 30)，用"距末尾偏移"而非绝对下标定位，
+// 使其自动适配任意总长度，不受截断/多帧长度波动影响。
+#define GT86_MODE21_OIL_TAIL_OFFSET 4
 
 // ---- 基于车型的油温查询策略 ----
 static oil_temp_query_mode_t s_oil_mode_priority[4] = {
@@ -64,7 +72,7 @@ static oil_temp_query_mode_t s_oil_mode_priority[4] = {
     OIL_TEMP_MODE_UDS_22_10_17,
     OIL_TEMP_MODE_TOYOTA_21_01,
 };  // 默认优先级，启动后从车型配置更新
-static uint32_t s_oil_mode_fail_count[8] = {0};  // 每个模式(poll idx 0~7)的连续失败次数
+static uint32_t s_oil_mode_fail_count[12] = {0};  // 每个模式(poll idx 0~11)的连续失败次数
 #define OIL_MODE_FAIL_THRESHOLD 5  // 某模式失败次数达到此值后才切换到下一个
 #define OBD_POLL_SLOT_GAP_MS   30  // 轮询槽间空等(ms); 原100, 调小提高刷新率, 太小压垮克隆头
 static bool s_vehicle_profile_inited = false;
@@ -79,6 +87,10 @@ static struct {
     uint32_t mode5_ok;  // CAN 0x441 (Porsche) 成功次数
     uint32_t mode6_ok;  // 22 58 22 (MINI/BMW) 成功次数
     uint32_t mode7_ok;  // 22 44 02 (BMW F系) 成功次数
+    uint32_t mode8_ok;  // 22 03 F3 (BMW G系) 成功次数
+    uint32_t mode9_ok;  // 22 44 02 G公式 (BMW G系) 成功次数
+    uint32_t mode10_ok; // 22 D0 02 (BMW G系) 成功次数
+    uint32_t mode11_ok; // 22 11 1F (BMW, A-50) 成功次数
     uint32_t mode0_fail;
     uint32_t mode1_fail;
     uint32_t mode2_fail;
@@ -87,6 +99,10 @@ static struct {
     uint32_t mode5_fail;
     uint32_t mode6_fail;
     uint32_t mode7_fail;
+    uint32_t mode8_fail;
+    uint32_t mode9_fail;
+    uint32_t mode10_fail;
+    uint32_t mode11_fail;
     int16_t last_raw_temp; // 原始温度（未过滤）
     int16_t last_filtered_temp; // 过滤后温度
 } s_oil_diag = {0};
@@ -97,6 +113,19 @@ static int8_t s_oil_temp_offset = 0;  // 用户校准偏移量，单位 °C
 static volatile bool s_elm_ready = true; // 初始允许发送首条 ATZ
 static volatile bool s_expect_mode21 = false; // true=上条命令是 21 01，等待 61 01 响应
 static volatile bool s_porsche_441_seen = false; // 本次监听是否成功解析到 0x441 帧
+static volatile bool s_zc6_can_rpm_seen = false; // 本次监听是否成功解析到 0x140 帧(ZC6/GT86 CAN RPM)
+static uint8_t s_can_rpm_fail_count = 0;         // CAN 140 连续失败计数
+#define CAN_RPM_FAIL_THRESHOLD 3                  // 连续失败此次数后回退 01 0C
+
+// ---- ZC6 CAN 持续监听模式 (ATCM/ATCF + ATMA, 帧来一帧解一帧) ----
+static volatile bool s_zc6_can_monitor_active = false;
+#define ZC6_CAN_MONITOR_BUF_SIZE 160
+static char s_zc6_can_monitor_buf[ZC6_CAN_MONITOR_BUF_SIZE];
+static size_t s_zc6_can_monitor_len = 0;
+static int64_t s_zc6_can_monitor_entered_us = 0;   // 进入监听时间
+static int64_t s_zc6_can_monitor_last_sample_us = 0; // 最近一次成功解析
+static uint32_t s_zc6_can_monitor_obd_cycle = 0;   // 监听中 OBD 查询轮次计数
+#define ZC6_CAN_OBD_INTERVAL 50                     // 每 50 轮(~6s) 退出 ATMA 查一次 OBD PID
 bool elm327_ble_send_ascii_blocking(const char *ascii_cmd);
 
 // 多包响应累积缓冲区（21 01 等长响应分多个BLE包）
@@ -122,6 +151,10 @@ static inline uint8_t oil_mode_to_poll_idx(oil_temp_query_mode_t mode) {
         case OIL_TEMP_MODE_PORSCHE_CAN_441: return 5;
         case OIL_TEMP_MODE_MINI_22_5822: return 6;
         case OIL_TEMP_MODE_BMW_22_4402: return 7;
+        case OIL_TEMP_MODE_BMW_22_03F3: return 8;
+        case OIL_TEMP_MODE_BMW_G_22_4402: return 9;
+        case OIL_TEMP_MODE_BMW_22_D002: return 10;
+        case OIL_TEMP_MODE_BMW_22_111F: return 11;
         default: return 0;
     }
 }
@@ -145,20 +178,32 @@ static void init_oil_temp_strategy(void) {
     // ZC6/ZD8 的 secondary/tertiary 已置 NONE → 仍是单一固定模式(行为不变)；
     // MX-5 = 1310 → 回退 111F，两种 Mazda 油温 PID 都覆盖。
     const oil_temp_strategy_t *st = vehicle_profile_get_oil_temp_strategy();
-    s_oil_mode_priority[0] = st ? st->primary   : OIL_TEMP_MODE_PID_5C;
-    s_oil_mode_priority[1] = st ? st->secondary : OIL_TEMP_MODE_NONE;
-    s_oil_mode_priority[2] = st ? st->tertiary  : OIL_TEMP_MODE_NONE;
+    s_oil_mode_priority[0] = st ? st->primary    : OIL_TEMP_MODE_PID_5C;
+    s_oil_mode_priority[1] = st ? st->secondary  : OIL_TEMP_MODE_NONE;
+    s_oil_mode_priority[2] = st ? st->tertiary   : OIL_TEMP_MODE_NONE;
+    s_oil_mode_priority[3] = st ? st->quaternary : OIL_TEMP_MODE_NONE;
     if (s_oil_mode_priority[0] == OIL_TEMP_MODE_TOYOTA_21_01) {
-        s_mode21_oil_idx = 33; // ZC6 默认固定索引
+        // 根据车型设置固定的 mode21 油温索引
+        uint8_t vehicle_idx = get_active_vehicle_idx_safe();
+        if (vehicle_idx == 1) {
+            s_mode21_oil_idx = 33; // ZC6 固定 d[33]
+        } else if (vehicle_idx == 3) {
+            s_mode21_oil_idx = 27; // GT86 ZN6 固定 d[27]
+        } else {
+            s_mode21_oil_idx = 33; // 其他 Toyota 默认 d[33]
+        }
     }
+    s_last_mode21_oil = -100;
+    s_last_mode21_oil_us = 0;
+    s_mode21_hold_cnt = 0;
 
     // 重置失败计数
     memset(s_oil_mode_fail_count, 0, sizeof(s_oil_mode_fail_count));
     s_oil_query_mode = 0;
     s_vehicle_profile_inited = true;
-    
+
     const vehicle_profile_t *profile = vehicle_profile_get_active();
-    ESP_LOGI(TAG, "Oil temp strategy fixed for [%s]: Primary=%d",
+    ESP_LOGI(TAG, "Oil temp strategy for [%s]: Primary=%d",
              profile ? profile->name : "UNKNOWN", s_oil_mode_priority[0]);
 }
 
@@ -169,7 +214,7 @@ static oil_temp_query_mode_t get_next_oil_query_mode(uint8_t *poll_idx) {
     }
     
     // 遍历优先级列表，找到首个有效且未过度失败的模式
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 4; i++) {
         oil_temp_query_mode_t mode = s_oil_mode_priority[i];
         if (mode == OIL_TEMP_MODE_NONE) continue;
         
@@ -218,6 +263,18 @@ static void record_oil_temp_success(oil_temp_query_mode_t mode) {
         case OIL_TEMP_MODE_BMW_22_4402:
             s_oil_diag.mode7_ok++;
             break;
+        case OIL_TEMP_MODE_BMW_22_03F3:
+            s_oil_diag.mode8_ok++;
+            break;
+        case OIL_TEMP_MODE_BMW_G_22_4402:
+            s_oil_diag.mode9_ok++;
+            break;
+        case OIL_TEMP_MODE_BMW_22_D002:
+            s_oil_diag.mode10_ok++;
+            break;
+        case OIL_TEMP_MODE_BMW_22_111F:
+            s_oil_diag.mode11_ok++;
+            break;
         default:
             break;
     }
@@ -254,6 +311,18 @@ static void record_oil_temp_failure(oil_temp_query_mode_t mode) {
         case OIL_TEMP_MODE_BMW_22_4402:
             s_oil_diag.mode7_fail++;
             break;
+        case OIL_TEMP_MODE_BMW_22_03F3:
+            s_oil_diag.mode8_fail++;
+            break;
+        case OIL_TEMP_MODE_BMW_G_22_4402:
+            s_oil_diag.mode9_fail++;
+            break;
+        case OIL_TEMP_MODE_BMW_22_D002:
+            s_oil_diag.mode10_fail++;
+            break;
+        case OIL_TEMP_MODE_BMW_22_111F:
+            s_oil_diag.mode11_fail++;
+            break;
         default:
             break;
     }
@@ -261,8 +330,8 @@ static void record_oil_temp_failure(oil_temp_query_mode_t mode) {
 }
 
 // 默认回调与轮询任务（可选）
-static void default_on_connected(void) { ESP_LOGI(TAG, "OBD BLE connected"); }
-static void default_on_disconnected(void) { ESP_LOGI(TAG, "OBD BLE disconnected"); }
+static void default_on_connected(void) { ESP_LOGD(TAG, "OBD BLE connected"); }
+static void default_on_disconnected(void) { ESP_LOGD(TAG, "OBD BLE disconnected"); }
 static void default_on_raw_notify(const uint8_t *data, size_t len) {
     // 仅 debug 级别打印原始数据（生产不输出）
     if (esp_log_level_get(TAG) >= ESP_LOG_DEBUG) {
@@ -274,15 +343,20 @@ static void default_on_raw_notify(const uint8_t *data, size_t len) {
         ESP_LOGD(TAG, "RAW[%d]: %s", (int)len, printbuf);
     }
     // 若接收到 '>'，表示 ELM 准备好，可发送下一条
+    // xTaskNotify 立刻唤醒 poll task，避免 10ms 轮询开销
     for (size_t i = 0; i < len; ++i) {
-        if (data[i] == '>') { s_elm_ready = true; break; }
+        if (data[i] == '>') {
+            s_elm_ready = true;
+            if (s_poll_task_handle) xTaskNotify(s_poll_task_handle, 0, eNoAction);
+            break;
+        }
     }
 }
 
 // ---- 协议自动检测函数 ----
 // 尝试所有协议（1-11），通过发送 01 0C （读 RPM）来判断协议是否有效
 static int elm327_auto_detect_protocol(void) {
-    ESP_LOGI(TAG, "=== Starting protocol auto-detect ===");
+    ESP_LOGD(TAG, "=== Starting protocol auto-detect ===");
     
     // 先发送通用初始化命令（不涉及协议选择）
     const char *init_cmds[] = {
@@ -301,7 +375,7 @@ static int elm327_auto_detect_protocol(void) {
     
     // 尝试协议 1-11
     for (int proto = 1; proto <= 11; proto++) {
-        ESP_LOGI(TAG, "[DETECT] Trying protocol %d...", proto);
+        ESP_LOGD(TAG, "[DETECT] Trying protocol %d...", proto);
         
         // 设置协议
         char atsp_cmd[16];
@@ -318,7 +392,7 @@ static int elm327_auto_detect_protocol(void) {
         elm327_ble_send_ascii_blocking("01 0C\r");
         esp_log_level_t prev_level = esp_log_level_get(TAG);
         esp_log_level_set(TAG, ESP_LOG_INFO);
-        ESP_LOGI(TAG, "[DETECT] Sent 01 0C, waiting...");
+        ESP_LOGD(TAG, "[DETECT] Sent 01 0C, waiting...");
         esp_log_level_set(TAG, prev_level);
         
         // 等待响应最多 2 秒
@@ -330,7 +404,7 @@ static int elm327_auto_detect_protocol(void) {
             if (s_protocol_detect_got_response) {
                 // 成功！
                 s_protocol_detect_idx = -1;  // 结束检测模式
-                ESP_LOGI(TAG, "[DETECT] Protocol %d: SUCCESS! (RPM=%ld)", proto, s_protocol_detect_rpm);
+                ESP_LOGD(TAG, "[DETECT] Protocol %d: SUCCESS! (RPM=%ld)", proto, s_protocol_detect_rpm);
                 return proto;
             }
         }
@@ -344,7 +418,15 @@ static int elm327_auto_detect_protocol(void) {
 }
 
 static void default_on_parsed_rpm(uint16_t rpm) { ESP_LOGD(TAG, "RPM: %u", rpm); obd_data_set_rpm(rpm); }
-static void default_on_parsed_speed(uint8_t kmh) { ESP_LOGD(TAG, "SPEED: %u km/h", kmh); obd_data_set_speed(kmh); }
+static void default_on_parsed_speed(uint8_t kmh) {
+    // 车速校正: 乘当前车型 speed_scale(如 BMW X1 ×1.0606); 未设/≤0 视为 1.0
+    const vehicle_profile_t *p = vehicle_profile_get_active();
+    float sc = (p && p->speed_scale > 0.0f) ? p->speed_scale : 1.0f;
+    int32_t v = (int32_t)((float)kmh * sc + 0.5f);
+    if (v > 255) v = 255;
+    ESP_LOGD(TAG, "SPEED: %u -> %d km/h (x%.4f)", kmh, (int)v, sc);
+    obd_data_set_speed((uint8_t)v);
+}
 static void default_on_parsed_coolant_temp(uint32_t coolant_temp) { ESP_LOGD(TAG, "CLT: %u C", coolant_temp); obd_data_set_coolant_temp((int16_t)coolant_temp); }
 static void default_on_parsed_intake_temp(uint32_t intake_temp) { ESP_LOGD(TAG, "IAT: %u C", intake_temp); obd_data_set_intake_temp((int16_t)intake_temp); }
 
@@ -360,50 +442,53 @@ static inline void obd_data_set_oil_temp_with_offset(int16_t temp) {
     obd_data_set_oil_temp(adjusted);
 }
 
+// float → int16_t 四舍五入（正值安全，油温范围内无需处理负值精度）
+static inline int16_t oil_f2i(float f) { return (int16_t)(f + 0.5f); }
+
 static void default_on_parsed_oil_temp(uint32_t oil_temp)
 {
-    static int16_t s_oil_filtered = -100;
+    // float 内部追踪，避免整数截断导致 1°C 变化永远不更新
+    // 例: filtered=90, raw=91 → 0.65*90+0.35*91=90.35 → 取整显示 90，
+    //     但 float 继续累积，再次读 91 → 0.65*90.35+0.35*91=90.578 → 显示 91 ✓
+    static float s_oil_filtered = -100.0f;
     static int16_t s_oil_pending = -100;
     static uint8_t s_oil_pending_cnt = 0;
-    static uint32_t s_total_updates = 0;
-    
-    s_total_updates++;
+
     int16_t in = (int16_t)oil_temp;
     s_oil_diag.last_raw_temp = in;
-    
-    // 基础范围检查：-20 到 150°C
+
     if (in < -20 || in > 150) {
         ESP_LOGW(TAG, "OIL: Out of range raw=%d", in);
         return;
     }
 
-    // ---- 改进的平滑算法 ----
-    // 1. 初始化阶段：直接接受前 3 个有效值
-    if (s_oil_filtered <= -40) {
-        s_oil_filtered = in;
+    // 1. 初始化
+    if (s_oil_filtered <= -40.0f) {
+        s_oil_filtered = (float)in;
         s_oil_pending = in;
         s_oil_pending_cnt = 1;
         s_oil_diag.last_filtered_temp = in;
         ESP_LOGI(TAG, "OIL: Init with raw=%d", in);
-        obd_data_set_oil_temp_with_offset(s_oil_filtered);
+        obd_data_set_oil_temp_with_offset(in);
         return;
     }
 
-    int diff = abs((int)in - (int)s_oil_filtered);
+    float fdiff = s_oil_filtered - (float)in;
+    int diff = (int)(fdiff >= 0 ? fdiff : -fdiff);
 
-    // 2. 小变化（<=5°C）：快速响应，直接采纳
+    // 2. 小变化（<=5°C）：加权平均，float 精度保证 1°C 渐变正确累积
     if (diff <= 5) {
         s_oil_pending = -100;
         s_oil_pending_cnt = 0;
-        // 加权平均：65% 历史 + 35% 新值（响应更快）
-        s_oil_filtered = (int16_t)((65 * s_oil_filtered + 35 * in) / 100);
-        s_oil_diag.last_filtered_temp = s_oil_filtered;
-        ESP_LOGD(TAG, "OIL: Small change raw=%d filtered=%d", in, s_oil_filtered);
-        obd_data_set_oil_temp_with_offset(s_oil_filtered);
+        s_oil_filtered = 0.65f * s_oil_filtered + 0.35f * (float)in;
+        int16_t disp = oil_f2i(s_oil_filtered);
+        s_oil_diag.last_filtered_temp = disp;
+        ESP_LOGD(TAG, "OIL: raw=%d filtered=%.2f disp=%d", in, s_oil_filtered, disp);
+        obd_data_set_oil_temp_with_offset(disp);
         return;
     }
 
-    // 3. 中等变化（5~15°C）：需要 2 次确认
+    // 3. 中等变化（5~15°C）：4 次确认后采纳
     if (diff <= 15) {
         if (s_oil_pending == in) {
             s_oil_pending_cnt++;
@@ -413,28 +498,23 @@ static void default_on_parsed_oil_temp(uint32_t oil_temp)
             ESP_LOGD(TAG, "OIL: Medium spike first occurrence raw=%d, need confirmation", in);
             return;
         }
-        
-        if (s_oil_pending_cnt >= 2) {
-            // 确认无误，采纳
-            s_oil_filtered = (int16_t)((50 * s_oil_filtered + 50 * in) / 100);
+        if (s_oil_pending_cnt >= 4) {
+            s_oil_filtered = 0.5f * s_oil_filtered + 0.5f * (float)in;
             s_oil_pending = -100;
             s_oil_pending_cnt = 0;
-            s_oil_diag.last_filtered_temp = s_oil_filtered;
-            ESP_LOGI(TAG, "OIL: Medium change confirmed raw=%d filtered=%d", in, s_oil_filtered);
-            obd_data_set_oil_temp_with_offset(s_oil_filtered);
-            return;
+            int16_t disp = oil_f2i(s_oil_filtered);
+            s_oil_diag.last_filtered_temp = disp;
+            ESP_LOGI(TAG, "OIL: Medium change confirmed raw=%d filtered=%.2f disp=%d", in, s_oil_filtered, disp);
+            obd_data_set_oil_temp_with_offset(disp);
+        } else {
+            ESP_LOGD(TAG, "OIL: Medium spike pending (%u/%d)", s_oil_pending_cnt, 4);
         }
-        
-        // 暂时不处理
-        ESP_LOGD(TAG, "OIL: Medium spike pending (%u/%d)", s_oil_pending_cnt, 2);
         return;
     }
 
-    // ---- 4. 大变化（>15°C）----
-    ESP_LOGW(TAG, "OIL: Large spike filtered=%d raw=%d (Δ=%d)", s_oil_filtered, in, diff);
-    
+    // 4. 大变化（>15°C）：3 次确认后直接采纳
+    ESP_LOGW(TAG, "OIL: Large spike filtered=%.1f raw=%d (Δ=%d)", s_oil_filtered, in, diff);
     if (diff >= 20) {
-        // 需要 3 次确认来信任大跳变
         if (s_oil_pending == in) {
             s_oil_pending_cnt++;
         } else {
@@ -442,14 +522,13 @@ static void default_on_parsed_oil_temp(uint32_t oil_temp)
             s_oil_pending_cnt = 1;
             return;
         }
-        
         if (s_oil_pending_cnt >= 3) {
-            s_oil_filtered = in;  // 大跳变直接采纳
+            s_oil_filtered = (float)in;
             s_oil_pending = -100;
             s_oil_pending_cnt = 0;
-            s_oil_diag.last_filtered_temp = s_oil_filtered;
-            ESP_LOGI(TAG, "OIL: Large change ACCEPTED raw=%d filtered=%d (confirmed 3x)", in, s_oil_filtered);
-            obd_data_set_oil_temp_with_offset(s_oil_filtered);
+            s_oil_diag.last_filtered_temp = in;
+            ESP_LOGI(TAG, "OIL: Large change ACCEPTED raw=%d (confirmed 3x)", in);
+            obd_data_set_oil_temp_with_offset(in);
         }
     }
 }
@@ -482,7 +561,7 @@ static void porsche_read_can_441(void) {
     vTaskDelay(pdMS_TO_TICKS(120));    // 等通知回调解析完该帧
     // 诊断: 明确打印本轮监听结果, 便于串口排查(抓到=解析问题, 没抓到=总线无441/适配器不支持ATMA)
     if (s_porsche_441_seen) {
-        ESP_LOGI(TAG, "[441] frame captured & parsed OK");
+        ESP_LOGD(TAG, "[441] frame captured & parsed OK");
     } else {
         ESP_LOGW(TAG, "[441] NO 441 frame in window (check FULL[] log above: ATMA returned what?)");
         record_oil_temp_failure(OIL_TEMP_MODE_PORSCHE_CAN_441);
@@ -490,6 +569,165 @@ static void porsche_read_can_441(void) {
     // 还原：关帧头、恢复自动接收地址(否则后续普通 PID 响应被过滤/错解析)
     elm327_ble_send_ascii_blocking("AT H0\r");
     elm327_ble_send_ascii_blocking("AT AR\r");
+}
+
+// ZC6/GT86：转速在 CAN 广播帧 0x140 (bits 16-29, 14bit LE, 直接 rpm)。
+// 流程同保时捷 441：过滤 → 开帧头 → 监听 → 停止 → 还原。帧解析在通知回调 "140 " 分支。
+// 连续失败超阈值后自动回退到标准 01 0C，避免 ATMA 阻塞拖慢整个轮询。
+static void zc6_read_can_rpm(void) {
+    elm327_ble_send_ascii_blocking("AT CRA 140\r");
+    elm327_ble_send_ascii_blocking("AT H1\r");
+    uint8_t cmd[8];
+    size_t n = elm327_ble_ascii_cmd_to_bytes("AT MA\r", cmd, sizeof(cmd));
+    s_zc6_can_rpm_seen = false;
+    if (n) { s_elm_ready = false; elm327_ble_send_command(cmd, n); }
+    vTaskDelay(pdMS_TO_TICKS(200));   // 0x140 广播 ~50Hz, 200ms 足够抓到多帧
+    uint8_t stop = '\r';
+    elm327_ble_send_command(&stop, 1);
+    vTaskDelay(pdMS_TO_TICKS(120));
+    if (s_zc6_can_rpm_seen) {
+        s_can_rpm_fail_count = 0;  // 成功，清零
+        ESP_LOGD(TAG, "[CAN 140] RPM frame captured & parsed OK");
+    } else {
+        s_can_rpm_fail_count++;
+        ESP_LOGW(TAG, "[CAN 140] NO 140 frame (fail %d/%d)", s_can_rpm_fail_count, CAN_RPM_FAIL_THRESHOLD);
+    }
+    elm327_ble_send_ascii_blocking("AT H0\r");
+    elm327_ble_send_ascii_blocking("AT AR\r");
+}
+
+// FT86 CAN 广播帧快速监听(假设 ATH1 已开启):
+// 仅 AT CRA 切过滤 → ATMA → 停止。AT H1/H0/AR 由调用方在轮询周期首尾统一处理。
+// cra_id: 3位十六进制字符串(如 "140", "360", "0D1", "141")
+// window_ms: 监听窗口(ms), 100Hz≤100ms / 50Hz≤150ms / 20Hz≤200ms (防 512B 缓冲溢出)
+static void ft86_can_monitor(const char *cra_id, uint32_t window_ms) {
+    s_accum_len = 0;
+    s_accum_buf[0] = '\0';
+
+    char cmd[20];
+    snprintf(cmd, sizeof(cmd), "AT CRA %s\r", cra_id);
+    elm327_ble_send_ascii_blocking(cmd);
+    uint8_t ma_cmd[8];
+    size_t n = elm327_ble_ascii_cmd_to_bytes("AT MA\r", ma_cmd, sizeof(ma_cmd));
+    if (n) { s_elm_ready = false; elm327_ble_send_command(ma_cmd, n); }
+    vTaskDelay(pdMS_TO_TICKS(window_ms));
+    uint8_t stop = '\r';
+    elm327_ble_send_command(&stop, 1);
+    vTaskDelay(pdMS_TO_TICKS(30));
+}
+
+// ---- ZC6 CAN 持续监听: 进入/退出/逐字节喂入/逐行解析 ----
+
+static void zc6_can_monitor_enter(void)
+{
+    // 不设过滤, 全部帧通过, 软件只解析 0x140(转速) + 0x360(油温水温)
+    const char *cmds[] = {
+        "ATE0\r", "ATL0\r", "ATS0\r", "ATH1\r", "ATMA\r",
+    };
+    s_zc6_can_monitor_active = false;
+    s_zc6_can_monitor_len = 0;
+    s_zc6_can_monitor_buf[0] = '\0';
+    s_zc6_can_monitor_entered_us = 0;
+    s_zc6_can_monitor_last_sample_us = 0;
+    s_accum_len = 0;
+    s_accum_buf[0] = '\0';
+
+    for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
+        elm327_ble_send_ascii_blocking(cmds[i]);
+        vTaskDelay(pdMS_TO_TICKS(i + 1 == sizeof(cmds) / sizeof(cmds[0]) ? 80 : 30));
+    }
+    s_zc6_can_monitor_active = true;
+    s_zc6_can_monitor_entered_us = esp_timer_get_time();
+    ESP_LOGI(TAG, "[ZC6 CAN] Entered ATMA monitor (0x140/141/0D1)");
+}
+
+static void zc6_can_monitor_exit(void)
+{
+    s_zc6_can_monitor_active = false;
+    s_elm_ready = true;
+    uint8_t stop = '\r';
+    elm327_ble_send_command(&stop, 1);
+    vTaskDelay(pdMS_TO_TICKS(80));
+    s_accum_len = 0;
+    s_accum_buf[0] = '\0';
+    // 轻量还原: 清过滤+关帧头, 不做 ATZ 全复位 (省 ~500ms)
+    elm327_ble_send_ascii_blocking("AT AR\r");
+    elm327_ble_send_ascii_blocking("AT H0\r");
+    ESP_LOGI(TAG, "[ZC6 CAN] Exited ATMA (light restore)");
+}
+
+// 逐行解析: ZC6(0x140/0x360) + ZD8(0x40/0x345), 总线无此帧自动跳过
+static bool zc6_can_monitor_parse_line(const char *line)
+{
+    uint16_t rpm;
+    uint8_t tps;
+
+    // ZC6 Gen1: 0x140 (100Hz) 转速+节气门
+    if (zc6_can_decode_140(line, &rpm, &tps)) {
+        if (s_cbs.on_parsed_rpm) s_cbs.on_parsed_rpm(rpm);
+        if (s_cbs.on_parsed_throttle_position) s_cbs.on_parsed_throttle_position(tps);
+        s_zc6_can_monitor_last_sample_us = esp_timer_get_time();
+        s_last_obd_valid_us = esp_timer_get_time();
+        return true;
+    }
+    // ZD8 Gen2: 0x40 (100Hz) 转速+节气门
+    if (zd8_can_decode_40(line, &rpm, &tps)) {
+        if (s_cbs.on_parsed_rpm) s_cbs.on_parsed_rpm(rpm);
+        if (s_cbs.on_parsed_throttle_position) s_cbs.on_parsed_throttle_position(tps);
+        s_zc6_can_monitor_last_sample_us = esp_timer_get_time();
+        s_last_obd_valid_us = esp_timer_get_time();
+        return true;
+    }
+    // ZC6 Gen1: 0x360 (20Hz) 油温 byte2-40, 水温 byte3-40
+    {
+        uint8_t p[8] = {0};
+        if (zc6_can_extract_payload(line, 0x360, 8, p)) {
+            int32_t oil_c = (int32_t)p[2] - 40;
+            int32_t clt_c = (int32_t)p[3] - 40;
+            if (oil_c >= -40 && oil_c <= 215 && s_cbs.on_parsed_oil_temp)
+                s_cbs.on_parsed_oil_temp((uint32_t)oil_c);
+            if (clt_c >= -40 && clt_c <= 215 && s_cbs.on_parsed_coolant_temp)
+                s_cbs.on_parsed_coolant_temp((uint32_t)clt_c);
+            s_zc6_can_monitor_last_sample_us = esp_timer_get_time();
+            s_last_obd_valid_us = esp_timer_get_time();
+            return true;
+        }
+    }
+    // ZD8 Gen2: 0x345 (10Hz) 油温 byte3-40, 水温 byte4-40
+    {
+        int16_t oil_c, clt_c;
+        if (zd8_can_decode_345(line, &oil_c, &clt_c)) {
+            if (oil_c >= -40 && oil_c <= 215 && s_cbs.on_parsed_oil_temp)
+                s_cbs.on_parsed_oil_temp((uint32_t)oil_c);
+            if (clt_c >= -40 && clt_c <= 215 && s_cbs.on_parsed_coolant_temp)
+                s_cbs.on_parsed_coolant_temp((uint32_t)clt_c);
+            s_zc6_can_monitor_last_sample_us = esp_timer_get_time();
+            s_last_obd_valid_us = esp_timer_get_time();
+            return true;
+        }
+    }
+    return false;
+}
+
+// 逐字节喂入: 按 \r\n 切行, 每行调 parse_line
+static void zc6_can_monitor_feed(const uint8_t *data, size_t len)
+{
+    for (size_t i = 0; i < len; i++) {
+        char ch = (char)data[i];
+        if (ch == '>') { s_elm_ready = true; continue; }
+        if (ch == '\r' || ch == '\n') {
+            if (s_zc6_can_monitor_len > 0) {
+                s_zc6_can_monitor_buf[s_zc6_can_monitor_len] = '\0';
+                zc6_can_monitor_parse_line(s_zc6_can_monitor_buf);
+                s_zc6_can_monitor_len = 0;
+            }
+            continue;
+        }
+        if ((unsigned char)ch < 0x20 || (unsigned char)ch > 0x7E) continue;
+        if (s_zc6_can_monitor_len + 1 >= ZC6_CAN_MONITOR_BUF_SIZE)
+            s_zc6_can_monitor_len = 0;
+        s_zc6_can_monitor_buf[s_zc6_can_monitor_len++] = ch;
+    }
 }
 
 // ELM327 初始化序列(协议选择 + AT 配置 + 总线预热 + 油温策略)。
@@ -504,17 +742,17 @@ static void do_elm_init(void) {
     const vehicle_profile_t *vp_proto = vehicle_profile_get_active();
     if (vp_proto && vp_proto->forced_protocol != 0) {
         protocol_to_use = vp_proto->forced_protocol;
-        ESP_LOGI(TAG, "Vehicle '%s' forces protocol %d (skip auto-detect)", vp_proto->name, protocol_to_use);
+        ESP_LOGD(TAG, "Vehicle '%s' forces protocol %d (skip auto-detect)", vp_proto->name, protocol_to_use);
     } else if (protocol_to_use == 0) {
         // 自动协议检测
-        ESP_LOGI(TAG, "Protocol auto-detect enabled (current NVS: 0-auto)");
+        ESP_LOGD(TAG, "Protocol auto-detect enabled (current NVS: 0-auto)");
         int detected_proto = elm327_auto_detect_protocol();
         if (detected_proto > 0) {
             protocol_to_use = (uint8_t)detected_proto;
             nvs_user_cfg_t new_cfg = *cfg;
             new_cfg.protocol = protocol_to_use;
             nvs_cfg_set(&new_cfg);
-            ESP_LOGI(TAG, "Protocol auto-detect SUCCESS! Saving protocol %d to NVS", protocol_to_use);
+            ESP_LOGD(TAG, "Protocol auto-detect SUCCESS! Saving protocol %d to NVS", protocol_to_use);
         } else {
             protocol_to_use = 6;
             ESP_LOGW(TAG, "Protocol auto-detect FAILED, using fallback protocol 6");
@@ -523,30 +761,36 @@ static void do_elm_init(void) {
 
     snprintf(atsp_cmd, sizeof(atsp_cmd), "ATSP%d\r", protocol_to_use);
     const char *fixed_header_cmd = get_vehicle_fixed_header_cmd();
+    // 超时命令: 优先用车型配置的 obd_timeout, 默认 0x19
+    char atst_cmd[12];
+    uint8_t timeout_val = (vp_proto && vp_proto->obd_timeout) ? vp_proto->obd_timeout : 0x19;
+    snprintf(atst_cmd, sizeof(atst_cmd), "ATST %02X\r", timeout_val);
     const char *init_cmds[] = {
-        "ATZ\r", "ATE0\r", "ATL0\r", "ATS1\r", "ATH0\r", "ATAT1\r", "ATST 19\r",
+        "ATZ\r", "ATE0\r", "ATL0\r", "ATS1\r", "ATH0\r", "ATAT1\r", atst_cmd,
         atsp_cmd, fixed_header_cmd,
     };
     for (size_t i = 0; i < (sizeof(init_cmds) / sizeof(init_cmds[0])); ++i) {
         elm327_ble_send_ascii_blocking(init_cmds[i]);
-        ESP_LOGI(TAG, " AT init Cmd send %s", init_cmds[i]);
+        ESP_LOGD(TAG, " AT init Cmd send %s", init_cmds[i]);
         vTaskDelay(pdMS_TO_TICKS(30));
     }
     // 总线预热: 多发几次 01 00, 给整车 CAN/ELM 协议握手时间(冷启动总线可能还没醒)
     for (int probe = 0; probe < 3; ++probe) {
         elm327_ble_send_ascii_blocking("01 00\r");
-        ESP_LOGI(TAG, " CMD 01 00 probe #%d", probe);
+        ESP_LOGD(TAG, " CMD 01 00 probe #%d", probe);
         vTaskDelay(pdMS_TO_TICKS(150));
     }
 
     // ---- 初始化油温查询策略（基于车型配置） ----
     init_oil_temp_strategy();
+    s_can_rpm_fail_count = 0;  // 重连后重试 CAN RPM
     const vehicle_profile_t *active_profile = vehicle_profile_get_active();
-    ESP_LOGI(TAG, "Active vehicle profile: %s", active_profile ? active_profile->name : "Unknown");
+    ESP_LOGD(TAG, "Active vehicle profile: %s", active_profile ? active_profile->name : "Unknown");
     s_last_obd_valid_us = esp_timer_get_time();   // 给一个新的"有效数据"起点, 避免刚初始化就触发自愈
 }
 
 static void obd_poll_task(void *arg) {
+    s_poll_task_handle = xTaskGetCurrentTaskHandle();
     uint32_t tick_count = 0;
     bool inited = false;
     uint8_t heal_attempts = 0;   // 连续自愈次数; 重发ATZ若干次仍无数据则升级为强制重连
@@ -554,6 +798,12 @@ static void obd_poll_task(void *arg) {
     // 8-slot 轮询: 0=RPM, 1=IAT, 2=Speed, 3=CLT, 4=Load(0x04), 5=TPS(0x11), 6=OIL(车型策略), 7=BAT(0x42)
     while (1)
     {
+        // Showroom 模式: 暂停 OBD 轮询, 避免覆盖假数据
+        extern bool ui_showroom_is_active(void);
+        if (ui_showroom_is_active()) {
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
         // 未连接或通知订阅未就绪 → 标记需重新初始化并等待
         if (!s_connected || !s_notify_ready) {
             inited = false;
@@ -588,6 +838,51 @@ static void obd_poll_task(void *arg) {
             inited = false;
             continue;
         }
+        // ---- ZC6 CAN 模式: 转速走 CAN 0x140, 其余走标准 OBD (和普通 BRZ ZC6 完全一致) ----
+        // 两阶段: ATMA 监听转速 → 每 N 轮退出, 跑一轮完整标准 OBD 轮询 → 再回 ATMA
+        const vehicle_profile_t *vp_poll = vehicle_profile_get_active();
+        bool can_broadcast = vp_poll && vp_poll->can_broadcast_mode;
+        static bool s_zc6_can_obd_phase = false;  // true=正在跑标准 OBD 轮询
+
+        if (can_broadcast && !s_zc6_can_obd_phase) {
+            // ---- ATMA 阶段: 只收 0x140 转速 ----
+            if (!s_zc6_can_monitor_active) {
+                zc6_can_monitor_enter();
+                s_zc6_can_monitor_obd_cycle = 0;
+            }
+            // 自愈
+            if (s_zc6_can_monitor_entered_us > 0 &&
+                (esp_timer_get_time() - s_last_obd_valid_us) > 5000000) {
+                ESP_LOGW(TAG, "[ZC6 CAN] No data >5s, re-enter ATMA");
+                zc6_can_monitor_exit();
+                zc6_can_monitor_enter();
+                s_zc6_can_monitor_obd_cycle = 0;
+                vTaskDelay(pdMS_TO_TICKS(120));
+                continue;
+            }
+            s_zc6_can_monitor_obd_cycle++;
+            if (s_zc6_can_monitor_obd_cycle >= ZC6_CAN_OBD_INTERVAL) {
+                // 切换到 OBD 阶段
+                zc6_can_monitor_exit();
+                s_zc6_can_obd_phase = true;
+                tick_count = 1;  // 从 slot1 开始, 跳过 slot0(RPM 已由 CAN 提供)
+            }
+            vTaskDelay(pdMS_TO_TICKS(120));
+            continue;
+        }
+
+        // ---- 标准 OBD 轮询 (ZC6 CAN 的 OBD 阶段 或 非 CAN 车型) ----
+        // 完全复用下面的 switch(tick_count), 和普通 BRZ ZC6 一模一样
+        if (can_broadcast && s_zc6_can_obd_phase && tick_count == 0) {
+            // 一轮标准 OBD 跑完, 回到 ATMA 阶段
+            s_zc6_can_obd_phase = false;
+            zc6_can_monitor_enter();
+            s_zc6_can_monitor_obd_cycle = 0;
+            vTaskDelay(pdMS_TO_TICKS(120));
+            continue;
+        }
+
+        {
         switch(tick_count)
         {
             case 0://发动机转速
@@ -598,7 +893,8 @@ static void obd_poll_task(void *arg) {
                 elm327_ble_send_ascii_blocking("01 0F\r");
                 ESP_LOGD(TAG, "Send 01 0F");
                 break;
-            case 6: // 机油温自动查询（基于车型策略）
+            case 6: // 机油温自动查询（基于车型策略）(CAN 模式由 0x360 提供, 跳过)
+                if (can_broadcast) break;
                 {
                     uint8_t poll_idx = 0;
                     oil_temp_query_mode_t mode = get_next_oil_query_mode(&poll_idx);
@@ -635,6 +931,35 @@ static void obd_poll_task(void *arg) {
                         elm327_ble_send_ascii_blocking("22 44 02\r");
                         s_expect_mode21 = false;
                         ESP_LOGI(TAG, "[Slot6] Send 22 44 02 (BMW F-series oil temp)");
+                    } else if (mode == OIL_TEMP_MODE_BMW_22_03F3) {
+                        // 03F3 需要物理寻址; 若当前车型用功能寻址(如 BMW G), 临时切换 header
+                        const vehicle_profile_t *vp_03f3 = vehicle_profile_get_active();
+                        bool need_phys_03f3 = vp_03f3 && vp_03f3->obd_functional_addr;
+                        if (need_phys_03f3) elm327_ble_send_ascii_blocking("ATSH7E0\r");
+                        elm327_ble_send_ascii_blocking("22 03 F3\r");
+                        if (need_phys_03f3) elm327_ble_send_ascii_blocking("ATSH7DF\r");
+                        s_expect_mode21 = false;
+                        ESP_LOGI(TAG, "[Slot6] Send 22 03 F3 (BMW G-series oil temp)");
+                    } else if (mode == OIL_TEMP_MODE_BMW_G_22_4402) {
+                        // BMW G: 标准OBD用7DF, Mode 22厂商PID临时切到7E0物理寻址
+                        elm327_ble_send_ascii_blocking("ATSH7E0\r");
+                        elm327_ble_send_ascii_blocking("22 44 02\r");
+                        elm327_ble_send_ascii_blocking("ATSH7DF\r");
+                        s_expect_mode21 = false;
+                        ESP_LOGI(TAG, "[Slot6] Send 22 44 02 (BMW G-series oil temp, 2-byte formula)");
+                    } else if (mode == OIL_TEMP_MODE_BMW_22_D002) {
+                        elm327_ble_send_ascii_blocking("ATSH7E0\r");
+                        elm327_ble_send_ascii_blocking("22 D0 02\r");
+                        elm327_ble_send_ascii_blocking("ATSH7DF\r");
+                        s_expect_mode21 = false;
+                        ESP_LOGI(TAG, "[Slot6] Send 22 D0 02 (BMW G-series oil sump temp)");
+                    } else if (mode == OIL_TEMP_MODE_BMW_22_111F) {
+                        // BMW Mode 22 PID 111F, 物理寻址 7E0; 公式: °C = A - 50
+                        elm327_ble_send_ascii_blocking("ATSH7E0\r");
+                        elm327_ble_send_ascii_blocking("22 11 1F\r");
+                        elm327_ble_send_ascii_blocking("ATSH7DF\r");
+                        s_expect_mode21 = false;
+                        ESP_LOGI(TAG, "[Slot6] Send 22 11 1F (BMW oil temp, A-50)");
                     } else {
                         ESP_LOGW(TAG, "[Slot6] No valid oil temp mode available");
                         s_expect_mode21 = false;
@@ -646,9 +971,11 @@ static void obd_poll_task(void *arg) {
                 elm327_ble_send_ascii_blocking("01 0D\r");
                 ESP_LOGD(TAG, "Send 01 0D");
                 break;
-            case 3://冷却液温度
-                elm327_ble_send_ascii_blocking("01 05\r");
-                ESP_LOGD(TAG, "Send 01 05");
+            case 3://冷却液温度 (CAN 模式由 0x360 提供, 跳过)
+                if (!can_broadcast) {
+                    elm327_ble_send_ascii_blocking("01 05\r");
+                    ESP_LOGD(TAG, "Send 01 05");
+                }
                 break;
             case 4://发动机负荷 (0x04, 0~100%)
                 elm327_ble_send_ascii_blocking("01 04\r");
@@ -680,10 +1007,16 @@ static void obd_poll_task(void *arg) {
         {
             tick_count = 0;
         }
+        } // end standard OBD poll block
 
-        // 槽间空等: 原为 100ms(纯空转, 加在"等响应"之上)。调小可显著提高刷新率,
-        // 仍轮询全部 PID → 不影响三连表主表广播。太小会压垮廉价克隆头, 30ms 为稳妥折中。
-        vTaskDelay(pdMS_TO_TICKS(OBD_POLL_SLOT_GAP_MS));
+        // 槽间空等: 优先用车型配置的 poll_gap_ms(如 MX-5 设 10ms); 未配置则用全局默认 30ms。
+        // 太小会压垮廉价克隆头; CAN 总线快速响应车型可放心调小。
+        {
+            const vehicle_profile_t *vp_gap = vehicle_profile_get_active();
+            uint32_t gap = (vp_gap && vp_gap->poll_gap_ms > 0)
+                           ? vp_gap->poll_gap_ms : OBD_POLL_SLOT_GAP_MS;
+            if (gap > 0) vTaskDelay(pdMS_TO_TICKS(gap));
+        }
     }
 }
 
@@ -736,44 +1069,150 @@ static int parse_mode21_data(const char *buf, uint32_t *out, int max_out) {
     return count;
 }
 
-// 从 Mode21 数据中提取机油温字节（以 BRZ ZC6 为参考）
-// BRZ ZC6 通常在固定位置，但支持自适应搜索
+// 从 Mode21 数据中提取机油温字节（以 BRZ ZC6 和 GT86 ZN6 为参考）
+// ZC6: 永远只用 d[33]，不进入自适应搜索（自适应搜索可能误选其他字节导致跳到 60/70°C）
+// GT86: 永远只用 d[27]，不进入自适应搜索
 static bool extract_mode21_oil_temp(const uint32_t *d, int count, int32_t *oil_c) {
     if (!d || count <= 0 || !oil_c) return false;
 
     int16_t coolant = obd_data_get_coolant_temp();
-    
-    ESP_LOGI(TAG, "Mode21 extract: total_count=%d, coolant=%d", count, coolant);
 
-    // ZC6 固定地址 + 固定索引优先，避免自适应误选。
-    if (get_active_vehicle_idx_safe() == 0 && count > 33) {
-        int32_t zc6_fixed = (int32_t)d[33] - 40;
-        if (zc6_fixed >= -10 && zc6_fixed <= 150) {
-            s_mode21_oil_idx = 33;
+    ESP_LOGD(TAG, "Mode21 extract: total_count=%d, coolant=%d", count, coolant);
+
+    // ---- ZC6: 用尾部偏移定位(同GT86思路), 适配38/39字节两种响应长度 ----
+    // 38字节时油温在d[33]=d[38-5]; 39字节时在d[34]=d[39-5]。固定d[33]在39字节帧会读到错误字节。
+    if (get_active_vehicle_idx_safe() == 1) {
+        #define ZC6_MODE21_OIL_TAIL_OFFSET 5
+        int zc6_idx = count - ZC6_MODE21_OIL_TAIL_OFFSET;
+        if (zc6_idx < 0 || zc6_idx >= count) {
+            ESP_LOGW(TAG, "Mode21 ZC6 short response count=%d, skip", count);
+            s_oil_diag.mode2_fail++;
+            return false;
+        }
+        int32_t zc6_temp = (int32_t)d[zc6_idx] - 40;
+        if (zc6_temp < -10 || zc6_temp > 150) {
+            ESP_LOGW(TAG, "Mode21 ZC6 d[%d] out of range: raw=%u, skip", zc6_idx, (unsigned)d[zc6_idx]);
+            s_oil_diag.mode2_fail++;
+            return false;
+        }
+        // 一致性检查：油温在两次轮询间（~270ms）物理上不可能跳变超 8°C
+        // 但如果距上次接受值 >3s（中间帧失败导致间隔大），直接接受（真实温度可能已变）
+        int64_t now_us = esp_timer_get_time();
+        bool time_gap = (s_last_mode21_oil_us == 0) || ((now_us - s_last_mode21_oil_us) > 3000000);
+        bool consistent = (s_last_mode21_oil <= -50) || time_gap ||
+                          (abs((int)zc6_temp - (int)s_last_mode21_oil) <= 8);
+        if (consistent) {
+            s_last_mode21_oil = (int16_t)zc6_temp;
+            s_last_mode21_oil_us = now_us;
+            s_mode21_hold_cnt = 0;
             s_oil_diag.mode2_ok++;
-            *oil_c = zc6_fixed;
-            ESP_LOGI(TAG, "Mode21 ZC6 fixed idx=33 -> %dC", (int)zc6_fixed);
+            *oil_c = zc6_temp;
+            ESP_LOGI(TAG, "Mode21 ZC6 bytes=%d d[%d]=0x%02X -> %dC", count, zc6_idx, (unsigned)d[zc6_idx], (int)zc6_temp);
             return true;
         }
-        ESP_LOGW(TAG, "Mode21 ZC6 fixed idx invalid: raw=%u", (unsigned)d[33]);
+        // 一致性检查失败：hold 上次值，防止单帧噪声显示
+        if (s_mode21_hold_cnt < 30) {
+            s_mode21_hold_cnt++;
+            s_oil_diag.mode2_ok++;
+            *oil_c = s_last_mode21_oil;
+            ESP_LOGW(TAG, "Mode21 ZC6 spike HELD(%d/30): prev=%d new=%d",
+                     s_mode21_hold_cnt, (int)s_last_mode21_oil, (int)zc6_temp);
+            return true;
+        }
+        // Hold 超时（~8s 持续不一致）：视为真实温度变化，接受并重置基准
+        ESP_LOGW(TAG, "Mode21 ZC6 hold timeout: accept %d (was %d)", (int)zc6_temp, (int)s_last_mode21_oil);
+        s_last_mode21_oil = (int16_t)zc6_temp;
+        s_last_mode21_oil_us = esp_timer_get_time();
+        s_mode21_hold_cnt = 0;
+        s_oil_diag.mode2_ok++;
+        *oil_c = zc6_temp;
+        return true;
+    }
+
+    // ---- GT86 ZN6: 距响应末尾固定偏移定位，不落入自适应搜索 ----
+    if (get_active_vehicle_idx_safe() == 3) {
+        int gt86_idx = count - GT86_MODE21_OIL_TAIL_OFFSET;
+        if (gt86_idx < 0 || gt86_idx >= count) {
+            ESP_LOGW(TAG, "Mode21 GT86 short response count=%d (need >=%d), skip",
+                     count, GT86_MODE21_OIL_TAIL_OFFSET);
+            s_oil_diag.mode2_fail++;
+            return false;
+        }
+        int32_t gt86_temp = (int32_t)d[gt86_idx] - 40;
+        if (gt86_temp < -10 || gt86_temp > 150) {
+            ESP_LOGW(TAG, "Mode21 GT86 d[%d] (count=%d) out of range: raw=%u, skip",
+                     gt86_idx, count, (unsigned)d[gt86_idx]);
+            s_oil_diag.mode2_fail++;
+            return false;
+        }
+        bool consistent = (s_last_mode21_oil <= -50) ||
+                          (abs((int)gt86_temp - (int)s_last_mode21_oil) <= 8);
+        if (consistent) {
+            s_last_mode21_oil = (int16_t)gt86_temp;
+            s_mode21_hold_cnt = 0;
+            s_oil_diag.mode2_ok++;
+            *oil_c = gt86_temp;
+            ESP_LOGI(TAG, "Mode21 GT86 bytes=%d d[%d]=0x%02X -> %dC", count, gt86_idx, (unsigned)d[gt86_idx], (int)gt86_temp);
+            return true;
+        }
+        if (s_mode21_hold_cnt < 30) {
+            s_mode21_hold_cnt++;
+            s_oil_diag.mode2_ok++;
+            *oil_c = s_last_mode21_oil;
+            ESP_LOGW(TAG, "Mode21 GT86 spike HELD(%d/30): prev=%d new=%d",
+                     s_mode21_hold_cnt, (int)s_last_mode21_oil, (int)gt86_temp);
+            return true;
+        }
+        ESP_LOGW(TAG, "Mode21 GT86 hold timeout: accept %d (was %d)", (int)gt86_temp, (int)s_last_mode21_oil);
+        s_last_mode21_oil = (int16_t)gt86_temp;
+        s_mode21_hold_cnt = 0;
+        s_oil_diag.mode2_ok++;
+        *oil_c = gt86_temp;
+        return true;
     }
 
     // ---- 策略 1: 使用上次找到的索引（快速路径）----
     if (s_mode21_oil_idx >= 0 && s_mode21_oil_idx < count) {
         int32_t c = (int32_t)d[s_mode21_oil_idx] - 40;
-        if (c >= -10 && c <= 150) {  // 宽松范围验证
+        bool in_range = (c >= -10 && c <= 150);
+        // 油温在两次轮询间（~270ms）物理上不可能跳变超 8°C；用此过滤噪声字节
+        bool consistent = (s_last_mode21_oil <= -50) || (abs((int)c - (int)s_last_mode21_oil) <= 8);
+        if (in_range && consistent) {
+            s_last_mode21_oil = (int16_t)c;
+            s_mode21_hold_cnt = 0;
             *oil_c = c;
             ESP_LOGD(TAG, "Mode21: Using cached idx=%d -> %dC", s_mode21_oil_idx, (int)c);
             s_oil_diag.mode2_ok++;
             return true;
         }
+        if (in_range && !consistent) {
+            // 短期 hold 上次值，避免单帧噪声显示
+            if (s_mode21_hold_cnt < 30) {
+                s_mode21_hold_cnt++;
+                s_oil_diag.mode2_ok++;
+                *oil_c = s_last_mode21_oil;
+                ESP_LOGW(TAG, "Mode21: Fast path spike HELD(%d/30) idx=%d prev=%d new=%d",
+                         s_mode21_hold_cnt, s_mode21_oil_idx, (int)s_last_mode21_oil, (int)c);
+                return true;
+            }
+            // Hold 超时：缓存索引的值在范围内但持续 ~8s 不一致，视为真实温度变化。
+            // 接受新值并重置基准，不落入自适应搜索（自适应搜索可能误选其他字节导致跳变）。
+            ESP_LOGW(TAG, "Mode21: Fast path hold timeout: accept new val=%d at idx=%d (was %d), reset baseline",
+                     (int)c, s_mode21_oil_idx, (int)s_last_mode21_oil);
+            s_last_mode21_oil = (int16_t)c;
+            s_mode21_hold_cnt = 0;
+            s_oil_diag.mode2_ok++;
+            *oil_c = c;
+            return true;
+        }
+        // 缓存索引的值越界（索引失效），才落入自适应搜索重新发现
     }
 
     // ---- 策略 2: 智能搜索 ----
     // 采用两阶段搜索：先严格检查与水温的差异（±25°C），再扩大范围
     int best_idx = -1;
     int32_t best_temp = 0;
-    int best_distance = 32767;
+    int best_distance = -1;
     int strict_count = 0;
 
     for (int idx = 0; idx < count; idx++) {
@@ -782,15 +1221,16 @@ static bool extract_mode21_oil_temp(const uint32_t *d, int count, int32_t *oil_c
         // 基础范围检查：-10 到 150°C（宽泛）
         if (c < -10 || c > 150) continue;
 
-        // 严格匹配：油温应比水温稍高或接近（通常 0~15°C差异）
+        // 严格匹配：油温通常比水温高 5~20°C；正好等于水温的字节大概率是水温回显，优先级降低
         if (coolant > -40) {
             int diff = (int)c - (int)coolant;
-            
+
             // 第一阶段：严格 ±25°C
             if (diff >= -25 && diff <= 25) {
-                // 优先选择：油温略高于水温（偏热量损失的物理现象）
-                int priority = (diff >= 0 && diff <= 15) ? 1000 : 
-                               (diff > 15 && diff <= 25) ? 500 : 100;
+                // 油温略高于水温得最高分；恰好等于水温（diff≈0）得中等分（可能是水温回显字节）
+                int priority = (diff > 0 && diff <= 20) ? 1000 :   // 理想：油温 > 水温
+                               (diff >= -5 && diff <= 0) ? 700  :   // 冷车或等温：可接受
+                               (diff > 20 && diff <= 25) ? 400  : 100; // 极热或偏冷
                 int score = priority - abs(diff);  // 差异越小分越高
                 
                 if (score > best_distance) {
@@ -798,7 +1238,7 @@ static bool extract_mode21_oil_temp(const uint32_t *d, int count, int32_t *oil_c
                     best_idx = idx;
                     best_temp = c;
                     strict_count++;
-                    ESP_LOGI(TAG, "  Strict match: idx=%d temp=%dC diff=%d score=%d", idx, (int)c, diff, score);
+                    ESP_LOGD(TAG, "  Strict match: idx=%d temp=%dC diff=%d score=%d", idx, (int)c, diff, score);
                 }
             }
         } else {
@@ -812,9 +1252,10 @@ static bool extract_mode21_oil_temp(const uint32_t *d, int count, int32_t *oil_c
     }
 
     if (best_idx >= 0) {
-        ESP_LOGI(TAG, "Mode21 selected: idx=%d temp=%dC (strict_matches=%d)", best_idx, (int)best_temp, strict_count);
+        ESP_LOGD(TAG, "Mode21 selected: idx=%d temp=%dC (strict_matches=%d)", best_idx, (int)best_temp, strict_count);
         s_mode21_oil_idx = best_idx;
         s_last_mode21_oil = (int16_t)best_temp;
+        s_mode21_hold_cnt = 0;
         s_oil_diag.mode2_ok++;
         *oil_c = best_temp;
         return true;
@@ -967,16 +1408,20 @@ bool elm327_ble_send_command(const uint8_t *data, size_t len) {
 }
 
 // 阻塞直到上一个响应结束（收到 '>'）后再发送
+// 使用 FreeRTOS task notification 替代 10ms 轮询: 收到 '>' 时 xTaskNotify 立刻唤醒，零等待开销
 bool elm327_ble_send_ascii_blocking(const char *ascii_cmd)
 {
-    uint32_t waited_ms = 0;
-    while (!s_elm_ready && waited_ms < 3000) {
-        vTaskDelay(pdMS_TO_TICKS(10));
-        waited_ms += 10;
-    }
     if (!s_elm_ready) {
-        ESP_LOGW(TAG, "Timeout (>3s) waiting previous response, forcing send: %s", ascii_cmd);
-        s_elm_ready = true; // 避免死锁，继续发送
+        uint32_t waited_ms = 0;
+        while (!s_elm_ready && waited_ms < 3000) {
+            // 最多等 10ms（作为兜底），但 '>' 到达时 xTaskNotify 会提前唤醒
+            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10));
+            waited_ms += 10;
+        }
+        if (!s_elm_ready) {
+            ESP_LOGW(TAG, "Timeout (>3s) waiting previous response, forcing send: %s", ascii_cmd);
+            s_elm_ready = true;
+        }
     }
     s_elm_ready = false;
     uint8_t buf[32];
@@ -1038,7 +1483,7 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
                         memcpy(s_scan_list[s_scan_count].addr, pr->scan_rst.bda, 6);
                         s_scan_list[s_scan_count].rssi = pr->scan_rst.rssi;
                         s_scan_count++;
-                        ESP_LOGI(TAG, "Scan found [%d]: %s (RSSI %d)", s_scan_count, dev_name, pr->scan_rst.rssi);
+                        ESP_LOGD(TAG, "Scan found [%d]: %s (RSSI %d)", s_scan_count, dev_name, pr->scan_rst.rssi);
                         if (s_scan_cb) s_scan_cb(&s_scan_list[s_scan_count - 1], s_scan_count);
                     }
                 }
@@ -1049,7 +1494,7 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
                          dev_name[0] ? dev_name : "<no-name>", pr->scan_rst.rssi,
                          s_target_name, matched);
                 if (matched) {
-                    ESP_LOGI(TAG, "Found target %s (dev=%s), connecting...",
+                    ESP_LOGD(TAG, "Found target %s (dev=%s), connecting...",
                              s_target_name, dev_name[0] ? dev_name : "<no-name>");
                     esp_ble_gap_stop_scanning();
                     esp_ble_gattc_open(s_gattc_if, pr->scan_rst.bda, pr->scan_rst.ble_addr_type, true);
@@ -1099,33 +1544,33 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
         uint16_t sh = param->search_res.start_handle;
         uint16_t eh = param->search_res.end_handle;
         if (srvc_id->uuid.len == ESP_UUID_LEN_16) {
-            ESP_LOGI(TAG, "Service found: UUID=0x%04X handle=%04X~%04X",
+            ESP_LOGD(TAG, "Service found: UUID=0x%04X handle=%04X~%04X",
                      srvc_id->uuid.uuid.uuid16, sh, eh);
             if (srvc_id->uuid.uuid.uuid16 == UUID16_OBD_SERVICE) {
                 s_have_service = true;
                 s_service_start = sh;
                 s_service_end = eh;
-                ESP_LOGI(TAG, "Target service FFF0 matched");
+                ESP_LOGD(TAG, "Target service FFF0 matched");
             } else if (srvc_id->uuid.uuid.uuid16 == UUID16_OBD_SERVICE_18F0) {
                 s_have_18f0 = true;
                 s_18f0_start = sh;
                 s_18f0_end = eh;
-                ESP_LOGI(TAG, "Target service 18F0 matched (IOS-Vlink OBD)");
+                ESP_LOGD(TAG, "Target service 18F0 matched (IOS-Vlink OBD)");
             } else if (srvc_id->uuid.uuid.uuid16 == UUID16_OBD_SERVICE_FF12) {
                 s_have_ff12 = true;
                 s_ff12_start = sh;
                 s_ff12_end = eh;
-                ESP_LOGI(TAG, "Target service FF12 matched");
+                ESP_LOGD(TAG, "Target service FF12 matched");
             }
         } else {
-            ESP_LOGI(TAG, "Service found: UUID(long) handle=%04X~%04X", sh, eh);
+            ESP_LOGD(TAG, "Service found: UUID(long) handle=%04X~%04X", sh, eh);
         }
         // 记录最大handle范围，用于兜底全量查找
         if (eh > s_all_attr_end || s_all_attr_end == 0xFFFF) s_all_attr_end = eh;
         break;
     }
     case ESP_GATTC_SEARCH_CMPL_EVT: {
-        ESP_LOGI(TAG, "Service discovery complete. have_FFF0=%d have_18F0=%d have_FF12=%d",
+        ESP_LOGD(TAG, "Service discovery complete. have_FFF0=%d have_18F0=%d have_FF12=%d",
                  s_have_service, s_have_18f0, s_have_ff12);
 
         // 优先顺序: 0xFFF0 > 0x18F0(IOS-Vlink) > 0xFF12 > 全范围兜底
@@ -1133,11 +1578,11 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
             if (s_have_18f0) {
                 s_service_start = s_18f0_start;
                 s_service_end   = s_18f0_end;
-                ESP_LOGI(TAG, "Using 18F0 service range 0x%04X~0x%04X", s_service_start, s_service_end);
+                ESP_LOGD(TAG, "Using 18F0 service range 0x%04X~0x%04X", s_service_start, s_service_end);
             } else if (s_have_ff12) {
                 s_service_start = s_ff12_start;
                 s_service_end   = s_ff12_end;
-                ESP_LOGI(TAG, "Using FF12 service range 0x%04X~0x%04X", s_service_start, s_service_end);
+                ESP_LOGD(TAG, "Using FF12 service range 0x%04X~0x%04X", s_service_start, s_service_end);
             } else {
                 s_service_start = 0x0001;
                 s_service_end = (s_all_attr_end > 0x0001) ? s_all_attr_end : 0xFFFF;
@@ -1149,7 +1594,7 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
         uint16_t char_count = 0;
         esp_err_t ret = esp_ble_gattc_get_attr_count(gattc_if, s_conn_id,
             ESP_GATT_DB_CHARACTERISTIC, s_service_start, s_service_end, 0, &char_count);
-        ESP_LOGI(TAG, "get_attr_count ret=%d, char_count=%d", ret, char_count);
+        ESP_LOGD(TAG, "get_attr_count ret=%d, char_count=%d", ret, char_count);
 
         if (ret != ESP_OK || char_count == 0) {
             ESP_LOGE(TAG, "No characteristics found in range! Cannot communicate.");
@@ -1169,14 +1614,14 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
         }
 
         // 打印全部特征，并自动选取写入/通知句柄
-        ESP_LOGI(TAG, "=== All characteristics (%d) ===", alloc_count);
+        ESP_LOGD(TAG, "=== All characteristics (%d) ===", alloc_count);
         for (int i = 0; i < alloc_count; i++) {
             esp_gattc_char_elem_t *c = &chars[i];
             if (c->uuid.len == ESP_UUID_LEN_16) {
-                ESP_LOGI(TAG, "  [%d] UUID=0x%04X handle=0x%04X prop=0x%02X",
+                ESP_LOGD(TAG, "  [%d] UUID=0x%04X handle=0x%04X prop=0x%02X",
                          i, c->uuid.uuid.uuid16, c->char_handle, c->properties);
             } else if (c->uuid.len == ESP_UUID_LEN_128) {
-                ESP_LOGI(TAG, "  [%d] UUID128=%02X%02X...%02X%02X handle=0x%04X prop=0x%02X",
+                ESP_LOGD(TAG, "  [%d] UUID128=%02X%02X...%02X%02X handle=0x%04X prop=0x%02X",
                          i, c->uuid.uuid.uuid128[15], c->uuid.uuid.uuid128[14],
                             c->uuid.uuid.uuid128[1],  c->uuid.uuid.uuid128[0],
                             c->char_handle, c->properties);
@@ -1189,7 +1634,7 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
                 s_write_type = (c->properties & ESP_GATT_CHAR_PROP_BIT_WRITE_NR)
                                ? ESP_GATT_WRITE_TYPE_NO_RSP
                                : ESP_GATT_WRITE_TYPE_RSP;
-                ESP_LOGI(TAG, "  >> Selected as WRITE handle: 0x%04X (write_type=%s)",
+                ESP_LOGD(TAG, "  >> Selected as WRITE handle: 0x%04X (write_type=%s)",
                          s_char_write_handle,
                          s_write_type == ESP_GATT_WRITE_TYPE_NO_RSP ? "NO_RSP" : "RSP");
             }
@@ -1197,7 +1642,7 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
             if (s_char_notify_handle == 0 &&
                 (c->properties & ESP_GATT_CHAR_PROP_BIT_NOTIFY)) {
                 s_char_notify_handle = c->char_handle;
-                ESP_LOGI(TAG, "  >> Selected as NOTIFY handle: 0x%04X", s_char_notify_handle);
+                ESP_LOGD(TAG, "  >> Selected as NOTIFY handle: 0x%04X", s_char_notify_handle);
             }
         }
         free(chars);
@@ -1209,12 +1654,12 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
         // 如果没有独立的NOTIFY特征，复用写句柄
         if (s_char_notify_handle == 0) {
             s_char_notify_handle = s_char_write_handle;
-            ESP_LOGI(TAG, "No NOTIFY char found, using WRITE handle 0x%04X for notify", s_char_notify_handle);
+            ESP_LOGD(TAG, "No NOTIFY char found, using WRITE handle 0x%04X for notify", s_char_notify_handle);
         }
 
         // 注册通知
         int sret = esp_ble_gattc_register_for_notify(gattc_if, s_peer_bda, s_char_notify_handle);
-        ESP_LOGI(TAG, "register_for_notify handle=0x%04X ret=%d", s_char_notify_handle, sret);
+        ESP_LOGD(TAG, "register_for_notify handle=0x%04X ret=%d", s_char_notify_handle, sret);
 
         // 查找 CCCD
         esp_gattc_descr_elem_t descr_elems[2];
@@ -1224,7 +1669,7 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
             s_char_notify_handle, cccd_uuid, descr_elems, &count);
         if (ret == ESP_OK && count > 0) {
             s_cccd_handle = descr_elems[0].handle;
-            ESP_LOGI(TAG, "Found CCCD, handle: 0x%04X", s_cccd_handle);
+            ESP_LOGD(TAG, "Found CCCD, handle: 0x%04X", s_cccd_handle);
         } else {
             ESP_LOGW(TAG, "CCCD not found (ret=%d cnt=%d)", ret, count);
         }
@@ -1233,7 +1678,7 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
     }
     case ESP_GATTC_WRITE_DESCR_EVT: {
         if (param->write.status == ESP_GATT_OK) {
-            ESP_LOGI(TAG, "Notifications enabled");
+            ESP_LOGD(TAG, "Notifications enabled");
             s_notify_ready = true;   // 订阅就绪 → 放行轮询任务做 ELM 初始化
         } else {
             ESP_LOGW(TAG, "Enable notify failed status=%d", param->write.status);
@@ -1244,6 +1689,12 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
         if (s_cbs.on_raw_notify) s_cbs.on_raw_notify(param->notify.value, param->notify.value_len);
         const uint8_t *v = param->notify.value;
         int n = param->notify.value_len;
+
+        // ZC6 CAN 持续监听模式: 逐字节喂入, 按行解析, 不走累积缓冲区
+        if (s_zc6_can_monitor_active) {
+            zc6_can_monitor_feed(v, (size_t)n);
+            break;
+        }
 
         // ---- 累积多包数据直到收到 '>' （ELM327 提示符） ----
         // 累积超时保护：5秒内未收到 '>' 则强制刷新
@@ -1270,7 +1721,16 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
 
         // 收到完整响应，开始解析
         char *buf = s_accum_buf;
-        ESP_LOGI(TAG, "FULL[%d]: %.100s", (int)s_accum_len, buf); // 诊断: 打印每条完整响应
+        ESP_LOGD(TAG, "FULL[%d]: %.200s", (int)s_accum_len, buf); // 诊断: 打印每条完整响应
+
+        // 油温相关响应 raw dump（便于确认 gt96 等适配器是否正确返回数据）
+        if (s_expect_mode21 && strstr(buf, "61 01")) {
+            ESP_LOGI(TAG, "[OIL RX] Mode21 raw[%d]: %.200s", (int)s_accum_len, buf);
+        } else if (strstr(buf, "62 ") && s_cbs.on_parsed_oil_temp) {
+            ESP_LOGI(TAG, "[OIL RX] Mode22 raw[%d]: %.200s", (int)s_accum_len, buf);
+        } else if (strstr(buf, "441 ")) {
+            ESP_LOGI(TAG, "[OIL RX] CAN441 raw[%d]: %.200s", (int)s_accum_len, buf);
+        }
 
         // ELM327 可能在数据前附带 echo，用 strstr 全内部搜索响应头
         // 注意: p61 必须先于 p41 判断，因为 2101 的多帧响应体中可能包含 0x41 字节
@@ -1281,9 +1741,18 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
         // 保时捷 CAN 广播帧 0x441 (ATH1 监听下形如 "441 D0 D1 ... D7")。仅当前车型用此模式才解析，
         // 且必须先于 p41 判断(因 "441 " 含子串 "41 ")。byte5=油温(x-60°C), byte7=油压(x/25.4 bar)。
         char *p441 = (s_oil_mode_priority[0] == OIL_TEMP_MODE_PORSCHE_CAN_441) ? strstr(buf, "441 ") : NULL;
+        // ZC6/GT86 CAN 广播帧 0x140 (ATH1 监听下形如 "140 D0 D1 ... D7")。bits16-29=14bit LE RPM。
+        uint8_t vid140 = get_active_vehicle_idx_safe();
+        const vehicle_profile_t *vp_can = vehicle_profile_get_active();
+        bool ft86_can_mode = vp_can && vp_can->can_broadcast_mode;
+        char *p140 = (vid140 == 1 || vid140 == 3 || ft86_can_mode) ? strstr(buf, "140 ") : NULL;
+        // FT86 CAN 广播帧: 0x360(油温水温), 0x0D1(车速), 0x141(挡位/负荷)
+        char *p360 = ft86_can_mode ? strstr(buf, "360 ") : NULL;
+        char *p0d1 = ft86_can_mode ? strstr(buf, "0D1 ") : NULL;
+        char *p141 = ft86_can_mode ? strstr(buf, "141 ") : NULL;
 
         // 收到任一有效数据帧头 → 总线在响应, 刷新"有效数据"时间戳(自愈用)
-        if (p41 || p62 || p61 || p441) s_last_obd_valid_us = esp_timer_get_time();
+        if (p41 || p62 || p61 || p441 || p140 || p360 || p0d1 || p141) s_last_obd_valid_us = esp_timer_get_time();
 
         if (p441 != NULL) {
             unsigned id=0,b0,b1,b2,b3,b4,b5,b6,b7;
@@ -1308,20 +1777,88 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
                 }
                 obd_data_set_oil_pressure_x10(oilp_x10);        // 同帧油压 → OILP 显示
                 // 诊断: 完整帧 + 各候选字节, 便于核对油压到底在 byte6 还是 byte7
-                ESP_LOGI(TAG, "[CAN 441] RAW b0..b7=%02X %02X %02X %02X %02X %02X %02X %02X",
+                ESP_LOGD(TAG, "[CAN 441] RAW b0..b7=%02X %02X %02X %02X %02X %02X %02X %02X",
                          b0, b1, b2, b3, b4, b5, b6, b7);
-                ESP_LOGI(TAG, "[CAN 441] oil=%dC | press: byte7=%d.%dbar byte6=%d.%dbar",
-                         (int)oil_c, oilp_x10/10, oilp_x10%10, (b6*50/127)/10, (b6*50/127)%10);
+                ESP_LOGI(TAG, "[CAN 441] bytes=8 b5=0x%02X formula=%d*%d/%d%+d -> %dC",
+                         b5, b5, (int)num, (int)den, (int)off, (int)oil_c);
             } else {
                 ESP_LOGD(TAG, "[CAN 441] parse fail vals=%d", vals);
                 record_oil_temp_failure(OIL_TEMP_MODE_PORSCHE_CAN_441);
             }
-        } else if (p61 != NULL) {
+        } else if (p140 != NULL) {
+            // ZC6/GT86 CAN 0x140: RPM = bits 16-29 (14bit LE) = payload[2] | ((payload[3]&0x3F)<<8)
+            // CAN 广播模式额外提取: 节气门(byte6/2.55), 油门踏板(byte0/2.55)
+            unsigned id=0,b0,b1,b2,b3,b4,b5,b6,b7;
+            int vals = sscanf(p140, "%x %x %x %x %x %x %x %x %x", &id,&b0,&b1,&b2,&b3,&b4,&b5,&b6,&b7);
+            if (vals >= 9 && id == 0x140) {
+                uint16_t can_rpm = (uint16_t)(b2 | ((b3 & 0x3F) << 8));
+                s_zc6_can_rpm_seen = true;
+                if (s_cbs.on_parsed_rpm) s_cbs.on_parsed_rpm(can_rpm);
+                if (ft86_can_mode) {
+                    // byte6: 节气门开度, °/2.55 → 0~100%
+                    uint8_t tps_pct = (uint8_t)((uint32_t)b6 * 100 / 255);
+                    if (s_cbs.on_parsed_throttle_position) s_cbs.on_parsed_throttle_position(tps_pct);
+                    ESP_LOGD(TAG, "[CAN 140] RPM=%u TPS=%u%% (b6=0x%02X)", can_rpm, tps_pct, b6);
+                } else {
+                    ESP_LOGD(TAG, "[CAN 140] b2=0x%02X b3=0x%02X -> RPM=%u", b2, b3, can_rpm);
+                }
+            } else {
+                ESP_LOGD(TAG, "[CAN 140] parse fail vals=%d", vals);
+            }
+        } else if (p360 != NULL) {
+            // FT86 CAN 0x360 (20Hz): byte2=油温(°C=raw-40), byte3=水温(°C=raw-40)
+            unsigned id=0,b0,b1,b2,b3,b4,b5,b6,b7;
+            int vals = sscanf(p360, "%x %x %x %x %x %x %x %x %x", &id,&b0,&b1,&b2,&b3,&b4,&b5,&b6,&b7);
+            if (vals >= 9 && id == 0x360) {
+                int32_t oil_c = (int32_t)b2 - 40;
+                int32_t clt_c = (int32_t)b3 - 40;
+                if (oil_c >= -40 && oil_c <= 215 && s_cbs.on_parsed_oil_temp) {
+                    s_cbs.on_parsed_oil_temp((uint32_t)oil_c);
+                }
+                if (clt_c >= -40 && clt_c <= 215 && s_cbs.on_parsed_coolant_temp) {
+                    s_cbs.on_parsed_coolant_temp((uint32_t)clt_c);
+                }
+                ESP_LOGD(TAG, "[CAN 360] oil=%dC (b2=0x%02X) clt=%dC (b3=0x%02X)", (int)oil_c, b2, (int)clt_c, b3);
+            } else {
+                ESP_LOGD(TAG, "[CAN 360] parse fail vals=%d", vals);
+            }
+        } else if (p0d1 != NULL) {
+            // FT86 CAN 0x0D1 (50Hz, 4字节): bytes0-1 LE × 0.015694 = 车速 km/h
+            unsigned id=0,b0,b1,b2,b3;
+            int vals = sscanf(p0d1, "%x %x %x %x %x", &id,&b0,&b1,&b2,&b3);
+            if (vals >= 4 && id == 0x0D1) {
+                uint16_t raw_speed = (uint16_t)(b0 | (b1 << 8));
+                uint8_t speed_kmh = (uint8_t)(raw_speed * 0.015694f + 0.5f);
+                if (s_cbs.on_parsed_speed_kmh) s_cbs.on_parsed_speed_kmh(speed_kmh);
+                ESP_LOGD(TAG, "[CAN 0D1] raw=%u -> speed=%u km/h", raw_speed, speed_kmh);
+            } else {
+                ESP_LOGD(TAG, "[CAN 0D1] parse fail vals=%d", vals);
+            }
+        } else if (p141 != NULL) {
+            // FT86 CAN 0x141 (100Hz): bytes2-3 LE=发动机负荷(原始值, 换算公式未知, 不写缓存),
+            // byte6&0x0F=挡位(7=空挡,1=倒挡,2~7=1~6挡)
+            unsigned id=0,b0,b1,b2,b3,b4,b5,b6,b7;
+            int vals = sscanf(p141, "%x %x %x %x %x %x %x %x %x", &id,&b0,&b1,&b2,&b3,&b4,&b5,&b6,&b7);
+            if (vals >= 9 && id == 0x141) {
+                uint16_t load_raw = (uint16_t)(b2 | (b3 << 8));
+                uint8_t gear_raw = b6 & 0x0F;
+                ESP_LOGD(TAG, "[CAN 141] load_raw=%u gear_raw=%u (b6=0x%02X)", load_raw, gear_raw, b6);
+            } else {
+                ESP_LOGD(TAG, "[CAN 141] parse fail vals=%d", vals);
+            }
+        } else if (p61 != NULL && s_expect_mode21) {
             // Mode 21 多帧响应 (Toyota 2101)
-            // 只有确认发出了 21 01 命令才解析，防止其他响应的数据字节碰巧包含 "61 01"
+            // s_expect_mode21 守卫：只有确认发出了 21 01 命令才解析，
+            // 防止其他 PID 响应的数据字节碰巧包含 "61 01" 被误触发（如转速~6208rpm时 41 0C 61 01）
             s_expect_mode21 = false;
             uint32_t d[64] = {0};
             int count = parse_mode21_data(buf, d, 64);
+            // 全量 dump: 分两段打印，避免 ESP_LOGI 截断（每字节约11字符，30字节超256字符限制）
+            { char _hx[256]; int _o, _h = count / 2;
+              _o = 0; for(int _i=0;_i<_h;_i++) _o+=snprintf(_hx+_o,sizeof(_hx)-_o,"[%d]%02X(%d) ",_i,(unsigned)d[_i],(int)d[_i]-40);
+              ESP_LOGD(TAG,"[21 01] bytes=%d [0-%d]: %s", count, _h-1, _hx);
+              _o = 0; for(int _i=_h;_i<count;_i++) _o+=snprintf(_hx+_o,sizeof(_hx)-_o,"[%d]%02X(%d) ",_i,(unsigned)d[_i],(int)d[_i]-40);
+              ESP_LOGD(TAG,"[21 01] [%d-%d]: %s", _h, count-1, _hx); }
             int32_t oil_c = 0;
             if (extract_mode21_oil_temp(d, count, &oil_c)) {
                 ESP_LOGI(TAG, "Mode21 oil temp=%dC (idx=%d, bytes=%d)", 
@@ -1339,16 +1876,20 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
             uint32_t mode = 0, pid = 0;
             int values = sscanf(p41, "%x %x %x %x %x %x %x %x",
                 &mode, &pid, &d[0], &d[1], &d[2], &d[3], &d[4], &d[5]);
+            // 油温 PID 0x5C 的原始响应 dump
+            if (pid == 0x5C) {
+                ESP_LOGI(TAG, "[OIL RX] PID0x5C raw[%d]: %.200s", (int)s_accum_len, buf);
+            }
             ESP_LOGD(TAG, "OBD mode01 mode=%02X pid=%02X d=%02X %02X %02X val=%d",
                      mode, pid, d[0], d[1], d[2], values);
             if (values >= 3 && mode == 0x41) {
                 int dc = values - 2;
-                
+
                 // 如果正在协议检测，只处理 RPM（0x0C）
                 if (s_protocol_detect_idx >= 0 && pid != 0x0C) {
                     break;  // 跳过非目标 PID
                 }
-                
+
                 switch (pid) {
                     case 0x04: // 发动机负荷 (0~100%)
                         if (dc >= 1 && s_cbs.on_parsed_load_pct && s_protocol_detect_idx < 0)
@@ -1361,12 +1902,12 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
                     case 0x0C: // 转速
                         if (dc >= 2) {
                             uint16_t rpm_val = (uint16_t)(((d[0] << 8) | d[1]) / 4);
-                            
+
                             if (s_protocol_detect_idx >= 0) {
                                 // 协议检测模式
                                 s_protocol_detect_rpm = (int32_t)rpm_val;
                                 s_protocol_detect_got_response = true;
-                                ESP_LOGI(TAG, "[PROTOCOL_DETECT] Protocol %d: RPM=%u OK", s_protocol_detect_idx, rpm_val);
+                                ESP_LOGD(TAG, "[PROTOCOL_DETECT] Protocol %d: RPM=%u OK", s_protocol_detect_idx, rpm_val);
                             } else {
                                 // 正常模式
                                 if (s_cbs.on_parsed_rpm)
@@ -1395,7 +1936,7 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
                             int32_t oil_temp = (int32_t)d[0] - 40;
                             // 验证范围：-40 到 215°C
                             if (oil_temp >= -40 && oil_temp <= 215) {
-                                ESP_LOGI(TAG, "[PID 0x5C] Standard oil temp: %dC", (int)oil_temp);
+                                ESP_LOGI(TAG, "[PID 0x5C] bytes=%d raw=0x%02X -> %dC", dc, (unsigned)d[0], (int)oil_temp);
                                 record_oil_temp_success(OIL_TEMP_MODE_PID_5C);
                                 s_cbs.on_parsed_oil_temp((uint32_t)oil_temp);
                             } else {
@@ -1415,6 +1956,12 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
             }
         } else if (p62 != NULL) {
             // Mode 22 响应: "62 HH LL D0 D1 ..."  (d0=A, d1=B)
+            // 如果期望 Mode21 但收到 Mode22，清除期望标志并记录失败
+            if (s_expect_mode21) {
+                ESP_LOGW(TAG, "21 01 expected but got Mode22 response");
+                record_oil_temp_failure(OIL_TEMP_MODE_TOYOTA_21_01);
+                s_expect_mode21 = false;
+            }
             uint32_t mode22 = 0, ph = 0, pl = 0, d0 = 0, d1 = 0;
             int values = sscanf(p62, "%x %x %x %x %x", &mode22, &ph, &pl, &d0, &d1);
             if (values >= 4 && mode22 == 0x62 && s_cbs.on_parsed_oil_temp) {
@@ -1424,6 +1971,7 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
                     if (values >= 5) {
                         int32_t mazda_oil = (int32_t)(((d0 * 256) + d1) / 100) - 40;
                         if (mazda_oil >= -40 && mazda_oil <= 215) {
+                            ESP_LOGI(TAG, "[22 13 10] bytes=%d raw=(%02X,%02X) -> %dC", values-2, (unsigned)d0, (unsigned)d1, (int)mazda_oil);
                             record_oil_temp_success(OIL_TEMP_MODE_MAZDA_22_1310);
                             s_cbs.on_parsed_oil_temp((uint32_t)mazda_oil);
                         } else {
@@ -1434,19 +1982,29 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
                         record_oil_temp_failure(OIL_TEMP_MODE_MAZDA_22_1310);
                     }
                 } else if (pid16 == 0x111F) {
-                    // Mazda Skyactiv 油温 PID 111F: A - 50 (°C)
-                    int32_t mazda_oil = (int32_t)d0 - 50;
-                    if (mazda_oil >= -40 && mazda_oil <= 215) {
-                        record_oil_temp_success(OIL_TEMP_MODE_MAZDA_22_111F);
-                        s_cbs.on_parsed_oil_temp((uint32_t)mazda_oil);
+                    // PID 111F: °C = A - 50 (Mazda Skyactiv 和 BMW 均用此公式)
+                    // 根据当前策略决定记录哪个 mode 的统计
+                    bool is_bmw_111f = (s_oil_mode_priority[0] == OIL_TEMP_MODE_BMW_22_111F ||
+                                        s_oil_mode_priority[1] == OIL_TEMP_MODE_BMW_22_111F ||
+                                        s_oil_mode_priority[2] == OIL_TEMP_MODE_BMW_22_111F ||
+                                        s_oil_mode_priority[3] == OIL_TEMP_MODE_BMW_22_111F);
+                    oil_temp_query_mode_t mode_111f = is_bmw_111f ? OIL_TEMP_MODE_BMW_22_111F
+                                                                  : OIL_TEMP_MODE_MAZDA_22_111F;
+                    int32_t oil_111f = (int32_t)d0 - 50;
+                    if (oil_111f >= -40 && oil_111f <= 215) {
+                        ESP_LOGI(TAG, "[22 11 1F] bytes=%d raw=0x%02X -> %dC (%s)", values-2, (unsigned)d0, (int)oil_111f,
+                                 is_bmw_111f ? "BMW" : "Mazda");
+                        record_oil_temp_success(mode_111f);
+                        s_cbs.on_parsed_oil_temp((uint32_t)oil_111f);
                     } else {
-                        ESP_LOGD(TAG, "[22 11 1F] Oil temp out of range: %d (raw=%02X)", (int)mazda_oil, (unsigned)d0);
-                        record_oil_temp_failure(OIL_TEMP_MODE_MAZDA_22_111F);
+                        ESP_LOGD(TAG, "[22 11 1F] Oil temp out of range: %d (raw=%02X)", (int)oil_111f, (unsigned)d0);
+                        record_oil_temp_failure(mode_111f);
                     }
                 } else if (pid16 == 0x5822) {
                     // MINI/BMW 油温 PID 5822: °C = A - 60 (°F = A*9/5 - 76)
                     int32_t mini_oil = (int32_t)d0 - 60;
                     if (mini_oil >= -40 && mini_oil <= 215) {
+                        ESP_LOGI(TAG, "[22 58 22] bytes=%d raw=0x%02X -> %dC", values-2, (unsigned)d0, (int)mini_oil);
                         record_oil_temp_success(OIL_TEMP_MODE_MINI_22_5822);
                         s_cbs.on_parsed_oil_temp((uint32_t)mini_oil);
                     } else {
@@ -1454,20 +2012,69 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
                         record_oil_temp_failure(OIL_TEMP_MODE_MINI_22_5822);
                     }
                 } else if (pid16 == 0x4402) {
-                    // BMW F系油温 PID 4402: °C = B - 64 (响应第二个数据字节 d1)
-                    if (values >= 5) {
-                        int32_t bmw_oil = (int32_t)d1 - 64;
-                        if (bmw_oil >= -40 && bmw_oil <= 215) {
-                            record_oil_temp_success(OIL_TEMP_MODE_BMW_22_4402);
-                            s_cbs.on_parsed_oil_temp((uint32_t)bmw_oil);
+                    if (s_oil_mode_priority[0] == OIL_TEMP_MODE_BMW_G_22_4402 ||
+                        s_oil_mode_priority[1] == OIL_TEMP_MODE_BMW_G_22_4402 ||
+                        s_oil_mode_priority[2] == OIL_TEMP_MODE_BMW_G_22_4402) {
+                        // BMW G系油温 PID 4402: °C = (A*256+B)*191.25/255-48 (双字节)
+                        if (values >= 5) {
+                            int32_t raw = (int32_t)d0 * 256 + (int32_t)d1;
+                            int32_t bmw_g_oil = (int32_t)(raw * 191.25f / 255.0f - 48.0f);
+                            if (bmw_g_oil >= -48 && bmw_g_oil <= 143) {
+                                ESP_LOGI(TAG, "[22 44 02 G] bytes=%d raw=%04X -> %dC", values-2, (unsigned)raw, (int)bmw_g_oil);
+                                record_oil_temp_success(OIL_TEMP_MODE_BMW_G_22_4402);
+                                s_cbs.on_parsed_oil_temp((uint32_t)bmw_g_oil);
+                            } else {
+                                ESP_LOGD(TAG, "[22 44 02 G] Oil temp out of range: %d (A=%02X B=%02X)", (int)bmw_g_oil, (unsigned)d0, (unsigned)d1);
+                                record_oil_temp_failure(OIL_TEMP_MODE_BMW_G_22_4402);
+                            }
                         } else {
-                            ESP_LOGD(TAG, "[22 44 02] Oil temp out of range: %d (A=%02X B=%02X)", (int)bmw_oil, (unsigned)d0, (unsigned)d1);
-                            record_oil_temp_failure(OIL_TEMP_MODE_BMW_22_4402);
+                            record_oil_temp_failure(OIL_TEMP_MODE_BMW_G_22_4402);
                         }
                     } else {
-                        record_oil_temp_failure(OIL_TEMP_MODE_BMW_22_4402);
+                        // BMW F系油温 PID 4402: °C = B - 64 (响应第二个数据字节 d1)
+                        if (values >= 5) {
+                            int32_t bmw_oil = (int32_t)d1 - 64;
+                            if (bmw_oil >= -40 && bmw_oil <= 215) {
+                                ESP_LOGI(TAG, "[22 44 02 F] bytes=%d raw=0x%02X -> %dC", values-2, (unsigned)d1, (int)bmw_oil);
+                                record_oil_temp_success(OIL_TEMP_MODE_BMW_22_4402);
+                                s_cbs.on_parsed_oil_temp((uint32_t)bmw_oil);
+                            } else {
+                                ESP_LOGD(TAG, "[22 44 02 F] Oil temp out of range: %d (A=%02X B=%02X)", (int)bmw_oil, (unsigned)d0, (unsigned)d1);
+                                record_oil_temp_failure(OIL_TEMP_MODE_BMW_22_4402);
+                            }
+                        } else {
+                            record_oil_temp_failure(OIL_TEMP_MODE_BMW_22_4402);
+                        }
+                    }
+                } else if (pid16 == 0xD002) {
+                    // BMW G系油底壳油温 PID D002: °C = (A*256+B)*191.25/255-48 (双字节)
+                    if (values >= 5) {
+                        int32_t raw = (int32_t)d0 * 256 + (int32_t)d1;
+                        int32_t bmw_g_oil = (int32_t)(raw * 191.25f / 255.0f - 48.0f);
+                        if (bmw_g_oil >= -48 && bmw_g_oil <= 143) {
+                            ESP_LOGI(TAG, "[22 D0 02] bytes=%d raw=%04X -> %dC", values-2, (unsigned)raw, (int)bmw_g_oil);
+                            record_oil_temp_success(OIL_TEMP_MODE_BMW_22_D002);
+                            s_cbs.on_parsed_oil_temp((uint32_t)bmw_g_oil);
+                        } else {
+                            ESP_LOGD(TAG, "[22 D0 02] Oil temp out of range: %d (A=%02X B=%02X)", (int)bmw_g_oil, (unsigned)d0, (unsigned)d1);
+                            record_oil_temp_failure(OIL_TEMP_MODE_BMW_22_D002);
+                        }
+                    } else {
+                        record_oil_temp_failure(OIL_TEMP_MODE_BMW_22_D002);
+                    }
+                } else if (pid16 == 0x03F3) {
+                    // BMW G系油温 PID 03F3: °C = A - 40 (Header 7E0 物理寻址)
+                    int32_t bmw_g_oil = (int32_t)d0 - 40;
+                    if (bmw_g_oil >= -40 && bmw_g_oil <= 215) {
+                        ESP_LOGI(TAG, "[22 03 F3] bytes=%d raw=0x%02X -> %dC", values-2, (unsigned)d0, (int)bmw_g_oil);
+                        record_oil_temp_success(OIL_TEMP_MODE_BMW_22_03F3);
+                        s_cbs.on_parsed_oil_temp((uint32_t)bmw_g_oil);
+                    } else {
+                        ESP_LOGD(TAG, "[22 03 F3] Oil temp out of range: %d (raw=%02X)", (int)bmw_g_oil, (unsigned)d0);
+                        record_oil_temp_failure(OIL_TEMP_MODE_BMW_22_03F3);
                     }
                 } else if (pid16 == 0x1017 || pid16 == 0x0011 || pid16 == 0x1C00) {
+                    ESP_LOGI(TAG, "[22 10 17] bytes=%d raw=0x%02X -> %dC", values-2, (unsigned)d0, (int)d0 - 40);
                     record_oil_temp_success(OIL_TEMP_MODE_UDS_22_10_17);
                     s_cbs.on_parsed_oil_temp((uint32_t)((int32_t)d0 - 40));
                 } else {
@@ -1477,11 +2084,17 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
         } else {
             // 无效数据或纯文本（NO DATA、SEARCHING、OK 等）
             if (strstr(buf, "NO DATA")) {
-                ESP_LOGI(TAG, "NO DATA for last PID"); // 诊断: 哪个PID无数据(超时由时间戳自愈处理)
+                ESP_LOGD(TAG, "NO DATA for last PID"); // 诊断: 哪个PID无数据(超时由时间戳自愈处理)
             } else if (strstr(buf, "SEARCHING")) {
-                ESP_LOGI(TAG, "ELM327 searching protocol...");
+                ESP_LOGD(TAG, "ELM327 searching protocol...");
             } else {
-                ESP_LOGI(TAG, "Other response: %.60s", buf); // 诊断: 其他未知响应
+                ESP_LOGD(TAG, "Other response: %.60s", buf); // 诊断: 其他未知响应
+            }
+            // 如果期望 Mode21 但收到无关响应，也记录失败
+            if (s_expect_mode21) {
+                ESP_LOGW(TAG, "21 01 expected but got: %.40s", buf);
+                record_oil_temp_failure(OIL_TEMP_MODE_TOYOTA_21_01);
+                s_expect_mode21 = false;
             }
         }
 
@@ -1513,6 +2126,10 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
         s_expect_mode21 = false;
         s_char_write_handle = s_char_notify_handle = s_cccd_handle = 0;
         s_accum_len = 0; s_accum_buf[0] = '\0'; // 清空响应累积缓冲区
+        s_zc6_can_monitor_active = false;        // 重置 CAN 持续监听
+        s_zc6_can_monitor_len = 0;
+        s_last_mode21_oil = -100;
+        s_mode21_hold_cnt = 0;
         s_protocol_detect_idx = -1;  // 清理协议检测状态
         s_protocol_detect_got_response = false;
         s_protocol_detect_rpm = -1;
@@ -1549,7 +2166,7 @@ void elm327_ble_start_default(const char *target_name) {
     s_scan_only_mode = false;
     elm327_ble_init_and_start(target_name, &cbs);
     if (!s_poll_task_started) {
-        xTaskCreate(obd_poll_task, "obd_poll", 3072, NULL, 4, NULL);
+        xTaskCreate(obd_poll_task, "obd_poll", 4096, NULL, 4, NULL);
         s_poll_task_started = true;
     }
 }
@@ -1568,19 +2185,19 @@ void elm327_ble_scan_only_start(int duration_s, ble_scan_found_cb_t cb) {
     s_scan_cb = cb;
     s_scan_count = 0;
     memset(s_scan_list, 0, sizeof(s_scan_list));
-    ESP_LOGI(TAG, "Starting scan-only mode (%ds)...", duration_s);
+    ESP_LOGD(TAG, "Starting scan-only mode (%ds)...", duration_s);
     esp_ble_gap_start_scanning(duration_s);
 }
 
 void elm327_ble_scan_only_stop(void) {
     esp_ble_gap_stop_scanning();
     s_scan_only_mode = false;
-    ESP_LOGI(TAG, "Scan-only stopped. Found %d devices.", s_scan_count);
+    ESP_LOGD(TAG, "Scan-only stopped. Found %d devices.", s_scan_count);
 }
 
 void elm327_ble_connect_by_name(const char *name) {
     if (!name || name[0] == '\0') return;
-    ESP_LOGI(TAG, "Connect by name: %s", name);
+    ESP_LOGD(TAG, "Connect by name: %s", name);
     s_scan_only_mode = false;
     strncpy(s_target_name, name, sizeof(s_target_name) - 1);
     s_target_name[sizeof(s_target_name) - 1] = '\0';
@@ -1604,7 +2221,7 @@ void elm327_ble_connect_by_name(const char *name) {
     esp_ble_gap_start_scanning(15);
     // 创建轮询任务（如果还没有）
     if (!s_poll_task_started) {
-        xTaskCreate(obd_poll_task, "obd_poll", 3072, NULL, 4, NULL);
+        xTaskCreate(obd_poll_task, "obd_poll", 4096, NULL, 4, NULL);
         s_poll_task_started = true;
     }
 }
@@ -1615,7 +2232,7 @@ bool elm327_ble_is_connected(void) {
 
 void elm327_ble_disconnect(void) {
     if (s_connected && s_gattc_if != 0 && s_conn_id != 0xFFFF) {
-        ESP_LOGI(TAG, "Disconnecting from BLE device...");
+        ESP_LOGD(TAG, "Disconnecting from BLE device...");
         esp_ble_gattc_close(s_gattc_if, s_conn_id);
     }
 }
@@ -1646,10 +2263,14 @@ void elm327_oil_temp_get_diag(elm327_oil_diag_t *out) {
     out->last_filtered = s_oil_diag.last_filtered_temp;
     out->current_mode = s_oil_query_mode;
     
-    ESP_LOGI(TAG, "OIL DIAG: Mode0(01 5C)=%u/%u, Mode1(22 10 17)=%u/%u, Mode2(21 01)=%u/%u, Mode3(22 11 1F)=%u/%u, Mode4(22 13 10)=%u/%u, Mode5(CAN 441)=%u/%u, Mode6(22 58 22)=%u/%u, Mode7(22 44 02)=%u/%u",
+    ESP_LOGI(TAG, "OIL DIAG: Mode0(01 5C)=%u/%u, Mode1(22 10 17)=%u/%u, Mode2(21 01)=%u/%u, Mode3(22 11 1F Mz)=%u/%u, Mode4(22 13 10)=%u/%u, Mode5(CAN 441)=%u/%u, Mode6(22 58 22)=%u/%u, Mode7(22 44 02 F)=%u/%u, Mode8(22 03 F3)=%u/%u, Mode9(22 44 02 G)=%u/%u, Mode10(22 D0 02)=%u/%u, Mode11(22 11 1F BM)=%u/%u",
              out->mode0_ok, out->mode0_fail, out->mode1_ok, out->mode1_fail,
              out->mode2_ok, out->mode2_fail, s_oil_diag.mode3_ok, s_oil_diag.mode3_fail,
              s_oil_diag.mode4_ok, s_oil_diag.mode4_fail, s_oil_diag.mode5_ok, s_oil_diag.mode5_fail,
-             s_oil_diag.mode6_ok, s_oil_diag.mode6_fail, s_oil_diag.mode7_ok, s_oil_diag.mode7_fail);
+             s_oil_diag.mode6_ok, s_oil_diag.mode6_fail, s_oil_diag.mode7_ok, s_oil_diag.mode7_fail,
+             s_oil_diag.mode8_ok, s_oil_diag.mode8_fail,
+             s_oil_diag.mode9_ok, s_oil_diag.mode9_fail,
+             s_oil_diag.mode10_ok, s_oil_diag.mode10_fail,
+             s_oil_diag.mode11_ok, s_oil_diag.mode11_fail);
 }
 

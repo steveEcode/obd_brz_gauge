@@ -26,6 +26,8 @@ typedef struct {
     uint8_t needle_source_idx;   // 指针页数据源 (disp_item_t 值, 默认 0=CLT)
     uint8_t device_role;         // 三连表角色: 0=主表(连ELM327), 1=从表(收主表数据). 占用原 rsv, 不改结构体大小
     uint8_t chart_source_idx;    // 通用曲线页显示的数据项 (disp_item_t 值, 默认 8=OILP). 占用原 rsv, 不改大小
+    uint16_t rpm_warn_threshold; // 转速报警阈值 (rpm), 0=未设置(默认6000)
+    uint8_t rpm_warn_anim_en;    // 转速报警动画开关: 0=关, 1=开
 } nvs_user_cfg_t;
 
 /*------------------ 运行统计（定期落盘） ------------------*/
@@ -48,6 +50,12 @@ esp_err_t nvs_cfg_set(const nvs_user_cfg_t *cfg);
 // 曲线页每数据项独立报警阈值(原始值单位, 值>=阈值报警; 32767=关闭)。item = disp_item_t 值。
 int16_t nvs_chart_alarm_get(uint8_t item);
 void    nvs_chart_alarm_set(uint8_t item, int16_t raw_threshold);
+
+// 三连表开机动画(RACE / AS / ONE): 开关 + 本机位置(1/2/3)。独立 blob, 不改 cfg 结构体。
+uint8_t nvs_intro_enable_get(void);           // 0=关 1=开
+void    nvs_intro_enable_set(uint8_t en);
+uint8_t nvs_device_position_get(void);        // 1/2/3
+void    nvs_device_position_set(uint8_t pos);
 
 /* 运行统计接口 */
 const nvs_stat_t * nvs_stat_get(void);

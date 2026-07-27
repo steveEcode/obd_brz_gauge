@@ -24,6 +24,8 @@ static bool s_nvs_initialized;
 static nvs_user_cfg_t s_user_cfg;
 static nvs_stat_t s_stat;
 static int16_t s_chart_alarm[256];
+static uint8_t s_intro_enabled;
+static uint8_t s_device_position;
 
 static uint64_t s_speed_weighted_ms;
 static uint64_t s_speed_total_ms;
@@ -39,7 +41,12 @@ static void simulator_nvs_initialize_defaults(void)
 
     s_user_cfg.protocol = 0;
     s_user_cfg.theme_cfg.theme = 1;
-    s_user_cfg.ble_device_name[0] = '\0';
+    snprintf(
+        s_user_cfg.ble_device_name,
+        sizeof(s_user_cfg.ble_device_name),
+        "%s",
+        "SIM-OBDII"
+    );
 
     s_user_cfg.default_page = 0;
     s_user_cfg.brightness_day = 100;
@@ -68,6 +75,18 @@ static void simulator_nvs_initialize_defaults(void)
         s_user_cfg.device_role = 1;
     }
     s_user_cfg.chart_source_idx = 8;
+    s_user_cfg.rpm_warn_threshold = 6000;
+    s_user_cfg.rpm_warn_anim_en = 1;
+
+    s_intro_enabled = 1;
+
+    if (role == SIMULATOR_ROLE_SLAVE_LEFT) {
+        s_device_position = 1;
+    } else if (role == SIMULATOR_ROLE_MASTER) {
+        s_device_position = 2;
+    } else {
+        s_device_position = 3;
+    }
 
     for (size_t index = 0; index < 256; index++) {
         s_chart_alarm[index] = INT16_MAX;
@@ -115,6 +134,37 @@ void nvs_chart_alarm_set(
 {
     simulator_nvs_initialize_defaults();
     s_chart_alarm[item] = raw_threshold;
+}
+
+uint8_t nvs_intro_enable_get(void)
+{
+    simulator_nvs_initialize_defaults();
+    return s_intro_enabled;
+}
+
+void nvs_intro_enable_set(uint8_t en)
+{
+    simulator_nvs_initialize_defaults();
+    s_intro_enabled = en ? 1u : 0u;
+}
+
+uint8_t nvs_device_position_get(void)
+{
+    simulator_nvs_initialize_defaults();
+    return s_device_position;
+}
+
+void nvs_device_position_set(uint8_t pos)
+{
+    simulator_nvs_initialize_defaults();
+
+    if (pos < 1u) {
+        pos = 1u;
+    } else if (pos > 3u) {
+        pos = 3u;
+    }
+
+    s_device_position = pos;
 }
 
 const nvs_stat_t *nvs_stat_get(void)
