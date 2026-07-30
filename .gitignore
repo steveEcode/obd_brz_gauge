@@ -8,3 +8,8 @@ sdkconfig
 main/SAX0AC BC CC.pdf
 
 simulator/build-ui-probe/
+
+simulator/build-asan/
+simulator/build-boot86/
+
+*:Zone.Identifier
