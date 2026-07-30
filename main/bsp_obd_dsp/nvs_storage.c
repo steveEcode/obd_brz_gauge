@@ -18,6 +18,7 @@
 #define KEY_CHART_ALARM       "chartalarm"
 #define CHART_ALARM_N         11   // = DISP_ITEM_COUNT (需与 ui.c disp_item_t 同步)
 #define KEY_MG_EXTRA          "mgextra"   // 三连表开机动画设置
+#define KEY_STARTUP_ANIM       "bootanim"  // startup_animation_t
 #define STAT_FLUSH_PERIOD_MS  30000 //30s 落盘
 
 static nvs_user_cfg_t s_cfg =   { 
@@ -49,6 +50,10 @@ static struct __attribute__((packed)) {
     uint8_t intro_enable;   // 0/1
     uint8_t device_position; // 1/2/3
 } s_mg = { 0, 1 };
+
+static uint8_t s_startup_animation =
+    STARTUP_ANIM_ORIGINAL;
+
 
 /* 前向声明 */
 static esp_err_t load_blob(const char *ns,const char *key,void *out,size_t len);
@@ -82,6 +87,30 @@ esp_err_t nvs_storage_init(void)
         }
         if (s_mg.device_position < 1 || s_mg.device_position > 3) s_mg.device_position = 1;
         if (s_mg.intro_enable > 1) s_mg.intro_enable = 0;
+    }
+
+
+    {
+        /*
+         * load startup animation selection
+         *
+         * 独立 key 不改变旧配置结构长度。
+         * 键不存在或数据越界时使用 Original。
+         */
+        esp_err_t startup_err = load_blob(
+            NS_CFG,
+            KEY_STARTUP_ANIM,
+            &s_startup_animation,
+            sizeof(s_startup_animation)
+        );
+
+        if (
+            startup_err != ESP_OK ||
+            s_startup_animation >= STARTUP_ANIM_COUNT
+        ) {
+            s_startup_animation =
+                STARTUP_ANIM_ORIGINAL;
+        }
     }
 
     /* 新增字段默认值修复 (旧NVS数据中rsv[x]全为0) */
@@ -133,6 +162,48 @@ void nvs_chart_alarm_set(uint8_t item, int16_t raw_threshold){
     if(s_chart_alarm[item] == raw_threshold) return;
     s_chart_alarm[item] = raw_threshold;
     save_blob(NS_CFG, KEY_CHART_ALARM, s_chart_alarm, sizeof(s_chart_alarm));
+}
+
+
+/* 可选开机动画 */
+startup_animation_t nvs_startup_animation_get(void)
+{
+    if (
+        s_startup_animation >=
+        STARTUP_ANIM_COUNT
+    ) {
+        return STARTUP_ANIM_ORIGINAL;
+    }
+
+    return (startup_animation_t)
+        s_startup_animation;
+}
+
+void nvs_startup_animation_set(
+    startup_animation_t animation
+)
+{
+    if (
+        animation < STARTUP_ANIM_NONE ||
+        animation >= STARTUP_ANIM_COUNT
+    ) {
+        return;
+    }
+
+    uint8_t value = (uint8_t)animation;
+
+    if (s_startup_animation == value) {
+        return;
+    }
+
+    s_startup_animation = value;
+
+    save_blob(
+        NS_CFG,
+        KEY_STARTUP_ANIM,
+        &s_startup_animation,
+        sizeof(s_startup_animation)
+    );
 }
 
 /* 三连表开机动画设置 */

@@ -195,7 +195,7 @@ static uint16_t usSaveProtTimeCnt = 0; //OBD协议保存计时
 // IMAGES AND IMAGE SETS
 #define CLEAR_TRIP_TIME 2000 //清除TRIP数据长按时间，单位ms
 #define SAVE_PROTOCOL_TIME 2000 //保存协议长按时间ms
- 
+
 ///////////////////// TEST LVGL SETTINGS ////////////////////
 #define RPM_MAX 5000
 #define SPEED_MAX 160
@@ -282,6 +282,47 @@ static volatile int s_intro_step = 0;
 static int64_t s_boot_start_us = 0;
 static int64_t s_intro_start_us = 0;
 static bool    s_intro_shown = false;
+
+/* 86 主表启动动画状态。 */
+#define BOOT86_SLAVE_TIMEOUT_US     8000000LL
+#define BOOT86_LINK_SETTLE_MS          100U
+#define BOOT86_SKY_GAUGE_HOLD_US   1000000LL
+
+/*
+ * intro_step 在正常三联表开机流程中的含义：
+ *
+ *   0   = 三表纯黑，等待通讯
+ *   10  = 三表显示 SKY GAUGE
+ *   20  = MASTER 播放 Boot86，SLAVE 保持纯黑
+ *   255 = 开场完成，进入默认页面
+ */
+#define BOOT86_SYNC_WAIT                 0
+#define BOOT86_SYNC_SKY_GAUGE           10
+#define BOOT86_SYNC_MASTER_ANIM         20
+#define BOOT86_SYNC_DONE               255
+
+#define BOOT86_SWEEP_SETTLE_US       800000LL
+#define BOOT86_RECONNECT_GUARD_US   6000000LL
+
+static bool    s_boot86_started = false;
+typedef enum {
+    BOOT86_STARTUP_WAIT_LINK = 0,
+    BOOT86_STARTUP_SETTLING,
+    BOOT86_STARTUP_SKY_GAUGE,
+    BOOT86_STARTUP_MASTER_ANIMATION,
+    BOOT86_STARTUP_DONE,
+} boot86_startup_phase_t;
+
+static boot86_startup_phase_t
+    s_boot86_startup_phase =
+        BOOT86_STARTUP_WAIT_LINK;
+
+static lv_timer_t *s_boot86_link_settle_timer = NULL;
+static int64_t s_boot86_sky_start_us = 0;
+
+static bool    s_boot86_page_shown = false;
+static int64_t s_boot_sweep_due_us = 0;
+static int64_t s_post_boot_connect_enable_us = 0;
 
 // 前向声明
 static void showroom_handle_tap(void);
@@ -399,7 +440,7 @@ static void showroom_fake_data(void) {
     obd_data_set_brake_temp_x10((int16_t)(200 + (esp_random() % 300)));
 }
 
-// 三连表开机动画同步: 主表按时间线驱动 s_intro_step 并广播; 从表由 espnow recv 写入跟随。
+// 三连表开机同步: 0=黑屏等待, 10=SKY GAUGE, 20=MASTER Boot86, 255=完成。
 //   0=未开始/仍在logo, 1=TC, 2=+-, 3=+OFF, 4=全显示(保持), 255=完成→进页面
 int  ui_intro_get_step(void) { return s_intro_step; }
 void ui_intro_set_step(int step) { s_intro_step = step; }
@@ -803,8 +844,109 @@ static void boot_enter_default_page(void)
     ui_ScreenPageLogo = NULL;
     imageLogo = NULL;
     s_boot_done = true;
-    if(s_sweep_pending) { s_sweep_pending = false; s_sweep_step = 1; }  // 开机动画期间连上的刷表挂起, 全部播完进默认页此刻触发
+    /*
+     * 第一次扫表由 Startup Animation 同步状态机负责，
+     * 防止主表切页时从表仍处于黑屏页面。
+     */
+    s_sweep_pending = false;
 }
+
+static void boot86_show_black_page(bool is_slave)
+{
+    if (ui_ScreenPageBoot86 == NULL) {
+        ui_ScreenPageBoot86_screen_init();
+    }
+
+    if (is_slave) {
+        ui_boot86_show_waiting();
+    } else {
+        ui_boot86_reset();
+    }
+
+    if (lv_scr_act() != ui_ScreenPageBoot86) {
+        lv_scr_load_anim(
+            ui_ScreenPageBoot86,
+            LV_SCR_LOAD_ANIM_FADE_ON,
+            150,
+            0,
+            false
+        );
+    }
+
+    s_boot86_page_shown = true;
+}
+
+static void boot86_show_sky_gauge_page(void)
+{
+    if (ui_ScreenPageLogo == NULL) {
+        ui_ScreenPageLogo_screen_init();
+    }
+
+    if (lv_scr_act() != ui_ScreenPageLogo) {
+        lv_scr_load_anim(
+            ui_ScreenPageLogo,
+            LV_SCR_LOAD_ANIM_FADE_ON,
+            150,
+            0,
+            false
+        );
+    }
+
+    s_boot86_page_shown = false;
+}
+
+static void boot86_link_settle_cb(lv_timer_t *timer)
+{
+    (void)timer;
+
+    /*
+     * repeat_count=1：
+     * LVGL 在本次回调结束后自动删除定时器。
+     */
+    s_boot86_link_settle_timer = NULL;
+
+    uint8_t online_slaves =
+        espnow_master_online_slaves();
+
+    /*
+     * 100ms 到期时再次确认两个 SLAVE 仍然在线。
+     */
+    if (online_slaves < 2) {
+        s_boot86_startup_phase =
+            BOOT86_STARTUP_WAIT_LINK;
+
+        ESP_LOGW(
+            TAG,
+            "Boot startup settle cancelled: only %u slave(s) online",
+            (unsigned)online_slaves
+        );
+
+        return;
+    }
+
+    /*
+     * 通讯建立并稳定 100ms 后，
+     * MASTER 和两个 SLAVE 通过 intro_step=10
+     * 进入 SKY GAUGE 阶段。
+     */
+    s_intro_step =
+        BOOT86_SYNC_SKY_GAUGE;
+
+    s_boot86_sky_start_us =
+        esp_timer_get_time();
+
+    s_boot86_startup_phase =
+        BOOT86_STARTUP_SKY_GAUGE;
+
+    boot86_show_sky_gauge_page();
+
+    ESP_LOGI(
+        TAG,
+        "Both slaves online: SKY GAUGE start"
+    );
+}
+
+
 
 void my_timerMain(lv_timer_t * timer)
 {
@@ -832,20 +974,39 @@ void my_timerMain(lv_timer_t * timer)
     int16_t oil_warn_x10 = (int16_t)user_cfg->oil_pressure_warn_x10;
 
     /* ---- 触发刷表 ----
-       主表: ELM327 蓝牙连上瞬间触发并自行推进动画;
-       从表: 不自触发, 由主表广播的 sweep_step 同步驱动(espnow recv → ui_sweep_set_step)。 */
-    bool is_slave = (nvs_cfg_get()->device_role == ESPNOW_ROLE_SLAVE);
-    // "已连接"信号: 从表=收到主表数据, 主表=ELM327蓝牙已连(供状态显示与主表扫表触发共用)
-    bool ble_now = is_slave ? espnow_link_slave_has_data() : elm327_ble_is_connected();
-    if(!is_slave) {
-        if(ble_now && !s_prev_ble_connected) {
-            if(s_boot_done) {
-                s_sweep_step = 1;       // 开机动画(Logo/SKY GAUGE/RACE AS ONE)已全部播完，立即刷表
-            } else {
-                s_sweep_pending = true; // 开机动画还在播，先挂起，进默认页那刻再触发
-            }
+       正常开机时由 Startup Animation 状态机统一触发第一次扫表。
+       开机完成后的 BLE 重新连接仍可再次触发扫表。 */
+    bool is_slave =
+        (nvs_cfg_get()->device_role == ESPNOW_ROLE_SLAVE);
+
+    bool ble_now = is_slave
+        ? espnow_link_slave_has_data()
+        : elm327_ble_is_connected();
+
+    if (!is_slave) {
+        int64_t connect_now_us = esp_timer_get_time();
+
+        if (ble_now &&
+            !s_prev_ble_connected &&
+            s_boot_done &&
+            s_boot_sweep_due_us == 0 &&
+            connect_now_us >= s_post_boot_connect_enable_us &&
+            s_sweep_step == 0) {
+            s_sweep_step = 1;
         }
+
         s_prev_ble_connected = ble_now;
+
+        /*
+         * 启动动画结束后先让三块表完成页面切换，
+         * 800ms 后再由主表启动同步扫表。
+         */
+        if (s_boot_sweep_due_us > 0 &&
+            connect_now_us >= s_boot_sweep_due_us) {
+            s_boot_sweep_due_us = 0;
+            s_sweep_step = 1;
+            ESP_LOGI(TAG, "Startup synchronized sweep start");
+        }
     }
 
     /* ---- Showroom 模式: 假数据 + 主表自动切页 + 从表同步 ---- */
@@ -1174,7 +1335,7 @@ void my_timerMain(lv_timer_t * timer)
             ble_now ? (is_slave ? "Linked" : "Connected")
                     : (is_slave ? "Waiting" : "Disconnected"));
     }
- 
+
 #if EXAMPLE_PIN_NUM_BK_LIGHT >= 0
         //等待500ms后开背光，避免没有初始化完成就开背光，只执行一次
         if(ucOnlyOnce == 0)
@@ -1197,54 +1358,351 @@ void my_timerMain(lv_timer_t * timer)
        里程统计仍由后台任务持续累计，可在其它页面或后续重新接入展示。 */
 
     /* ===== 开机流程 / Showroom Intro 回放 ===== */
-    bool run_intro = (!s_boot_done && !s_showroom_active) || (s_showroom_active && s_showroom_page_idx == 1);
-    if (run_intro)
+
+    /*
+     * Showroom 模式仍保留原 RACE / AS / ONE 页面。
+     * 正常上电启动不再进入该页面。
+     */
+    if (s_showroom_active && s_showroom_page_idx == 1)
     {
         int64_t now_us = esp_timer_get_time();
-        if (s_boot_start_us == 0) s_boot_start_us = now_us;
-        int64_t boot_el = now_us - s_boot_start_us;
-        bool intro_en = nvs_intro_enable_get();
-        bool in_showroom_intro = s_showroom_active && s_showroom_page_idx == 1;
 
-        if (!is_slave || in_showroom_intro) {
-            if (s_intro_step == 0) {
-                if (in_showroom_intro || (intro_en && espnow_master_online_slaves() > 0)) {
-                    s_intro_start_us = now_us;
-                    s_intro_step = 1;
-                } else if (!intro_en || boot_el > 3000000) {
-                    s_intro_step = 255;
-                }
-            } else if (s_intro_step != 255) {
-                int64_t el = now_us - s_intro_start_us;
-                s_intro_step = (el < 500000) ? 1 : (el < 1000000) ? 2 : (el < 1500000) ? 3
-                             : (el < 2000000) ? 4 : (el < 3000000) ? 5 : 255;
-            }
-        } else {
-            if (s_intro_step == 0) {
-                if (boot_el > 3000000) s_intro_step = 255;
-            }
+        if (s_intro_step == 0) {
+            s_intro_start_us = now_us;
+            s_intro_step = 1;
+            s_intro_shown = true;
+        } else if (s_intro_step != 255) {
+            int64_t elapsed_us =
+                now_us - s_intro_start_us;
+
+            s_intro_step =
+                (elapsed_us < 500000)  ? 1 :
+                (elapsed_us < 1000000) ? 2 :
+                (elapsed_us < 1500000) ? 3 :
+                (elapsed_us < 2000000) ? 4 :
+                (elapsed_us < 3000000) ? 5 :
+                                         255;
         }
 
-        // 渲染 + 屏幕切换
-        if (s_intro_step >= 1 && s_intro_step <= 5) {
-            if (!s_intro_shown) {
-                if (ui_ScreenPageIntro == NULL) ui_ScreenPageIntro_screen_init();
-                if (!in_showroom_intro) {
-                    lv_scr_load_anim(ui_ScreenPageIntro, LV_SCR_LOAD_ANIM_FADE_ON, 150, 0, false);
-                    ui_ScreenPageLogo = NULL; imageLogo = NULL;
-                }
-                s_intro_shown = true;
+        if (s_intro_step >= 1 &&
+            s_intro_step <= 5 &&
+            ui_LabelIntroWord) {
+            static const char *words[] = {
+                "",
+                "RACE",
+                "AS",
+                "ONE"
+            };
+
+            uint8_t position =
+                nvs_device_position_get();
+
+            if (position < 1 || position > 3) {
+                position = 1;
             }
-            if (ui_LabelIntroWord) {
-                static const char *words[] = {"", "RACE", "AS", "ONE"};
-                uint8_t pos = nvs_device_position_get();
-                if (pos < 1 || pos > 3) pos = 1;
-                lv_label_set_text(ui_LabelIntroWord, (s_intro_step >= pos + 1) ? words[pos] : "");
-            }
-        } else if (s_intro_step == 255 && !in_showroom_intro) {
-            boot_enter_default_page();   // 仅开机时进默认页; showroom 不跳走
+
+            lv_label_set_text(
+                ui_LabelIntroWord,
+                (s_intro_step >= position + 1)
+                    ? words[position]
+                    : ""
+            );
         }
-        // s_intro_step==0: 仍在 Logo 等待
+    }
+    else if (!s_boot_done)
+    {
+        int64_t now_us =
+            esp_timer_get_time();
+
+        uint8_t device_role =
+            nvs_cfg_get()->device_role;
+
+        bool is_multi_master =
+            device_role == ESPNOW_ROLE_MASTER;
+
+        startup_animation_t startup_animation =
+            nvs_startup_animation_get();
+
+        if (
+            startup_animation < STARTUP_ANIM_NONE ||
+            startup_animation >= STARTUP_ANIM_COUNT
+        ) {
+            startup_animation =
+                STARTUP_ANIM_ORIGINAL;
+        }
+
+        bool startup_enabled =
+            startup_animation != STARTUP_ANIM_NONE;
+
+        /*
+         * MASTER 状态机：
+         *
+         * 黑屏等待两个 SLAVE
+         * → 通讯稳定 100ms
+         * → 三表 SKY GAUGE
+         * → MASTER Boot86、SLAVE 黑屏
+         * → 三表默认页和同步扫表
+         */
+        if (!is_slave)
+        {
+            uint8_t online_slaves =
+                is_multi_master
+                    ? espnow_master_online_slaves()
+                    : 0;
+
+            if (!startup_enabled) {
+                s_intro_step =
+                    BOOT86_SYNC_DONE;
+
+                s_boot86_startup_phase =
+                    BOOT86_STARTUP_DONE;
+            }
+
+            /*
+             * 单机模式不等待 SLAVE：
+             * 直接进入 SKY GAUGE 阶段。
+             */
+            if (
+                startup_enabled &&
+                !is_multi_master &&
+                s_boot86_startup_phase ==
+                    BOOT86_STARTUP_WAIT_LINK
+            ) {
+                s_intro_step =
+                    BOOT86_SYNC_SKY_GAUGE;
+
+                s_boot86_sky_start_us =
+                    now_us;
+
+                s_boot86_startup_phase =
+                    BOOT86_STARTUP_SKY_GAUGE;
+
+                boot86_show_sky_gauge_page();
+            }
+
+            if (
+                startup_enabled &&
+                is_multi_master &&
+                s_boot86_startup_phase ==
+                    BOOT86_STARTUP_WAIT_LINK
+            ) {
+                /*
+                 * 通讯未完成时，三块表保持纯黑。
+                 */
+                boot86_show_black_page(false);
+
+                if (
+                    online_slaves >= 2 &&
+                    s_boot86_link_settle_timer == NULL
+                ) {
+                    s_boot86_startup_phase =
+                        BOOT86_STARTUP_SETTLING;
+
+                    s_boot86_link_settle_timer =
+                        lv_timer_create(
+                            boot86_link_settle_cb,
+                            BOOT86_LINK_SETTLE_MS,
+                            NULL
+                        );
+
+                    if (s_boot86_link_settle_timer) {
+                        lv_timer_set_repeat_count(
+                            s_boot86_link_settle_timer,
+                            1
+                        );
+
+                        ESP_LOGI(
+                            TAG,
+                            "Both slaves detected, waiting 100ms"
+                        );
+                    } else {
+                        s_boot86_startup_phase =
+                            BOOT86_STARTUP_WAIT_LINK;
+                    }
+                }
+            }
+
+            if (
+                s_boot86_startup_phase ==
+                    BOOT86_STARTUP_SETTLING &&
+                online_slaves < 2
+            ) {
+                /*
+                 * 100ms 内任意一个 SLAVE 掉线，
+                 * 取消计时并重新等待两个 SLAVE。
+                 */
+                if (s_boot86_link_settle_timer) {
+                    lv_timer_del(
+                        s_boot86_link_settle_timer
+                    );
+
+                    s_boot86_link_settle_timer =
+                        NULL;
+                }
+
+                s_boot86_startup_phase =
+                    BOOT86_STARTUP_WAIT_LINK;
+
+                boot86_show_black_page(false);
+            }
+
+            if (
+                s_boot86_startup_phase ==
+                    BOOT86_STARTUP_SKY_GAUGE &&
+                now_us - s_boot86_sky_start_us >=
+                    BOOT86_SKY_GAUGE_HOLD_US
+            ) {
+                switch (startup_animation)
+                {
+                    case STARTUP_ANIM_TOYOTA86:
+                        /*
+                         * GR86：
+                         * SKY GAUGE 完成后，
+                         * MASTER 播放 86 动画，
+                         * SLAVE 根据 step=20 回到纯黑。
+                         */
+                        s_intro_step =
+                            BOOT86_SYNC_MASTER_ANIM;
+
+                        boot86_show_black_page(false);
+
+                        ui_boot86_start();
+
+                        s_boot86_started = true;
+
+                        s_boot86_startup_phase =
+                            BOOT86_STARTUP_MASTER_ANIMATION;
+
+                        ESP_LOGI(
+                            TAG,
+                            "SKY GAUGE complete, GR86 animation start"
+                        );
+                        break;
+
+                    case STARTUP_ANIM_RX8:
+                        /*
+                         * RX-8 已注册，但动画资源尚未实现。
+                         * 当前安全回退到 Original，
+                         * 绝不播放 GR86 素材。
+                         */
+                        ESP_LOGW(
+                            TAG,
+                            "RX-8 startup animation is not implemented; using Original"
+                        );
+
+                        s_intro_step =
+                            BOOT86_SYNC_DONE;
+
+                        s_boot86_startup_phase =
+                            BOOT86_STARTUP_DONE;
+                        break;
+
+                    case STARTUP_ANIM_ORIGINAL:
+                        /*
+                         * Original：
+                         * SKY GAUGE 完成后直接进入默认页面。
+                         */
+                        s_intro_step =
+                            BOOT86_SYNC_DONE;
+
+                        s_boot86_startup_phase =
+                            BOOT86_STARTUP_DONE;
+
+                        ESP_LOGI(
+                            TAG,
+                            "Original startup animation complete"
+                        );
+                        break;
+
+                    case STARTUP_ANIM_NONE:
+                    default:
+                        /*
+                         * None 正常情况下不会进入 SKY GAUGE，
+                         * 此处作为防御性回退。
+                         */
+                        s_intro_step =
+                            BOOT86_SYNC_DONE;
+
+                        s_boot86_startup_phase =
+                            BOOT86_STARTUP_DONE;
+                        break;
+                }
+            }
+
+            if (
+                s_boot86_startup_phase ==
+                    BOOT86_STARTUP_MASTER_ANIMATION &&
+                ui_boot86_is_finished()
+            ) {
+                s_intro_step =
+                    BOOT86_SYNC_DONE;
+
+                s_boot86_startup_phase =
+                    BOOT86_STARTUP_DONE;
+            }
+
+            if (
+                s_boot86_startup_phase ==
+                    BOOT86_STARTUP_DONE
+            ) {
+                /*
+                 * 先广播完成状态并切换页面；
+                 * 800ms 后由 MASTER 启动同步扫表。
+                 */
+                s_sweep_pending = false;
+
+                bool can_start_sweep =
+                    nvs_cfg_get()->
+                        ble_device_name[0] != '\0';
+
+                boot_enter_default_page();
+
+                if (can_start_sweep) {
+                    s_boot_sweep_due_us =
+                        now_us +
+                        BOOT86_SWEEP_SETTLE_US;
+                }
+
+                s_post_boot_connect_enable_us =
+                    now_us +
+                    BOOT86_RECONNECT_GUARD_US;
+
+                ESP_LOGI(
+                    TAG,
+                    "Startup animation complete, waiting for synchronized sweep"
+                );
+            }
+        }
+        else
+        {
+            /*
+             * SLAVE 完全由 MASTER 广播的 intro_step 驱动。
+             */
+            if (
+                s_intro_step ==
+                    BOOT86_SYNC_WAIT
+            ) {
+                boot86_show_black_page(true);
+            }
+            else if (
+                s_intro_step ==
+                    BOOT86_SYNC_SKY_GAUGE
+            ) {
+                boot86_show_sky_gauge_page();
+            }
+            else if (
+                s_intro_step ==
+                    BOOT86_SYNC_MASTER_ANIM
+            ) {
+                boot86_show_black_page(true);
+            }
+            else if (
+                s_intro_step ==
+                    BOOT86_SYNC_DONE
+            ) {
+                boot_enter_default_page();
+            }
+        }
     }
 
     /* ---- 转速超限闪烁报警 ---- */
@@ -1338,7 +1796,7 @@ void my_timerMain(lv_timer_t * timer)
 
 ///////////////////// FUNCTIONS ////////////////////
 void ui_event_logo_background(lv_event_t * e)
-{  
+{
     lv_event_code_t event_code = lv_event_get_code(e);
     if(event_code == LV_EVENT_CLICKED) {
         static uint32_t last_click_tick = 0;
@@ -1357,10 +1815,10 @@ void ui_event_logo_background(lv_event_t * e)
             lv_scr_load_anim(ui_ScreenPageODBProtocal, LV_SCR_LOAD_ANIM_FADE_ON, 300, 0, true);
             ui_ScreenPageLogo = NULL;
             imageLogo = NULL;
-        }  
+        }
 
         ESP_LOGI(TAG, "Logo LV_EVENT_CLICKED ! \n");
-    }   
+    }
 }
 
 // 档位/转速/车速 三页位于轮播最前：档位→转速→车速→Temp→… (左滑下一页/右滑上一页)
@@ -1641,6 +2099,8 @@ void ui_event_easter_egg_background(lv_event_t * e)
         else if(dir == LV_DIR_BOTTOM) {
             // 下滑 → 设置页面
             lv_indev_wait_release(lv_indev_get_act());
+
+
             _ui_screen_change(&ui_ScreenPageSettings, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageSettings_screen_init);
         }
     }
@@ -1672,7 +2132,8 @@ void ui_init(void)
     ui_ScreenPageMultiGauge = NULL;     // 三连表设置页懒加载
     ui_ScreenPageChartConfig = NULL;    // 曲线数据源选择页懒加载
     ui_ScreenPageChartAlarm = NULL;     // 曲线报警设置页懒加载
-    ui_ScreenPageIntro = NULL;          // 开机动画页懒加载
+    ui_ScreenPageIntro = NULL;          // Showroom Intro 页懒加载
+    ui_ScreenPageBoot86 = NULL;         // 86 主表启动动画页懒加载
     ui_ScreenPageBrakeTemp = NULL;      // 刹车温页已并入曲线页, 不创建
     ui_ScreenPageBrakeWarn = NULL;
     ui____initial_actions0 = lv_obj_create(NULL);
@@ -1683,8 +2144,21 @@ void ui_init(void)
         ui_ScreenPageInfo_screen_init();
     }
 
-    lv_disp_load_scr(ui_ScreenPageLogo);
+    /*
+     * 上电后先显示纯黑页面。
+     * SKY GAUGE 必须等 MASTER 检测到两个 SLAVE 后才显示。
+     */
+    if (ui_ScreenPageBoot86 == NULL) {
+        ui_ScreenPageBoot86_screen_init();
+    }
 
+    ui_boot86_show_waiting();
+
+    lv_disp_load_scr(
+        ui_ScreenPageBoot86
+    );
+
+    s_boot86_page_shown = true;
     lv_timer_create(my_timerMain, 200, NULL);  //200 ms 周期
 }
 

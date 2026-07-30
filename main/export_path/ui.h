@@ -154,6 +154,29 @@ void ui_ScreenPageChartAlarm_screen_init(void);
 extern lv_obj_t * ui_ScreenPageChartAlarm;
 void ui_event_chart_alarm_background(lv_event_t * e);
 
+// SCREEN: ui_ScreenPageBoot86
+// 仅中间主表播放；左右从表保持黑屏等待。
+void ui_ScreenPageBoot86_screen_init(void);
+extern lv_obj_t * ui_ScreenPageBoot86;
+
+/* 重置动画对象为隐藏状态。 */
+void ui_boot86_reset(void);
+
+/* 从表等待状态：纯黑屏。 */
+void ui_boot86_show_waiting(void);
+
+/*
+ * 按启动后的毫秒数渲染动画。
+ * 返回 true 表示 5 秒动画已经完成。
+ */
+bool ui_boot86_render(uint32_t elapsed_ms);
+
+/* 使用独立 40ms LVGL 定时器开始播放。 */
+void ui_boot86_start(void);
+
+/* 返回主表动画是否播放完成。 */
+bool ui_boot86_is_finished(void);
+
 // SCREEN: ui_ScreenPageIntro (三连表开机动画 RACE / AS / ONE)
 void ui_ScreenPageIntro_screen_init(void);
 extern lv_obj_t * ui_ScreenPageIntro;

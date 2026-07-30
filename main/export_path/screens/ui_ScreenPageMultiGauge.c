@@ -1,7 +1,7 @@
 // Multi-Gauge (三连表) Settings Page  (设置页下滑进入)
 //  - MODE: MASTER(连ELM327+广播) / SLAVE(收主表数据) / STANDALONE(单机, 不启WiFi) → NVS device_role
 //  - POSITION: 本机在开机动画中的位置 1/2/3(RACE/AS/ONE)     → NVS device_position
-//  - INTRO: 开机动画开/关(仅多表时播放)                        → NVS intro_enable
+//  - STARTUP ANIMATION: None / Original / GR86 / RX-8     → 独立 NVS key
 //  改动重启(下次点火)生效。上滑/左右滑返回设置页。
 
 #include "../ui.h"
@@ -10,11 +10,12 @@
 
 static const char *mode_names = "MASTER\nSLAVE\nSTANDALONE";   // 索引=device_role: 0=MASTER,1=SLAVE,2=STANDALONE
 static const char *pos_names  = "1\n2\n3";          // 索引0/1/2 → 位置1/2/3
-static const char *intro_names = "OFF\nON";         // 0=OFF, 1=ON
+static const char *startup_anim_names =
+    "NONE\nORIGINAL\nGR86\nRX-8";
 
 static lv_obj_t *s_roller_mode = NULL;
 static lv_obj_t *s_roller_pos  = NULL;
-static lv_obj_t *s_roller_intro = NULL;
+static lv_obj_t *s_roller_startup_anim = NULL;
 
 static void on_mode_roller_change(lv_event_t *e)
 {
@@ -26,9 +27,22 @@ static void on_pos_roller_change(lv_event_t *e)
 {
     nvs_device_position_set((uint8_t)lv_roller_get_selected(s_roller_pos) + 1); // 索引→1/2/3
 }
-static void on_intro_roller_change(lv_event_t *e)
+static void on_startup_anim_roller_change(lv_event_t *e)
 {
-    nvs_intro_enable_set((uint8_t)lv_roller_get_selected(s_roller_intro));
+    (void)e;
+
+    uint16_t selected =
+        lv_roller_get_selected(
+            s_roller_startup_anim
+        );
+
+    if (selected >= STARTUP_ANIM_COUNT) {
+        selected = STARTUP_ANIM_ORIGINAL;
+    }
+
+    nvs_startup_animation_set(
+        (startup_animation_t)selected
+    );
 }
 
 // 统一 roller 样式
@@ -108,14 +122,63 @@ void ui_ScreenPageMultiGauge_screen_init(void)
     lv_obj_align(s_roller_pos, LV_ALIGN_CENTER, 0, -24);
     lv_obj_add_event_cb(s_roller_pos, on_pos_roller_change, LV_EVENT_VALUE_CHANGED, NULL);
 
-    // Row 3: INTRO 开机动画 开/关
-    make_mg_label(ui_ScreenPageMultiGauge, "INTRO ANIMATION", 18);
-    s_roller_intro = lv_roller_create(ui_ScreenPageMultiGauge);
-    style_mg_roller(s_roller_intro);
-    lv_roller_set_options(s_roller_intro, intro_names, LV_ROLLER_MODE_NORMAL);
-    lv_roller_set_selected(s_roller_intro, nvs_intro_enable_get() ? 1 : 0, LV_ANIM_OFF);
-    lv_obj_align(s_roller_intro, LV_ALIGN_CENTER, 0, 40);
-    lv_obj_add_event_cb(s_roller_intro, on_intro_roller_change, LV_EVENT_VALUE_CHANGED, NULL);
+    // Row 3: 可选开机动画
+    make_mg_label(
+        ui_ScreenPageMultiGauge,
+        "STARTUP ANIMATION",
+        18
+    );
+
+    s_roller_startup_anim =
+        lv_roller_create(
+            ui_ScreenPageMultiGauge
+        );
+
+    style_mg_roller(
+        s_roller_startup_anim
+    );
+
+    lv_obj_set_width(
+        s_roller_startup_anim,
+        180
+    );
+
+    lv_roller_set_options(
+        s_roller_startup_anim,
+        startup_anim_names,
+        LV_ROLLER_MODE_NORMAL
+    );
+
+    startup_animation_t startup_animation =
+        nvs_startup_animation_get();
+
+    if (
+        startup_animation < STARTUP_ANIM_NONE ||
+        startup_animation >= STARTUP_ANIM_COUNT
+    ) {
+        startup_animation =
+            STARTUP_ANIM_ORIGINAL;
+    }
+
+    lv_roller_set_selected(
+        s_roller_startup_anim,
+        (uint16_t)startup_animation,
+        LV_ANIM_OFF
+    );
+
+    lv_obj_align(
+        s_roller_startup_anim,
+        LV_ALIGN_CENTER,
+        0,
+        40
+    );
+
+    lv_obj_add_event_cb(
+        s_roller_startup_anim,
+        on_startup_anim_roller_change,
+        LV_EVENT_VALUE_CHANGED,
+        NULL
+    );
 
     // Hint
     lv_obj_t *hint = lv_label_create(ui_ScreenPageMultiGauge);

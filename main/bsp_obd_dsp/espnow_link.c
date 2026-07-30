@@ -26,7 +26,7 @@ extern void ui_intro_set_step(int step);
 
 #define ESPNOW_CHANNEL          1       // 主从必须同信道(STA 不连AP时固定在此)
 #define ESPNOW_MAGIC            0x4F42  // 'OB' 包头校验
-#define ESPNOW_VER              4       // v4: 追加 intro_step(开机动画同步)
+#define ESPNOW_VER              5       // v5: selectable startup animation sync
 #define MASTER_NAME_LEN         12
 static const char MASTER_NAME[] = "SkyGauge";   // 主表广播的名字(从表显示用); 后续可做成可配置
 #define BROADCAST_INTERVAL_MS   100     // 主表广播周期(10Hz, 仪表足够)

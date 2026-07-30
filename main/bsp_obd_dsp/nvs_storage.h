@@ -4,6 +4,21 @@
 #include "esp_err.h"
 
 //主题风格结构体
+
+/*
+ * 可选开机动画。
+ *
+ * 数值一旦发布并写入 NVS，就不要重新排序或修改，
+ * 后续动画只能继续追加新值。
+ */
+typedef enum {
+    STARTUP_ANIM_NONE = 0,
+    STARTUP_ANIM_ORIGINAL = 1,
+    STARTUP_ANIM_TOYOTA86 = 2,
+    STARTUP_ANIM_RX8 = 3,
+    STARTUP_ANIM_COUNT
+} startup_animation_t;
+
 typedef struct {
     uint8_t  theme;         //0 为自定义主题，1-9系统主题  1.pink_Big_face_cat   ...  默认为 1;
     uint32_t user_theme_domiant_color;   //自定义主题主色调颜色
@@ -52,6 +67,11 @@ int16_t nvs_chart_alarm_get(uint8_t item);
 void    nvs_chart_alarm_set(uint8_t item, int16_t raw_threshold);
 
 // 三连表开机动画(RACE / AS / ONE): 开关 + 本机位置(1/2/3)。独立 blob, 不改 cfg 结构体。
+
+/* 可选开机动画 */
+startup_animation_t nvs_startup_animation_get(void);
+void nvs_startup_animation_set(startup_animation_t animation);
+
 uint8_t nvs_intro_enable_get(void);           // 0=关 1=开
 void    nvs_intro_enable_set(uint8_t en);
 uint8_t nvs_device_position_get(void);        // 1/2/3
