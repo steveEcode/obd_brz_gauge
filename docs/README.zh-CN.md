@@ -2,42 +2,57 @@
 
 ## 项目简介
 
-OBD BRZ Gauge 是一个基于 ESP-IDF 的车载仪表显示项目，运行在微雪 Waveshare ESP32-S3-Touch-LCD-1.85 开发板上。项目通过 BLE 连接兼容 ELM327 的 OBD 设备，读取车辆运行数据，并在圆形触摸屏上进行可视化展示。
-
-当前工程包含完整的主程序入口、BLE OBD 通信、板级驱动、LVGL 图形界面以及 NVS 配置与统计逻辑，适合作为个人开源项目继续维护和扩展。
+OBD BRZ Gauge 是一个基于 ESP-IDF 的车载圆形仪表显示项目，运行在微雪 Waveshare ESP32-S3-Touch-LCD-1.85 开发板上。项目通过 BLE 连接兼容 ELM327 的 OBD 适配器，读取车辆运行数据，并在圆形触摸屏上通过 LVGL 进行可视化展示。
 
 ## 当前状态
 
-- 开发板：Waveshare ESP32-S3-Touch-LCD-1.85
-- 芯片：ESP32-S3
-- 框架：ESP-IDF 5.1+
-- 图形库：LVGL 8
-- 通信方式：BLE 连接 ELM327 OBD 适配器
-- 当前仅验证车型：斯巴鲁 Subaru BRZ ZC6
-
-说明：目前“数据可用性”只在 Subaru BRZ ZC6 上做过实际测试。其他车型、其他 OBD 适配器、以及不同年份或不同 ECU 配置的车辆，均需要重新验证。
+- 硬件平台：微雪 Waveshare ESP32-S3-Touch-LCD-1.85
+- 软件栈：ESP-IDF 5.5.3、LVGL 8
+- 通信链路：BLE + ELM327（标准 OBD PID + CAN 广播帧 ATMA 监听）
+- 已内置车型：BRZ ZC6 CAN / ZD8 CAN、丰田 GT86 ZN6、马自达 MX-5 ND、宝马 G 系、保时捷 987.1/997.1/997.2、MINI JCW F56、OBD2 通用
+- 三连表：一主多从，通过 ESP-NOW 联动
+- 当前验证状态：已在斯巴鲁 BRZ ZC6 上完整验证；其余车型已配置，部分仍需上车验证
 
 ## 功能概览
 
-- 启动后初始化 LCD、触摸、LVGL、NVS 和 BLE 模块
-- 支持 BLE 扫描与连接兼容 ELM327 的 OBD 设备
-- 支持展示发动机转速、车速、水温、进气温度、机油温度、发动机负荷、节气门开度、燃油液位、电池电压等数据
-- 支持用户配置持久化保存
-- 支持里程、运行时间等统计信息记录
-- 包含导出的 UI 资源，便于后续继续调整界面
+- 支持扫描并连接兼容 ELM327 的 BLE OBD 设备
+- **CAN 广播帧 ATMA 监听**：绕过标准 OBD PID 轮询，高频直读 — 转速 100Hz、油温/水温 10–20Hz，其余通道（车速/负荷/电压/进气温）定期 OBD 回退查询
+  - ZC6 (Gen1)：0x140（转速+节气门）+ 0x360（油温+水温）
+  - ZD8 (Gen2)：0x40（转速+节气门）+ 0x345（油温+水温）
+- **自定义开机图 & 开机动画**：可配置开机 Logo，支持多 Block 动画播放，SPIFFS 分区挂载 bootmedia 实现丰富开机流程
+- **统一车辆配置系统**：编译时 `vehicle_custom_config.h` 管理各车型阈值、报警、表盘范围
+- **FSM 状态机事件系统**：模块化状态机管理开机流程、媒体挂载、数据源切换
+- 实时显示转速、车速、水温/进气温/机油温、机油压力、涡轮压力、节气门、发动机负荷、电压、档位等数据
+- 车型选择：各车型独立的传动比（最高 8 挡）、油温策略、涡轮增压，以及按车型锁定协议（如宝马/保时捷强制 ISO 15765-4 CAN）
+- 除标准 PID 01 5C 外的厂商油温读取：丰田/斯巴鲁 Mode 21、马自达 Mode 22、MINI/宝马 Mode 22、宝马 F 系 Mode 22 44 02、保时捷 CAN 广播帧 0x441 监听
+- 可配置指针表盘页，下滑切换显示的数据源
+- **转速超限闪烁报警**：可设阈值，超限时背景图红色闪烁
+- **三连表开机动画**：三块板通过 ESP-NOW 同步依次显示 "RACE / AS / ONE"
+- 稳健的连接处理：等待 BLE 通知订阅完成后再初始化，每次重连都重新初始化，数据中断时自愈（重初始化 + 自动重连）——上车通电后无需手动重连
+- 三连表（ESP-NOW）：主表读 OBD 并广播，从表零额外 OBD 负载同步显示；主/从角色在设置页选择；开机扫表动画同步；从表显示主表名字
+- 可选自定义开机图（编译开关）
+- 使用 LVGL 和导出 UI 资源实现触控界面
+- 通过 NVS 持久化保存用户配置和里程统计数据
+
+## 三连表说明
+
+一个 ELM327 蓝牙适配器只允许一个客户端连接，多块表无法各自直连。因此一块板作**主表**（保持 BLE + ELM327 连接、读取 OBD），其余作**从表**。主表通过 ESP-NOW 广播解析后的数据缓存，从表零额外 OBD 负载渲染。三块板烧同一份固件，在「设置页 → 下滑 → MULTI-GAUGE」选择角色（重启生效）。主表在 ESP32-S3 上蓝牙/WiFi 共存，从表只跑 ESP-NOW。
 
 ## 目录说明
 
 - [main/app_main.c](../main/app_main.c)：程序入口，负责初始化硬件、LVGL、UI 和 BLE 任务
-- [main/app_obd_dsp](../main/app_obd_dsp)：业务层数据缓存、档位推算、里程统计等逻辑
-- [main/bsp_obd_dsp](../main/bsp_obd_dsp)：板级支持包，包括 BLE 客户端、NVS、LCD、触摸、I2C、IO 扩展器等驱动
-- [main/export_path](../main/export_path)：UI 设计导出代码、字体、图片和页面逻辑
+- [main/app_obd_dsp](../main/app_obd_dsp)：业务层 OBD 数据缓存、车辆配置、CAN 解码器、里程统计、开机动画播放、FSM 事件系统
+- [main/bsp_obd_dsp](../main/bsp_obd_dsp)：板级支持包，包括 BLE 客户端、NVS、LCD、触摸、I2C（ESP-IDF 5.5 新 API）、IO 扩展器、ESP-NOW 链路等驱动
+- [main/export_path](../main/export_path)：UI 设计导出代码、字体、图片和页面逻辑（SquareLine 导出）
+- [bootmedia](../bootmedia)：开机动画媒体块（SPIFFS 分区源文件）
+- [model](../model)：开源 3D 打印模型（外壳、表座、支架）
+- [tools](../tools)：辅助脚本（图片转换、开机 Block 构建等）
+- [firmware/release](../firmware/release)：预编译固件二进制文件
 - [managed_components](../managed_components)：ESP-IDF 组件管理器自动拉取的依赖
-- [tools](../tools)：资源转换等辅助脚本
 
 ## 依赖环境
 
-- ESP-IDF 5.1 或更高版本
+- ESP-IDF 5.5.3 或更高版本
 - Python 环境与 ESP-IDF 工具链
 - USB 数据线
 - 兼容 ELM327 的 BLE OBD 适配器
@@ -59,6 +74,30 @@ idf.py -p PORT flash monitor
 
 如果是首次构建，ESP-IDF 可能会自动下载并安装缺失的组件到 managed_components 目录。
 
+## 预编译固件
+
+`firmware/release/` 目录下提供可直接烧录的预编译二进制文件：
+
+| 文件 | 说明 |
+|------|------|
+| `bootloader/bootloader.bin` | 引导加载程序 |
+| `partition_table/partition-table.bin` | 分区表 |
+| `ota_data_initial.bin` | OTA 数据初始分区 |
+| `obd_brz_gauge.bin` | 应用程序固件 |
+| `bootmedia.bin` | 开机动画媒体分区 |
+| `flash_address_map.txt` | 烧录地址映射表 |
+
+使用 esptool 一键烧录：
+
+```bash
+esptool.py --chip esp32s3 -p PORT -b 460800 write_flash \
+  0x0 firmware/release/bootloader/bootloader.bin \
+  0x8000 firmware/release/partition_table/partition-table.bin \
+  0xf000 firmware/release/ota_data_initial.bin \
+  0x20000 firmware/release/obd_brz_gauge.bin \
+  0x620000 firmware/release/bootmedia.bin
+```
+
 ## 开发与适配说明
 
 1. 这个项目是针对微雪 ESP32-S3-Touch-LCD-1.85 做的板级适配。
@@ -68,18 +107,20 @@ idf.py -p PORT flash monitor
 
 ## 已知限制
 
-- 当前只验证了 Subaru BRZ ZC6 的数据读取情况
+- 当前重点验证了 Subaru BRZ ZC6 的数据读取情况
 - 不保证所有 ELM327 兼容设备都能稳定工作
 - 不保证所有车型的 PID 与返回格式一致
 - 若使用不同版本的 ESP-IDF，可能需要对 BSP 或组件依赖进行小幅调整
 
-## 开源发布建议
+## 3D 模型（开源）
 
-在正式公开发布前，建议补充以下内容：
+`model/` 目录包含开源的 3D 打印模型文件：
 
-- 选择并添加开源许可证
-- 补充实物照片、接线说明和界面截图
-- 说明测试所使用的 OBD 设备型号
-- 标明哪些 PID 是通用 OBD，哪些可能是当前车型相关逻辑
+| 文件 | 说明 |
+|------|------|
+| `model/esp32_1.85_weixue/housing.stl` | ESP32-S3-Touch-LCD-1.85 开发板外壳 |
+| `model/Subaru/brz_zc6/triple_gauge_pod.stp` | BRZ ZC6 三连表底座（3× 1.85" 圆形） |
+| `model/Subaru/brz_zc6/passenger_dashboard_scan.stl` | BRZ ZC6 副驾仪表台扫描件（ fitting 参考） |
+| `model/mazda/mx5_nd/air_vent_bracket.stl` | MX-5 ND 出风口安装支架 |
 
-英文版说明见 [docs/README.en.md](README.en.md)。
+英文说明见 [README.en.md](README.en.md)，项目根目录 README 见 [../../README.md](../../README.md)。

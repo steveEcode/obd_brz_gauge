@@ -2,6 +2,7 @@
 // 一主多从, 广播(1对多), 与 BLE 共存(主表)。步骤1: 广播+无MAC过滤(同车单主表场景足够)。
 
 #include "espnow_link.h"
+#include "app_obd_dsp/app_event.h"
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -16,11 +17,9 @@
 #include "bsp_obd_dsp/elm327_ble_client.h"
 #include "bsp_obd_dsp/nvs_storage.h"
 
-// 扫表/开机动画同步: 主表读 / 从表写 (实现在 ui.c, 避免在此重引 lvgl 头)
+// 扫表/开机动画同步: 主表读 (实现在 ui.c, 避免在此重引 lvgl 头)
 extern int  ui_sweep_get_step(void);
-extern void ui_sweep_set_step(int step);
 extern int  ui_intro_get_step(void);
-extern void ui_intro_set_step(int step);
 
 #define TAG "espnow_link"
 
@@ -165,8 +164,9 @@ static void apply_packet(const espnow_obd_packet_t *p) {
     obd_data_set_load_pct(p->load_pct);
     obd_data_set_tps(p->tps);
     obd_data_set_bat_mv(p->bat_mv);
-    ui_sweep_set_step(p->sweep_step);   // 跟随主表扫表进度, 实现三连表同步扫表
-    ui_intro_set_step(p->intro_step);   // 跟随主表开机动画进度
+    // 通过事件队列通知 UI task (消除跨 task 直接调用的竞态)
+    app_event_send(APP_EVT_ESPNOW_SYNC_SLOT, p->sweep_step);
+    app_event_send(APP_EVT_ESPNOW_INTRO_STEP, p->intro_step);
     memcpy(s_master_name, p->name, MASTER_NAME_LEN);
     s_master_name[MASTER_NAME_LEN - 1] = '\0';   // 记录主表名字(信息页显示)
 }

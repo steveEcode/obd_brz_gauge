@@ -18,6 +18,8 @@
 #define KEY_CHART_ALARM       "chartalarm"
 #define CHART_ALARM_N         11   // = DISP_ITEM_COUNT (需与 ui.c disp_item_t 同步)
 #define KEY_MG_EXTRA          "mgextra"   // 三连表开机动画设置
+#define KEY_CFG_VERSION       "cfgver"    // 配置版本号 (缺失=v0)
+#define CFG_VERSION_CURRENT   1           // 当前版本; 每次加字段 +1
 #define STAT_FLUSH_PERIOD_MS  30000 //30s 落盘
 
 static nvs_user_cfg_t s_cfg =   { 
@@ -48,7 +50,8 @@ static int16_t s_chart_alarm[CHART_ALARM_N] = {
 static struct __attribute__((packed)) {
     uint8_t intro_enable;   // 0/1
     uint8_t device_position; // 1/2/3
-} s_mg = { 0, 1 };
+    uint8_t boot_mode;      // 0=默认动画, 1=自定义图片, 2=视频
+} s_mg = { 0, 1, 0 };
 
 /* 前向声明 */
 static esp_err_t load_blob(const char *ns,const char *key,void *out,size_t len);
@@ -81,13 +84,42 @@ esp_err_t nvs_storage_init(void)
             nvs_close(h);
         }
         if (s_mg.device_position < 1 || s_mg.device_position > 3) s_mg.device_position = 1;
-        if (s_mg.intro_enable > 1) s_mg.intro_enable = 0;
+        if (s_mg.intro_enable > 4) s_mg.intro_enable = 0;
+        if (s_mg.boot_mode > 2) s_mg.boot_mode = 0;
+        ESP_LOGI("nvs", "mg loaded: intro=%u pos=%u boot=%u (blob_sz=%u)", s_mg.intro_enable, s_mg.device_position, s_mg.boot_mode, (unsigned)sz);
+    }
+
+    /* ---- 配置版本迁移 ---- */
+    {
+        nvs_handle_t h;
+        uint8_t stored_ver = 0;
+        bool has_ver = false;
+        if (nvs_open(NS_CFG, NVS_READONLY, &h) == ESP_OK) {
+            if (nvs_get_u8(h, KEY_CFG_VERSION, &stored_ver) == ESP_OK) has_ver = true;
+            nvs_close(h);
+        }
+        if (!has_ver || stored_ver < CFG_VERSION_CURRENT) {
+            ESP_LOGW("nvs", "Config migration v%u → v%u", stored_ver, CFG_VERSION_CURRENT);
+            // v0 → v1: boot_mode 字段新增, 默认 0 (SKY GAUGE)
+            if (stored_ver < 1) {
+                s_mg.boot_mode = 0;
+                save_blob(NS_CFG, KEY_MG_EXTRA, &s_mg, sizeof(s_mg));
+            }
+            // 未来: if (stored_ver < 2) { ... 迁移 v1→v2 的字段 ... }
+            // 写入新版本号
+            if (nvs_open(NS_CFG, NVS_READWRITE, &h) == ESP_OK) {
+                nvs_set_u8(h, KEY_CFG_VERSION, CFG_VERSION_CURRENT);
+                nvs_commit(h);
+                nvs_close(h);
+            }
+            ESP_LOGI("nvs", "Config migration done, now v%u", CFG_VERSION_CURRENT);
+        }
     }
 
     /* 新增字段默认值修复 (旧NVS数据中rsv[x]全为0) */
     if(s_cfg.brightness_day == 0) s_cfg.brightness_day = 100;
     if(s_cfg.default_page > 6) s_cfg.default_page = 0; // 0=Temp,1=Info,2=Chart,3=Needle,4=Gear,5=Rpm,6=Speed(刹车温已并入Chart)
-    if(s_cfg.needle_source_idx >= 10) s_cfg.needle_source_idx = 0; // DISP_ITEM_COUNT=10
+    if(s_cfg.needle_source_idx >= 11) s_cfg.needle_source_idx = 0; // DISP_ITEM_COUNT=11 (CLT..BOOST)
     if(s_cfg.device_role > 2) s_cfg.device_role = ESPNOW_ROLE_STANDALONE; // 角色: 0=主 1=从 2=单机, 越界归单机
     if(s_cfg.chart_source_idx >= 11) s_cfg.chart_source_idx = 8; // 曲线数据项越界→默认 OILP(旧NVS该字节为0=CLT亦可, 这里统一到OILP)
     // 车型索引按已注册的 profile 数量限界（越界归零到 ZC6）
@@ -138,7 +170,7 @@ void nvs_chart_alarm_set(uint8_t item, int16_t raw_threshold){
 /* 三连表开机动画设置 */
 uint8_t nvs_intro_enable_get(void){ return s_mg.intro_enable; }
 void nvs_intro_enable_set(uint8_t en){
-    en = en ? 1 : 0;
+    if(en > 4) return;
     if(s_mg.intro_enable == en) return;
     s_mg.intro_enable = en;
     save_blob(NS_CFG, KEY_MG_EXTRA, &s_mg, sizeof(s_mg));
@@ -148,6 +180,13 @@ void nvs_device_position_set(uint8_t pos){
     if(pos < 1 || pos > 3) return;
     if(s_mg.device_position == pos) return;
     s_mg.device_position = pos;
+    save_blob(NS_CFG, KEY_MG_EXTRA, &s_mg, sizeof(s_mg));
+}
+uint8_t nvs_boot_mode_get(void){ return s_mg.boot_mode; }
+void nvs_boot_mode_set(uint8_t mode){
+    if(mode > 2) return;
+    if(s_mg.boot_mode == mode) return;
+    s_mg.boot_mode = mode;
     save_blob(NS_CFG, KEY_MG_EXTRA, &s_mg, sizeof(s_mg));
 }
 

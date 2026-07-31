@@ -10,17 +10,28 @@
 
 static const char *mode_names = "MASTER\nSLAVE\nSTANDALONE";   // 索引=device_role: 0=MASTER,1=SLAVE,2=STANDALONE
 static const char *pos_names  = "1\n2\n3";          // 索引0/1/2 → 位置1/2/3
-static const char *intro_names = "OFF\nON";         // 0=OFF, 1=ON
+static const char *intro_names = "OFF\nRACE\nREI\nSHINJI\nASUKA";  // 0=OFF, 1=RACE, 2/3/4=VIDEO A/B/C
 
 static lv_obj_t *s_roller_mode = NULL;
 static lv_obj_t *s_roller_pos  = NULL;
 static lv_obj_t *s_roller_intro = NULL;
+static lv_obj_t *s_lbl_pos  = NULL;
+static lv_obj_t *s_lbl_intro = NULL;
+
+// 单机隐藏 POS, 多表显示全部
+static void mg_update_visibility(uint8_t role)
+{
+    bool is_standalone = (role == ESPNOW_ROLE_STANDALONE);
+    if (s_lbl_pos)    { if (is_standalone) lv_obj_add_flag(s_lbl_pos, LV_OBJ_FLAG_HIDDEN); else lv_obj_clear_flag(s_lbl_pos, LV_OBJ_FLAG_HIDDEN); }
+    if (s_roller_pos) { if (is_standalone) lv_obj_add_flag(s_roller_pos, LV_OBJ_FLAG_HIDDEN); else lv_obj_clear_flag(s_roller_pos, LV_OBJ_FLAG_HIDDEN); }
+}
 
 static void on_mode_roller_change(lv_event_t *e)
 {
     nvs_user_cfg_t cfg = *nvs_cfg_get();
     cfg.device_role = (uint8_t)lv_roller_get_selected(s_roller_mode);
     nvs_cfg_set(&cfg);
+    mg_update_visibility(cfg.device_role);
 }
 static void on_pos_roller_change(lv_event_t *e)
 {
@@ -84,19 +95,23 @@ void ui_ScreenPageMultiGauge_screen_init(void)
     lv_label_set_text(title, "MULTI-GAUGE");
     lv_obj_set_style_text_font(title, &ui_font_FontTypoderSize24, LV_PART_MAIN);
     lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-    lv_obj_align(title, LV_ALIGN_CENTER, 0, -132);
+    lv_obj_align(title, LV_ALIGN_CENTER, 0, -130);
 
-    // Row 1: MODE (MASTER/SLAVE)
-    make_mg_label(ui_ScreenPageMultiGauge, "MODE", -110);
+    // Row 1: MODE
+    make_mg_label(ui_ScreenPageMultiGauge, "MODE", -105);
     s_roller_mode = lv_roller_create(ui_ScreenPageMultiGauge);
     style_mg_roller(s_roller_mode);
     lv_roller_set_options(s_roller_mode, mode_names, LV_ROLLER_MODE_NORMAL);
     lv_roller_set_selected(s_roller_mode, (cfg->device_role <= 2) ? cfg->device_role : ESPNOW_ROLE_STANDALONE, LV_ANIM_OFF);
-    lv_obj_align(s_roller_mode, LV_ALIGN_CENTER, 0, -88);
+    lv_obj_align(s_roller_mode, LV_ALIGN_CENTER, 0, -85);
     lv_obj_add_event_cb(s_roller_mode, on_mode_roller_change, LV_EVENT_VALUE_CHANGED, NULL);
 
-    // Row 2: POSITION (1/2/3, 开机动画顺序)
-    make_mg_label(ui_ScreenPageMultiGauge, "POSITION (RACE/AS/ONE)", -46);
+    // Row 2: POS (RACE/AS/ONE 位置)
+    s_lbl_pos = lv_label_create(ui_ScreenPageMultiGauge);
+    lv_label_set_text(s_lbl_pos, "POS");
+    lv_obj_set_style_text_font(s_lbl_pos, &ui_font_FontTypoderSize16, LV_PART_MAIN);
+    lv_obj_set_style_text_color(s_lbl_pos, lv_color_hex(0x888888), LV_PART_MAIN);
+    lv_obj_align(s_lbl_pos, LV_ALIGN_CENTER, 0, -55);
     s_roller_pos = lv_roller_create(ui_ScreenPageMultiGauge);
     style_mg_roller(s_roller_pos);
     lv_roller_set_options(s_roller_pos, pos_names, LV_ROLLER_MODE_NORMAL);
@@ -105,24 +120,35 @@ void ui_ScreenPageMultiGauge_screen_init(void)
         if (p < 1 || p > 3) p = 1;
         lv_roller_set_selected(s_roller_pos, p - 1, LV_ANIM_OFF);
     }
-    lv_obj_align(s_roller_pos, LV_ALIGN_CENTER, 0, -24);
+    lv_obj_align(s_roller_pos, LV_ALIGN_CENTER, 0, -35);
     lv_obj_add_event_cb(s_roller_pos, on_pos_roller_change, LV_EVENT_VALUE_CHANGED, NULL);
 
-    // Row 3: INTRO 开机动画 开/关
-    make_mg_label(ui_ScreenPageMultiGauge, "INTRO ANIMATION", 18);
+    // Row 3: INTRO (多表: OFF/RACE/VIDEO)
+    s_lbl_intro = lv_label_create(ui_ScreenPageMultiGauge);
+    lv_label_set_text(s_lbl_intro, "INTRO");
+    lv_obj_set_style_text_font(s_lbl_intro, &ui_font_FontTypoderSize16, LV_PART_MAIN);
+    lv_obj_set_style_text_color(s_lbl_intro, lv_color_hex(0x888888), LV_PART_MAIN);
+    lv_obj_align(s_lbl_intro, LV_ALIGN_CENTER, 0, -5);
     s_roller_intro = lv_roller_create(ui_ScreenPageMultiGauge);
     style_mg_roller(s_roller_intro);
     lv_roller_set_options(s_roller_intro, intro_names, LV_ROLLER_MODE_NORMAL);
-    lv_roller_set_selected(s_roller_intro, nvs_intro_enable_get() ? 1 : 0, LV_ANIM_OFF);
-    lv_obj_align(s_roller_intro, LV_ALIGN_CENTER, 0, 40);
+    {
+        uint8_t ie = nvs_intro_enable_get();
+        if (ie > 4) ie = 0;
+        lv_roller_set_selected(s_roller_intro, ie, LV_ANIM_OFF);
+    }
+    lv_obj_align(s_roller_intro, LV_ALIGN_CENTER, 0, 15);
     lv_obj_add_event_cb(s_roller_intro, on_intro_roller_change, LV_EVENT_VALUE_CHANGED, NULL);
+
+    // 根据角色隐藏无关行
+    mg_update_visibility(cfg->device_role);
 
     // Hint
     lv_obj_t *hint = lv_label_create(ui_ScreenPageMultiGauge);
     lv_label_set_text(hint, "Reboot to apply  ·  swipe to back");
     lv_obj_set_style_text_font(hint, &lv_font_montserrat_12, LV_PART_MAIN);
     lv_obj_set_style_text_color(hint, lv_color_hex(0xFFAA33), LV_PART_MAIN);
-    lv_obj_align(hint, LV_ALIGN_CENTER, 0, 84);
+    lv_obj_align(hint, LV_ALIGN_CENTER, 0, 100);
 
     // Black ear image at top
     lv_obj_t *ear = lv_img_create(ui_ScreenPageMultiGauge);

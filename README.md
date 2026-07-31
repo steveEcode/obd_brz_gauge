@@ -14,14 +14,14 @@ https://www.douyin.com/video/7614174567678984187
 ## Status
 
 - Hardware platform: Waveshare ESP32-S3-Touch-LCD-1.85
-- Software stack: ESP-IDF 5.1+, LVGL 8
+- Software stack: ESP-IDF 5.5.3, LVGL 8
 - Protocol path: BLE + ELM327 (standard OBD PID + CAN broadcast frame ATMA monitoring)
 - Vehicle profiles: BRZ ZC6 CAN / ZD8 CAN, Toyota GT86 ZN6, Mazda MX-5 ND, BMW G-series, Porsche 987.1/997.1/997.2, MINI JCW F56, OBD2 Generic
 - Multi-gauge: one master + multiple slaves linked over ESP-NOW
 - Validation status: fully verified on Subaru BRZ ZC6; other profiles are configured and may still need on-car verification
 
 - 硬件平台：微雪 Waveshare ESP32-S3-Touch-LCD-1.85
-- 软件栈：ESP-IDF 5.1+、LVGL 8
+- 软件栈：ESP-IDF 5.5.3、LVGL 8
 - 通信链路：BLE + ELM327（标准 OBD PID + CAN 广播帧 ATMA 监听）
 - 已内置车型：BRZ ZC6 CAN / ZD8 CAN、丰田 GT86 ZN6、马自达 MX-5 ND、宝马 G 系、保时捷 987.1/997.1/997.2、MINI JCW F56、OBD2 通用
 - 三连表：一主多从，通过 ESP-NOW 联动
@@ -33,6 +33,9 @@ https://www.douyin.com/video/7614174567678984187
 - **CAN broadcast frame ATMA monitoring**: bypasses standard OBD PID polling for high-frequency data — RPM at 100 Hz, oil/coolant temp at 10–20 Hz, with periodic OBD fallback for remaining channels (speed, load, voltage, intake temp)
   - ZC6 (Gen1): 0x140 (RPM + TPS) + 0x360 (oil + coolant temp)
   - ZD8 (Gen2): 0x40 (RPM + TPS) + 0x345 (oil + coolant temp)
+- **Custom boot logo & boot media playback**: configurable boot logo with multi-block animation, SPIFFS-mounted bootmedia partition for rich startup sequences
+- **Unified vehicle configuration system**: compile-time `vehicle_custom_config.h` for per-vehicle thresholds, warnings, and gauge ranges
+- **FSM-based app event system**: modular state machine for boot sequence, media mount, and data source management
 - Real-time display for RPM, speed, coolant/intake/oil temperature, oil pressure, turbo boost, throttle, engine load, battery voltage, gear, and related values
 - Vehicle profile selector: per-car gear ratios (up to 8-speed), oil-temp strategy, turbo boost, and per-vehicle protocol lock (e.g. BMW/Porsche force ISO 15765-4 CAN)
 - Manufacturer oil-temp paths beyond standard PID 01 5C: Toyota/Subaru Mode 21, Mazda Mode 22, MINI/BMW Mode 22, BMW F-series Mode 22 44 02, Porsche CAN broadcast 0x441 monitoring
@@ -49,6 +52,9 @@ https://www.douyin.com/video/7614174567678984187
 - **CAN 广播帧 ATMA 监听**：绕过标准 OBD PID 轮询，高频直读 — 转速 100Hz、油温/水温 10–20Hz，其余通道（车速/负荷/电压/进气温）定期 OBD 回退查询
   - ZC6 (Gen1)：0x140（转速+节气门）+ 0x360（油温+水温）
   - ZD8 (Gen2)：0x40（转速+节气门）+ 0x345（油温+水温）
+- **自定义开机图 & 开机动画**：可配置开机 Logo，支持多 Block 动画播放，SPIFFS 分区挂载 bootmedia 实现丰富开机流程
+- **统一车辆配置系统**：编译时 `vehicle_custom_config.h` 管理各车型阈值、报警、表盘范围
+- **FSM 状态机事件系统**：模块化状态机管理开机流程、媒体挂载、数据源切换
 - 实时显示转速、车速、水温/进气温/机油温、机油压力、涡轮压力、节气门、发动机负荷、电压、档位等数据
 - 车型选择：各车型独立的传动比（最高 8 挡）、油温策略、涡轮增压，以及按车型锁定协议（如宝马/保时捷强制 ISO 15765-4 CAN）
 - 除标准 PID 01 5C 外的厂商油温读取：丰田/斯巴鲁 Mode 21、马自达 Mode 22、MINI/宝马 Mode 22、宝马 F 系 Mode 22 44 02、保时捷 CAN 广播帧 0x441 监听
@@ -92,11 +98,13 @@ An ELM327 BLE adapter accepts only one client, so multiple gauges cannot each co
 ## Project Layout
 
 - [main/app_main.c](main/app_main.c): application entry, LVGL initialization, BLE startup, task startup
-- [main/app_obd_dsp](main/app_obd_dsp): runtime OBD data cache, vehicle profiles, CAN frame decoders, and mileage statistics logic
-- [main/bsp_obd_dsp](main/bsp_obd_dsp): board support package, BLE client, NVS, LCD, touch, I2C, IO expander drivers
-- [main/export_path](main/export_path): UI source exported from the design tool
+- [main/app_obd_dsp](main/app_obd_dsp): runtime OBD data cache, vehicle profiles, CAN frame decoders, mileage statistics, boot media playback, FSM event system, and vehicle custom config
+- [main/bsp_obd_dsp](main/bsp_obd_dsp): board support package, BLE client, NVS, LCD, touch, I2C (ESP-IDF 5.5 new API), IO expander, and ESP-NOW link drivers
+- [main/export_path](main/export_path): UI source exported from the design tool (SquareLine)
+- [bootmedia](bootmedia): boot animation media blocks (SPIFFS partition source)
 - [model](model): open-source 3D printable files (housing, gauge pods, brackets)
-- [tools](tools): helper scripts (image conversion, etc.)
+- [tools](tools): helper scripts (image conversion, boot block builder)
+- [firmware/release](firmware/release): pre-compiled firmware binaries for flashing
 - [docs](docs): open-source documentation, bilingual README, structure notes
 
 ## Documentation

@@ -1,5 +1,6 @@
 #include "bsp_obd_dsp/touch_driver/CST816.h"
-
+#include "bsp_obd_dsp/exio/TCA9554PWR.h"
+#include "bsp_obd_dsp/lcd_driver/ST77916.h"
 
 #define POINT_NUM_MAX       (1)
 
@@ -20,11 +21,13 @@ static esp_err_t i2c_write_bytes(esp_lcd_touch_handle_t tp, uint16_t reg, uint8_
 
 static esp_err_t reset(esp_lcd_touch_handle_t tp);
 static esp_err_t read_id(esp_lcd_touch_handle_t tp);
-static void AutoSleep(bool Sleep_State);
+static void AutoSleep(esp_lcd_touch_handle_t tp, bool Sleep_State);
 
-esp_err_t esp_lcd_touch_new_i2c_cst816(const esp_lcd_panel_io_handle_t io, const esp_lcd_touch_config_t *config, esp_lcd_touch_handle_t *tp)
+static i2c_master_dev_handle_t s_touch_dev = {0};
+
+esp_err_t esp_lcd_touch_new_i2c_cst816(i2c_master_bus_handle_t i2c_bus, const esp_lcd_touch_config_t *config, esp_lcd_touch_handle_t *tp)
 {
-    ESP_RETURN_ON_FALSE(io, ESP_ERR_INVALID_ARG, TAG, "Invalid io");
+    ESP_RETURN_ON_FALSE(i2c_bus, ESP_ERR_INVALID_ARG, TAG, "Invalid i2c_bus");
     ESP_RETURN_ON_FALSE(config, ESP_ERR_INVALID_ARG, TAG, "Invalid config");
     ESP_RETURN_ON_FALSE(tp, ESP_ERR_INVALID_ARG, TAG, "Invalid touch handle");
 
@@ -33,8 +36,15 @@ esp_err_t esp_lcd_touch_new_i2c_cst816(const esp_lcd_panel_io_handle_t io, const
     esp_lcd_touch_handle_t cst816s = calloc(1, sizeof(esp_lcd_touch_t));
     ESP_GOTO_ON_FALSE(cst816s, ESP_ERR_NO_MEM, err, TAG, "Touch handle malloc failed");
 
+    /* Add I2C device on the bus */
+    i2c_device_config_t dev_cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_7,
+        .device_address = ESP_LCD_TOUCH_IO_I2C_CST816S_ADDRESS,
+        .scl_speed_hz = I2C_Touch_MASTER_FREQ_HZ,
+    };
+    ESP_GOTO_ON_ERROR(i2c_master_bus_add_device(i2c_bus, &dev_cfg, &s_touch_dev), err, TAG, "Add I2C device failed");
+
     /* Communication interface */
-    cst816s->io = io;
     /* Only supported callbacks are set */
     cst816s->read_data = read_data;
     cst816s->get_xy = get_xy;
@@ -72,7 +82,7 @@ esp_err_t esp_lcd_touch_new_i2c_cst816(const esp_lcd_panel_io_handle_t io, const
     /* Read product id */
     ESP_GOTO_ON_ERROR(read_id(cst816s), err, TAG, "Read version failed");
     *tp = cst816s;
-    AutoSleep(false);
+    AutoSleep(cst816s, false);
     return ESP_OK;
 err:
     if (cst816s) {
@@ -169,7 +179,7 @@ static esp_err_t read_id(esp_lcd_touch_handle_t tp)
 /*!
     @brief  Fall asleep automatically
 */
-static void AutoSleep(bool Sleep_State) {
+static void AutoSleep(esp_lcd_touch_handle_t tp, bool Sleep_State) {
     uint8_t Sleep_State_Set = (uint8_t)(!Sleep_State);
     i2c_write_bytes(tp, AutoSleep_REG, &Sleep_State_Set, 1);
 }
@@ -178,53 +188,46 @@ static esp_err_t i2c_read_bytes(esp_lcd_touch_handle_t tp, uint16_t reg, uint8_t
 {
     ESP_RETURN_ON_FALSE(data, ESP_ERR_INVALID_ARG, TAG, "Invalid data");
 
-    return esp_lcd_panel_io_rx_param(tp->io, reg, data, len);
+    return i2c_master_transmit_receive(s_touch_dev, (uint8_t *)&reg, 1, data, len, 1000);
 }
 
 static esp_err_t i2c_write_bytes(esp_lcd_touch_handle_t tp, uint16_t reg, uint8_t* data, uint8_t len)
 {
     assert(tp != NULL);
 
-    // *INDENT-OFF*
-    /* Write data */
-    return esp_lcd_panel_io_tx_param(tp->io, reg, data, len);
-    // *INDENT-ON*
+    uint8_t buf[len + 1];
+    buf[0] = reg;
+    memcpy(buf + 1, data, len);
+
+    return i2c_master_transmit(s_touch_dev, buf, len + 1, 1000);
 }
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /**
- * @brief i2c master initialization
+ * @brief Initialize touch I2C bus using new API
  */
-esp_err_t Touch_I2C_Init(void)
-{
-    int i2c_master_port = I2C_Touch_MASTER_NUM;
+static i2c_master_bus_handle_t s_touch_i2c_bus = NULL;
 
-    i2c_config_t conf = {
-        .mode = I2C_MODE_MASTER,
-        .sda_io_num = I2C_Touch_SDA_IO,
+static esp_err_t Touch_I2C_Init(void)
+{
+    i2c_master_bus_config_t bus_config = {
+        .clk_source = I2C_CLK_SRC_DEFAULT,
+        .i2c_port = -1,
         .scl_io_num = I2C_Touch_SCL_IO,
-        .sda_pullup_en = GPIO_PULLUP_ENABLE,
-        .scl_pullup_en = GPIO_PULLUP_ENABLE,
-        .master.clk_speed = I2C_Touch_MASTER_FREQ_HZ,
+        .sda_io_num = I2C_Touch_SDA_IO,
+        .glitch_ignore_cnt = 7,
+        .flags.enable_internal_pullup = true,
     };
 
-    i2c_param_config(i2c_master_port, &conf);
-
-    return i2c_driver_install(i2c_master_port, conf.mode, I2C_MASTER_RX_BUF_DISABLE, I2C_MASTER_TX_BUF_DISABLE, 0);
+    return i2c_new_master_bus(&bus_config, &s_touch_i2c_bus);
 }
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 void Touch_Init(void)
 {
-    
     ESP_ERROR_CHECK(Touch_I2C_Init());
     ESP_LOGI(TAG, "I2C initialized successfully");
-/********************* Touch *********************/
 
-    esp_lcd_panel_io_handle_t tp_io_handle = NULL;
-    esp_lcd_panel_io_i2c_config_t tp_io_config = ESP_LCD_TOUCH_IO_I2C_CST816_CONFIG();
-    ESP_LOGI(TAG, "Initialize touch IO (I2C)");
-    /* Touch IO handle */
-    ESP_ERROR_CHECK(esp_lcd_new_panel_io_i2c((esp_lcd_i2c_bus_handle_t)I2C_Touch_MASTER_NUM, &tp_io_config, &tp_io_handle));
     esp_lcd_touch_config_t tp_cfg = {
         .x_max = EXAMPLE_LCD_WIDTH,
         .y_max = EXAMPLE_LCD_HEIGHT,
@@ -236,8 +239,8 @@ void Touch_Init(void)
             .mirror_y = 0,
         },
     };
-    /* Initialize touch */
-    ESP_LOGI(TAG, "Initialize touch controller CST816");
-    ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_cst816(tp_io_handle, &tp_cfg, &tp));
-}
 
+    /* Initialize touch directly via I2C master bus + device */
+    ESP_LOGI(TAG, "Initialize touch controller CST816");
+    ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_cst816(s_touch_i2c_bus, &tp_cfg, &tp));
+}

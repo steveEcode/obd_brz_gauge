@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include "obd_data_cache.h"
+#include "vehicle_custom_config.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -89,6 +90,9 @@ const gear_ratio_range_t *vehicle_profile_get_gear_ranges(uint8_t *count);
 
 // 获取当前激活车型的油温查询策略
 const oil_temp_strategy_t *vehicle_profile_get_oil_temp_strategy(void);
+
+// 获取当前激活车型的覆盖配置 (NULL = 纯 OBD2 标准)
+const vehicle_override_t *vehicle_profile_get_override(void);
 
 #ifdef __cplusplus
 }

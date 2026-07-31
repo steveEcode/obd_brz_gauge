@@ -5,32 +5,32 @@
 
 #define TAG "vehicle_profile"
 
-// 预定义车辆配置
+// Predefined vehicle profiles
 static const vehicle_profile_t s_profiles[] = {
     {
-        // 通用 OBD2 标准配置 (SAE J1979 / ISO 15031-5)
-        // 仅使用标准 PID，不依赖任何厂商私有协议:
-        //   转速 010C, 车速 010D, 水温 0105, 油温 015C, 进气 010F, 负荷 0104, TPS 0111, 电压 0142
-        // 档位比为常见 6MT 占位(仅影响档位识别精度, 不影响数据读取)。
+        // Generic OBD2 standard profile (SAE J1979 / ISO 15031-5)
+        // Uses only standard PIDs, no manufacturer-specific protocols:
+        //   RPM 010C, Speed 010D, Coolant 0105, Oil Temp 015C, Intake 010F, Load 0104, TPS 0111, Voltage 0142
+        // Gear ratios are common 6MT placeholders (only affects gear detection accuracy, not data reading).
         .name = "OBD2 Generic",
-        .final_drive_ratio = 3.500f,       // 通用占位
-        .tire_rolling_radius_m = 0.315f,   // 205/55R16 常见
+        .final_drive_ratio = 3.500f,       // Generic placeholder
+        .tire_rolling_radius_m = 0.315f,   // Common for 205/55R16
         .gear_count = 6,
         .gear_ratios = {0, 3.500f, 2.000f, 1.400f, 1.100f, 0.900f, 0.750f},
         .gear_tolerance = 0.15f,
         .oil_temp_strategy = {
-            .primary = OIL_TEMP_MODE_PID_5C,        // 标准 OBD2 油温 PID (°C = A - 40)
+            .primary = OIL_TEMP_MODE_PID_5C,        // Standard OBD2 oil temp PID (°C = A - 40)
             .secondary = OIL_TEMP_MODE_NONE,
             .tertiary = OIL_TEMP_MODE_NONE,
             .offset_c = 0,
         },
-        .has_boost = false,                // 通用默认自吸; 涡轮车标准 010B 仍可读(需手动开启)
+        .has_boost = false,                // Generic defaults to NA; turbo cars can still use standard 010B (manual enable)
     },
     {
-        // BRZ ZC6 CAN (2013-2020, FA20 自吸, Gen1)
-        // ATMA 监听: 0x140(100Hz 转速+节气门), 0x360(20Hz 油温+水温)
-        // 其余走标准 OBD PID
-        // 参考: https://github.com/timurrrr/ft86/blob/main/can_bus/gen1.md
+        // BRZ ZC6 CAN (2013-2020, FA20 NA, Gen1)
+        // ATMA monitor: 0x140 (100Hz RPM+TPS), 0x360 (20Hz oil+coolant temp)
+        // Remaining channels use standard OBD PID
+        // Ref: https://github.com/timurrrr/ft86/blob/main/can_bus/gen1.md
         .name = "ZC6 CAN",
         .final_drive_ratio = 4.100f,
         .tire_rolling_radius_m = 0.314f,   // 215/45R17
@@ -48,18 +48,18 @@ static const vehicle_profile_t s_profiles[] = {
         .poll_gap_ms = 1,
     },
     {
-        // BRZ ZD8 CAN (2022+, FA24 自吸, Gen2)
-        // ATMA 监听: 0x40(100Hz 转速+节气门), 0x345(10Hz 油温+水温)
-        // 其余走标准 OBD PID
-        // 参考: https://github.com/timurrrr/ft86/blob/main/can_bus/gen2.md
+        // BRZ ZD8 CAN (2022+, FA24 NA, Gen2)
+        // ATMA monitor: 0x40 (100Hz RPM+TPS), 0x345 (10Hz oil+coolant temp)
+        // Remaining channels use standard OBD PID
+        // Ref: https://github.com/timurrrr/ft86/blob/main/can_bus/gen2.md
         .name = "ZD8 CAN",
-        .final_drive_ratio = 3.700f,       // ZD8 主减速比
+        .final_drive_ratio = 3.700f,       // ZD8 final drive ratio
         .tire_rolling_radius_m = 0.318f,   // 225/40R18
         .gear_count = 6,
         .gear_ratios = {0, 3.765f, 2.476f, 1.633f, 1.190f, 0.932f, 0.751f},
         .gear_tolerance = 0.15f,
         .oil_temp_strategy = {
-            .primary = OIL_TEMP_MODE_PID_5C,        // ZD8 用标准 PID 5C
+            .primary = OIL_TEMP_MODE_PID_5C,        // ZD8 uses standard PID 5C
             .secondary = OIL_TEMP_MODE_NONE,
             .tertiary = OIL_TEMP_MODE_NONE,
             .offset_c = 0,
@@ -69,54 +69,54 @@ static const vehicle_profile_t s_profiles[] = {
         .poll_gap_ms = 1,
     },
     {
-        // Toyota GT86 / 86 ZN6 (2012-2021, FA20 自吸)
-        // Toyota ECU 的 Mode 21 01 响应只有 31 字节，布局与 Subaru ECU(ZC6 d[33]) 不同：
-        // 水温在 d[9]，油温在 d[27](≈86°C when coolant=91°C，实测稳定).
+        // Toyota GT86 / 86 ZN6 (2012-2021, FA20 NA)
+        // Toyota ECU Mode 21 01 response is only 31 bytes, layout differs from Subaru ECU (ZC6 d[33]):
+        // Coolant at d[9], oil temp at d[27] (≈86°C when coolant=91°C, verified stable).
         .name = "GT86 ZN6",
         .final_drive_ratio = 4.100f,
-        .tire_rolling_radius_m = 0.314f,   // 215/45R17 (原厂同 BRZ ZC6)
+        .tire_rolling_radius_m = 0.314f,   // 215/45R17 (same as BRZ ZC6 OEM)
         .gear_count = 6,
         .gear_ratios = {0, 3.626f, 2.188f, 1.541f, 1.213f, 1.000f, 0.767f},
         .gear_tolerance = 0.15f,
         .oil_temp_strategy = {
             .primary = OIL_TEMP_MODE_TOYOTA_21_01,
-            .secondary = OIL_TEMP_MODE_PID_5C,        // gt96 等适配器可能不支持 Mode 21，回退标准 PID
+            .secondary = OIL_TEMP_MODE_PID_5C,        // Fallback: some adapters (e.g. gt96) may not support Mode 21
             .tertiary = OIL_TEMP_MODE_NONE,
             .offset_c = 0,
         },
     },
     {
         .name = "MX-5 ND",
-        .final_drive_ratio = 2.866f,       // ND 6MT（所有手动一致，自动为 3.583）
+        .final_drive_ratio = 2.866f,       // ND 6MT (all manuals identical; auto is 3.583)
         .tire_rolling_radius_m = 0.300f,   // 195/50R16
         .gear_count = 6,
         .gear_ratios = {0, 5.087f, 2.991f, 2.035f, 1.594f, 1.286f, 1.000f},
         .gear_tolerance = 0.15f,
         .oil_temp_strategy = {
-            // 先试 PID 1310(双字节)，连续失败则回退到 111F(单字节)——两种已知 Mazda 油温 PID 都覆盖
+            // Try PID 1310 (double byte) first, fallback to 111F (single byte) on consecutive failures
             .primary = OIL_TEMP_MODE_MAZDA_22_1310,
             .secondary = OIL_TEMP_MODE_MAZDA_22_111F,
             .tertiary = OIL_TEMP_MODE_NONE,
             .offset_c = 0,
         },
-        // .has_boost 默认 false (自吸)
-        .obd_timeout = 0x0A,  // 40ms 超时; Mazda CAN 通常 5-15ms 响应, 减少 NO DATA 等待
-        .poll_gap_ms = 1,     // 槽间最小间隔 1ms(0=跳过 vTaskDelay, 1ms 让调度器有机会切换)
+        // .has_boost defaults to false (NA)
+        .obd_timeout = 0x0A,  // 40ms timeout; Mazda CAN typically responds in 5-15ms, reduces NO DATA waits
+        .poll_gap_ms = 1,     // Min slot interval 1ms (0=skip vTaskDelay, 1ms lets scheduler switch tasks)
     },
     {
-        // BMW G系 (G20/G21/G22等, B48/B58 涡轮, ZF 8HP)
-        // 标准 OBD 只响应 7DF 功能寻址，7E0 物理寻址无响应; 故 obd_functional_addr=true。
-        // Mode 22 厂商 PID 轮询时代码会在 Slot6 中临时切换到 ATSH7E0，发完再恢复 ATSH7DF。
-        // 油温: 先试 PID 4402 (双字节公式), 再试 PID D002(油底壳备用通道), 最后回退 PID 03F3。
+        // BMW G-series (G20/G21/G22, B48/B58 turbo, ZF 8HP)
+        // Standard OBD only responds to 7DF functional addressing, 7E0 physical gets no response; hence obd_functional_addr=true.
+        // During Mode 22 vendor PID polling, code temporarily switches to ATSH7E0 in Slot6, then restores ATSH7DF.
+        // Oil temp: try PID 4402 (double byte) first, then PID D002 (oil pan backup), finally fallback to PID 03F3.
         .name = "BMW F/G",
-        .final_drive_ratio = 2.813f,       // G20 330i 主减速比
+        .final_drive_ratio = 2.813f,       // G20 330i final drive ratio
         .tire_rolling_radius_m = 0.330f,   // 225/45R18
-        .gear_count = 8,                   // ZF 8HP 8速
+        .gear_count = 8,                   // ZF 8HP 8-speed
         .gear_ratios = {0, 5.250f, 3.360f, 2.172f, 1.720f, 1.316f, 1.000f, 0.822f, 0.640f},  // ZF 8HP75
         .gear_tolerance = 0.09f,
         .oil_temp_strategy = {
-            .primary = OIL_TEMP_MODE_BMW_22_4402,    // F/G系 Mode 22 PID 4402
-            .secondary = OIL_TEMP_MODE_PID_5C,       // 回退标准 01 5C
+            .primary = OIL_TEMP_MODE_PID_5C,        // Standard OBD2 PID 01 5C (reliable via OBDII)
+            .secondary = OIL_TEMP_MODE_PID_5C,
             .tertiary = OIL_TEMP_MODE_NONE,
             .quaternary = OIL_TEMP_MODE_NONE,
             .offset_c = 0,
@@ -127,46 +127,73 @@ static const vehicle_profile_t s_profiles[] = {
         .obd_timeout = 0x0F,
     },
     {
-        // MINI John Cooper Works F56 (宝马 B48 2.0T, 前驱横置)
+        // BMW G-series CAN (G20/G21/G22/G80/G82, B48/B58 turbo, ZF 8HP)
+        // PT-CAN 500kbps, ATMA monitoring replaces OBD polling for key channels:
+        //   0x0A5 (100Hz): RPM byte5-6 LE (raw×4)
+        //   0x254 (50Hz):  wheel speed byte4-5 LE (raw×0.015625−511.98 km/h, front-left)
+        //   0x3F9 (1Hz):   coolant byte4 (raw−48), oil byte5 (raw−48), gear byte6 nibble (raw−4)
+        // Ref: racechrono-canbus decoder_bmwg8x.cpp, thesecretingredient.neocities.org/bmw/can/g29/
+        .name = "BMW G CAN",
+        .final_drive_ratio = 2.813f,       // G20 330i final drive ratio
+        .tire_rolling_radius_m = 0.330f,   // 225/45R18
+        .gear_count = 8,                   // ZF 8HP 8-speed
+        .gear_ratios = {0, 5.250f, 3.360f, 2.172f, 1.720f, 1.316f, 1.000f, 0.822f, 0.640f},  // ZF 8HP75
+        .gear_tolerance = 0.09f,
+        .oil_temp_strategy = {
+            .primary = OIL_TEMP_MODE_PID_5C,        // CAN 0x3F9 provides oil temp directly; OBD 01 5C as fallback
+            .secondary = OIL_TEMP_MODE_BMW_22_4402, // Mode 22 PID 4402 backup
+            .tertiary = OIL_TEMP_MODE_NONE,
+            .quaternary = OIL_TEMP_MODE_NONE,
+            .offset_c = 0,
+        },
+        .has_boost = true,                 // B48/B58 turbo
+        .forced_protocol = 7,              // PT-CAN uses 29-bit extended frames (protocol 7)
+        .obd_functional_addr = true,       // 7DF functional addressing
+        .obd_timeout = 0x0A,               // 40ms; BMW CAN responds quickly
+        .can_broadcast_mode = true,        // ATMA monitoring for 0x0A5/0x254/0x3F9
+        .poll_gap_ms = 1,
+    },
+    {
+        // MINI John Cooper Works F56 (BMW B48 2.0T, FWD transverse)
         .name = "JCW F56",
-        .final_drive_ratio = 3.824f,       // F56 JCW 6MT 主减速比
-        .tire_rolling_radius_m = 0.308f,   // 前轮(前驱驱动轮) 205/45R17
+        .final_drive_ratio = 3.824f,       // F56 JCW 6MT final drive ratio
+        .tire_rolling_radius_m = 0.308f,   // Front wheels (FWD drive wheels) 205/45R17
         .gear_count = 6,
         .gear_ratios = {0, 3.923f, 2.136f, 1.276f, 0.921f, 0.756f, 0.628f},
         .gear_tolerance = 0.15f,
         .oil_temp_strategy = {
-            // 涡轮压力走标准 PID 010B(has_boost)，无需额外适配。
-            // 油温: MINI/BMW 增强 Mode 22 PID 5822, °C = A-60 (社区验证, N18/N16/B48 同款监视器)；
-            // 读不到回退标准 01 5C。
+            // Boost pressure uses standard PID 010B (has_boost), no extra adaptation needed.
+            // Oil temp: MINI/BMW enhanced Mode 22 PID 5822, °C = A-60 (community verified, same monitor as N18/N16/B48);
+            // Fallback to standard 01 5C if unavailable.
             .primary = OIL_TEMP_MODE_MINI_22_5822,
             .secondary = OIL_TEMP_MODE_PID_5C,
             .tertiary = OIL_TEMP_MODE_NONE,
             .offset_c = 0,
         },
-        .has_boost = true,                 // B48 涡轮增压，涡轮压力走标准 010B
+        .has_boost = true,                 // B48 turbo, boost pressure via standard 010B
     },
     {
-        // 保时捷 Gen2: 987.2/997.2 (2009-2012, DFI 9A1; 自吸; 油温 x-60)
+        // Porsche Gen2: 987.2/997.2 (2009-2012, DFI 9A1; NA; oil temp x-60)
         .name = "POS 997.2",
-        .final_drive_ratio = 3.44f,        // 997.2 PDK 主减速比(用户实测)
-        .tire_rolling_radius_m = 0.325f,   // 用户实测滚动半径
-        .gear_count = 7,                   // PDK 7速
+        .final_drive_ratio = 3.44f,        // 997.2 PDK final drive ratio (user measured)
+        .tire_rolling_radius_m = 0.325f,   // User measured rolling radius
+        .gear_count = 7,                   // PDK 7-speed
         .gear_ratios = {0, 3.91f, 2.29f, 1.65f, 1.30f, 1.08f, 0.88f, 0.62f},
         .gear_tolerance = 0.15f,
         .oil_temp_strategy = {
-            // 油温油压在 CAN 广播帧 0x441(byte5油温, byte6油压×5/127)，经 ELM327 监听读取
+            // Oil temp/pressure via CAN broadcast 0x441 (byte5=oil temp, byte6=oil pressure×5/127), read via ELM327 ATMA
             .primary = OIL_TEMP_MODE_PORSCHE_CAN_441,
             .secondary = OIL_TEMP_MODE_PID_5C,
             .tertiary = OIL_TEMP_MODE_NONE,
             .offset_c = 0,
             .can_num = 1, .can_den = 1, .can_off = -60,   // °C = x - 60
         },
-        .has_boost = false,                // 自然吸气
-        .forced_protocol = 6,              // 广播帧 0x441 是 11bit/500k, 锁协议6 才能 ATMA 监听到
+        .has_boost = false,                // Naturally aspirated
+        .forced_protocol = 6,              // Broadcast 0x441 is 11bit/500k, lock protocol 6 for ATMA monitoring
     },
     {
-        // 保时捷 Gen1: 987.1/997.1 (2005-2008, M96/M97; 油温 x*3/4-48)
-        // 注: 档位比暂沿用 Gen2 占位(987.1 实际略有差异)，主要差异是油温公式。
+        // Porsche Gen1: 987.1/997.1 (2005-2008, M96/M97; oil temp x*3/4-48)
+        // Note: Gear ratios use Gen2 placeholders (987.1 differs slightly); main difference is oil temp formula.
         .name = "POS 997.1",
         .final_drive_ratio = 3.89f,
         .tire_rolling_radius_m = 0.335f,
@@ -181,19 +208,19 @@ static const vehicle_profile_t s_profiles[] = {
             .can_num = 3, .can_den = 4, .can_off = -48,   // °C = x*3/4 - 48
         },
         .has_boost = false,
-        .forced_protocol = 6,              // 广播帧 0x441 是 11bit/500k, 锁协议6 才能 ATMA 监听到
+        .forced_protocol = 6,              // Broadcast 0x441 is 11bit/500k, lock protocol 6 for ATMA monitoring
     },
 };
 
 #define PROFILE_COUNT (sizeof(s_profiles) / sizeof(s_profiles[0]))
 
-// 缓存当前激活配置的档位范围
+// Cached gear ranges for the active profile
 static gear_ratio_range_t s_gear_ranges[VEHICLE_MAX_GEARS];
 static uint8_t s_gear_range_count = 0;
 static uint8_t s_active_idx = 0;
 static bool s_ranges_dirty = true;
 
-// 根据配置重新计算档位传动比范围
+// Recalculate gear ratio ranges from profile
 static void rebuild_gear_ranges(const vehicle_profile_t *p)
 {
     s_gear_range_count = 0;
@@ -231,7 +258,7 @@ void vehicle_profile_set_active(uint8_t index)
     s_active_idx = index;
     s_ranges_dirty = true;
 
-    // 保存到 NVS
+    // Save to NVS
     nvs_user_cfg_t cfg = *nvs_cfg_get();
     cfg.vehicle_profile_idx = index;
     nvs_cfg_set(&cfg);
@@ -261,4 +288,11 @@ const oil_temp_strategy_t *vehicle_profile_get_oil_temp_strategy(void)
     const vehicle_profile_t *p = vehicle_profile_get_active();
     if (!p) return NULL;
     return &p->oil_temp_strategy;
+}
+
+const vehicle_override_t *vehicle_profile_get_override(void)
+{
+    const vehicle_profile_t *p = vehicle_profile_get_active();
+    if (!p) return NULL;
+    return vehicle_find_override(p->name);
 }

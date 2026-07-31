@@ -51,11 +51,15 @@ esp_err_t nvs_cfg_set(const nvs_user_cfg_t *cfg);
 int16_t nvs_chart_alarm_get(uint8_t item);
 void    nvs_chart_alarm_set(uint8_t item, int16_t raw_threshold);
 
-// 三连表开机动画(RACE / AS / ONE): 开关 + 本机位置(1/2/3)。独立 blob, 不改 cfg 结构体。
-uint8_t nvs_intro_enable_get(void);           // 0=关 1=开
+// 三连表开机动画: 0=OFF, 1=RACE AS ONE, 2=VIDEO。独立 blob, 不改 cfg 结构体。
+uint8_t nvs_intro_enable_get(void);           // 0=OFF 1=RACE 2=VIDEO
 void    nvs_intro_enable_set(uint8_t en);
 uint8_t nvs_device_position_get(void);        // 1/2/3
 void    nvs_device_position_set(uint8_t pos);
+
+// 开机模式: 0=默认Sky Gauge动画, 1=自定义开机图片, 2=视频动画(boot_block)
+uint8_t nvs_boot_mode_get(void);
+void    nvs_boot_mode_set(uint8_t mode);
 
 /* 运行统计接口 */
 const nvs_stat_t * nvs_stat_get(void);

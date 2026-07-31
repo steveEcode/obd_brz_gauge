@@ -16,6 +16,7 @@
 #include "esp_timer.h"
 #include "esp_err.h"
 #include "esp_log.h"
+#include "esp_task_wdt.h"
 
 #include "lvgl.h"
 
@@ -29,10 +30,13 @@
 #include "bsp_obd_dsp/elm327_ble_client.h"
 #include "bsp_obd_dsp/espnow_link.h"
 #include "bsp_obd_dsp/racechrono_ble_diy.h"
+#include "app_obd_dsp/boot_media_mount.h"
 #include "bsp_obd_dsp/rs485_brake_temp.h"
 #include "bsp_obd_dsp/ads1115_oil_pressure.h"
 #include "app_obd_dsp/obd_data_cache.h"
 #include "app_obd_dsp/vehicle_profiles.h"
+#include "export_path/ui_ext.h"
+#include "app_obd_dsp/app_event.h"
 
 // ===== 三连表角色 =====
 // 正常用「设置页 → 下滑进 MULTI-GAUGE 页」选择主/从(存 NVS device_role, 重启生效), 一份固件即可。
@@ -170,6 +174,14 @@ void app_main(void)
     /* 1. NVS 初始化 (必须最先) */
     nvs_storage_init();
 
+    /* 1.5 任务看门狗: 10s 超时, 不订阅 idle task (避免 BLE 阻塞误触发) */
+    esp_task_wdt_config_t wdt_cfg = {
+        .timeout_ms = 10000,
+        .idle_core_mask = 0,  // 不监控 idle task
+        .trigger_panic = true,
+    };
+    esp_task_wdt_reconfigure(&wdt_cfg);
+
     uint8_t proto = nvs_cfg_get()->protocol;
     ESP_LOGI("NVS", "protocol=%d", proto);
 
@@ -264,8 +276,13 @@ void app_main(void)
     ESP_LOGI(TAG, "Start UI");
     if (lvgl_lock(-1)) {
         ui_init();
+        ui_ext_init();
         lvgl_unlock();
     }
+    app_event_init();
+
+    /* 7.5 提前挂载 bootmedia SPIFFS (省 ~300ms 黑屏) */
+    boot_media_mount();
 
     /* 8. 按角色分支: 主表(连 ELM327 读数 + ESP-NOW 广播) / 从表(只收主表数据显示) */
     uint8_t dev_role = nvs_cfg_get()->device_role;

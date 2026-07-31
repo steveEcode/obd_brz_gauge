@@ -18,3 +18,6 @@ idf_component_register(SRC_DIRS
                     INCLUDE_DIRS
                     ".")
 
+# 自动生成 bootmedia SPIFFS 镜像, idf.py flash 时一起烧录
+spiffs_create_partition_image(bootmedia ${CMAKE_CURRENT_SOURCE_DIR}/../bootmedia/slot_a FLASH_IN_PROJECT)
+

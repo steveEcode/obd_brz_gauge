@@ -30,6 +30,7 @@ typedef struct {
     void (*on_parsed_load_pct)(uint32_t load_pct);   // 发动机负荷 0~100%
     void (*on_parsed_manifold_pressure)(uint32_t manifold_pressure);//进气歧管绝对压力
     void (*on_parsed_throttle_position)(uint32_t throttle_position);//节气门位置
+    void (*on_parsed_gear)(int8_t gear);  // 直接档位 (CAN 广播)
     void (*on_parsed_fuel_level)(uint32_t fuel_level);//燃油液位
     void (*on_parsed_control_module_voltage)(uint32_t control_module_voltage);//控制模块电压
 

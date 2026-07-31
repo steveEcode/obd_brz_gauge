@@ -14,6 +14,7 @@ extern "C" {
 
 #include "ui_helpers.h"
 #include "ui_events.h"
+#include "ui_disp_item.h"
 #include "esp_log.h"
 #include "app_obd_dsp/obd_data_cache.h"
 
@@ -124,14 +125,6 @@ void ui_ScreenPageTempCustom_screen_init(void);
 extern lv_obj_t * ui_ScreenPageTempCustom;
 void ui_event_temp_custom_background(lv_event_t * e);
 
-// SCREEN: ui_ScreenPageBrakeTemp
-void ui_ScreenPageBrakeTemp_screen_init(void);
-extern lv_obj_t * ui_ScreenPageBrakeTemp;
-extern lv_obj_t * ui_LabelBrakeTempText;
-extern lv_obj_t * ui_ChartBrakeTemp;
-extern lv_chart_series_t * ui_BrakeTempChartSeries;
-void ui_event_brake_temp_background(lv_event_t * e);
-
 // SCREEN: ui_ScreenPageOilPressure —— 现为「通用可配置曲线页」(数据源由 chart_source_idx 决定)
 void ui_ScreenPageOilPressure_screen_init(void);
 extern lv_obj_t * ui_ScreenPageOilPressure;
@@ -187,11 +180,6 @@ extern lv_obj_t * ui_ScreenPageSettings;
 void ui_event_settings_background(lv_event_t * e);
 // CUSTOM VARIABLES
 
-// SCREEN: ui_ScreenPageBrakeWarn
-void ui_ScreenPageBrakeWarn_screen_init(void);
-extern lv_obj_t * ui_ScreenPageBrakeWarn;
-void ui_event_brake_warn_background(lv_event_t * e);
-
 // SCREEN: ui_ScreenPageOilWarn
 void ui_ScreenPageOilWarn_screen_init(void);
 extern lv_obj_t * ui_ScreenPageOilWarn;
@@ -225,14 +213,13 @@ extern lv_obj_t * ui_ScreenPageMultiGauge;
 void ui_event_multi_gauge_background(lv_event_t * e);
 
 // 指针页运行时接口 (ui.c 实现, 复用 disp_item 系统)
-void ui_needle_page_update(float sweep_ratio);   // 每帧刷新指针与数值 (sweep_ratio<0=实时, 0~1=刷表自检)
+void ui_needle_page_update(float sweep_ratio, int16_t clt, int16_t iat, int16_t oil,
+                           int16_t load_pct, int16_t tps, int32_t bat_mv,
+                           int16_t oilp_x10, int16_t brake_x10,
+                           uint16_t rpm, uint16_t speed, int16_t boost_x10);
 void ui_needle_apply_source(void);  // 数据源变化后重建量程/名称/单位
 int  ui_sweep_get_step(void);       // 取当前扫表进度(主表广播给从表)
-void ui_sweep_set_step(int step);   // 设扫表进度(从表跟随主表广播, 实现同步扫表)
-const char *ui_disp_item_name(uint8_t item); // 取数据项显示名 (越界返回 "")
-const char *ui_disp_item_unit(uint8_t item); // 取数据项单位
-uint32_t ui_disp_item_color(uint8_t item);   // 取数据项主题色
-void ui_disp_item_range(uint8_t item, int32_t *nmin, int32_t *nmax, int32_t *div); // 自然量程 + div(原始=自然×div)
+// 数据项访问器 (ui_disp_item_name/unit/color/range) 见 ui_disp_item.h
 
 // EVENTS
 

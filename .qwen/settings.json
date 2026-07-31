@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep *)",
+      "Bash(idf.py *)",
+      "Bash(source *)",
+      "Bash(git add *)"
+    ]
+  },
+  "$version": 4
+}
