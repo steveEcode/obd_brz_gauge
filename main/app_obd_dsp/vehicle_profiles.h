@@ -42,7 +42,6 @@ typedef struct {
     oil_temp_query_mode_t secondary;   // 备用1
     oil_temp_query_mode_t tertiary;    // 备用2
     oil_temp_query_mode_t quaternary;  // 备用3（最终兜底）
-    uint16_t offset_c;                 // 温度偏移量，单位 0.1°C（有符号）
     // CAN-441(保时捷)油温线性公式: °C = raw * can_num / can_den + can_off
     // 仅 OIL_TEMP_MODE_PORSCHE_CAN_441 模式使用; can_den=0 时回退内置默认(x-60)。
     // 不同代只改这三个系数即可: 997.2/987.2 = 1/1/-60; 997.1/987.1 = 3/4/-48。

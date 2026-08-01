@@ -22,7 +22,6 @@ static const vehicle_profile_t s_profiles[] = {
             .primary = OIL_TEMP_MODE_PID_5C,        // Standard OBD2 oil temp PID (°C = A - 40)
             .secondary = OIL_TEMP_MODE_NONE,
             .tertiary = OIL_TEMP_MODE_NONE,
-            .offset_c = 0,
         },
         .has_boost = false,                // Generic defaults to NA; turbo cars can still use standard 010B (manual enable)
     },
@@ -41,7 +40,6 @@ static const vehicle_profile_t s_profiles[] = {
             .primary = OIL_TEMP_MODE_TOYOTA_21_01,
             .secondary = OIL_TEMP_MODE_NONE,
             .tertiary = OIL_TEMP_MODE_NONE,
-            .offset_c = 0,
         },
         .forced_protocol = 6,
         .can_broadcast_mode = true,
@@ -62,7 +60,6 @@ static const vehicle_profile_t s_profiles[] = {
             .primary = OIL_TEMP_MODE_PID_5C,        // ZD8 uses standard PID 5C
             .secondary = OIL_TEMP_MODE_NONE,
             .tertiary = OIL_TEMP_MODE_NONE,
-            .offset_c = 0,
         },
         .forced_protocol = 6,
         .can_broadcast_mode = true,
@@ -82,7 +79,6 @@ static const vehicle_profile_t s_profiles[] = {
             .primary = OIL_TEMP_MODE_TOYOTA_21_01,
             .secondary = OIL_TEMP_MODE_PID_5C,        // Fallback: some adapters (e.g. gt96) may not support Mode 21
             .tertiary = OIL_TEMP_MODE_NONE,
-            .offset_c = 0,
         },
     },
     {
@@ -97,7 +93,6 @@ static const vehicle_profile_t s_profiles[] = {
             .primary = OIL_TEMP_MODE_MAZDA_22_1310,
             .secondary = OIL_TEMP_MODE_MAZDA_22_111F,
             .tertiary = OIL_TEMP_MODE_NONE,
-            .offset_c = 0,
         },
         // .has_boost defaults to false (NA)
         .obd_timeout = 0x0A,  // 40ms timeout; Mazda CAN typically responds in 5-15ms, reduces NO DATA waits
@@ -119,7 +114,6 @@ static const vehicle_profile_t s_profiles[] = {
             .secondary = OIL_TEMP_MODE_PID_5C,
             .tertiary = OIL_TEMP_MODE_NONE,
             .quaternary = OIL_TEMP_MODE_NONE,
-            .offset_c = 0,
         },
         .has_boost = true,
         .forced_protocol = 6,
@@ -144,7 +138,6 @@ static const vehicle_profile_t s_profiles[] = {
             .secondary = OIL_TEMP_MODE_BMW_22_4402, // Mode 22 PID 4402 backup
             .tertiary = OIL_TEMP_MODE_NONE,
             .quaternary = OIL_TEMP_MODE_NONE,
-            .offset_c = 0,
         },
         .has_boost = true,                 // B48/B58 turbo
         .forced_protocol = 7,              // PT-CAN uses 29-bit extended frames (protocol 7)
@@ -168,7 +161,6 @@ static const vehicle_profile_t s_profiles[] = {
             .primary = OIL_TEMP_MODE_MINI_22_5822,
             .secondary = OIL_TEMP_MODE_PID_5C,
             .tertiary = OIL_TEMP_MODE_NONE,
-            .offset_c = 0,
         },
         .has_boost = true,                 // B48 turbo, boost pressure via standard 010B
     },
@@ -185,7 +177,6 @@ static const vehicle_profile_t s_profiles[] = {
             .primary = OIL_TEMP_MODE_PORSCHE_CAN_441,
             .secondary = OIL_TEMP_MODE_PID_5C,
             .tertiary = OIL_TEMP_MODE_NONE,
-            .offset_c = 0,
             .can_num = 1, .can_den = 1, .can_off = -60,   // °C = x - 60
         },
         .has_boost = false,                // Naturally aspirated
@@ -204,7 +195,6 @@ static const vehicle_profile_t s_profiles[] = {
             .primary = OIL_TEMP_MODE_PORSCHE_CAN_441,
             .secondary = OIL_TEMP_MODE_PID_5C,
             .tertiary = OIL_TEMP_MODE_NONE,
-            .offset_c = 0,
             .can_num = 3, .can_den = 4, .can_off = -48,   // °C = x*3/4 - 48
         },
         .has_boost = false,

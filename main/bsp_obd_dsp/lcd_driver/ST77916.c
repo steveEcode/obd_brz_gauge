@@ -274,7 +274,7 @@ int QSPI_Init(void){
   };
   esp_err_t ret;
   int lcd_cmd = 0x04;
-  uint8_t register_data[4]; 
+  uint8_t register_data[4] = {0};   // 读失败时保持全 0, 避免用未初始化的栈数据去比对厂商特征码
   size_t param_size = sizeof(register_data);
   lcd_cmd &= 0xff;
   lcd_cmd <<= 8;

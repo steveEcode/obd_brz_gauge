@@ -51,16 +51,7 @@ void ui_ScreenPageRpmWarn_screen_init(void)
     lv_obj_set_style_bg_color(ui_ScreenPageRpmWarn, lv_color_hex(0x000000), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(ui_ScreenPageRpmWarn, 255, LV_PART_MAIN);
 
-    lv_obj_t *ring = lv_obj_create(ui_ScreenPageRpmWarn);
-    lv_obj_set_size(ring, 360, 360);
-    lv_obj_set_align(ring, LV_ALIGN_CENTER);
-    lv_obj_clear_flag(ring, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(ring, 0, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(ring, 0, LV_PART_MAIN);
-    lv_obj_set_style_border_color(ring, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-    lv_obj_set_style_border_width(ring, 10, LV_PART_MAIN);
-    lv_obj_set_style_border_opa(ring, 255, LV_PART_MAIN);
+    lv_obj_t *ring = ui_helpers_create_ring(ui_ScreenPageRpmWarn, 10);
 
     lv_obj_t *title = lv_label_create(ui_ScreenPageRpmWarn);
     lv_label_set_text(title, "RPM WARN");
@@ -74,9 +65,8 @@ void ui_ScreenPageRpmWarn_screen_init(void)
     lv_obj_set_style_text_color(sub, lv_color_hex(0x888888), LV_PART_MAIN);
     lv_obj_align(sub, LV_ALIGN_CENTER, 0, -88);
 
-    // 阈值数值
+    // 阈值数值(已在 nvs_storage_init() 里夹紧, 这里直接读)
     uint16_t thresh = cfg->rpm_warn_threshold;
-    if (thresh < 1000) thresh = 6000;
     s_label_rpm_warn_val = lv_label_create(ui_ScreenPageRpmWarn);
     lv_label_set_text_fmt(s_label_rpm_warn_val, "%d", thresh);
     lv_obj_set_style_text_font(s_label_rpm_warn_val, &ui_font_FontTypoderSize44, LV_PART_MAIN);

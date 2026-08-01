@@ -54,7 +54,6 @@
 #define LEDC_LS_MODE           LEDC_LOW_SPEED_MODE
 #define LEDC_HS_CH0_GPIO       EXAMPLE_LCD_PIN_NUM_BK_LIGHT
 #define LEDC_HS_CH0_CHANNEL    LEDC_CHANNEL_0
-#define LEDC_TEST_DUTY         (4000)
 #define LEDC_ResolutionRatio   LEDC_TIMER_13_BIT
 #define LEDC_MAX_Duty          ((1 << LEDC_ResolutionRatio) - 1)
 #define Backlight_MAX   100      
@@ -72,7 +71,6 @@ void LCD_SetFlushCallback(bool (*cb)(esp_lcd_panel_io_handle_t, esp_lcd_panel_io
 void ST77916_Init();
 
 void LCD_Init(void);                     // Call this function to initialize the screen (must be called in the main function) !!!!!
-void LCD_addWindow(uint16_t Xstart, uint16_t Ystart, uint16_t Xend, uint16_t Yend,uint16_t* color);
 
 void Backlight_Init(void);                             // Initialize the LCD backlight, which has been called in the LCD_Init function, ignore it                                                         
 void Set_Backlight(uint8_t Light);                   // Call this function to adjust the brightness of the backlight. The value of the parameter Light ranges from 0 to 100

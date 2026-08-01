@@ -14,8 +14,12 @@
 #include "esp_gatts_api.h"
 #include "esp_gatt_common_api.h"
 #include "esp_bt.h"
+#include "esp_mac.h"
 
 #include "app_obd_dsp/obd_data_cache.h"
+#include "bsp_obd_dsp/nvs_storage.h"
+#include "bsp_obd_dsp/espnow_link.h"
+#include "bsp_obd_dsp/gauge_pair_ble_client.h"   // GAUGE_PAIR_SERVICE_UUID / GAUGE_PAIR_CHAR_MAC (与从表配对客户端共用)
 
 #define RC_TAG "racechrono_diy"
 
@@ -86,12 +90,22 @@ enum {
     IDX_NB,
 };
 
+// 配对服务用独立的属性表(单独一次 create_attr_tab 调用), 保证在对端 GATT 数据库里
+// 是一个独立可发现的 Primary Service, 不会和 RaceChrono 服务的边界混在一起。
+enum {
+    IDX_PAIR_SVC,
+    IDX_PAIR_CHAR_MAC,
+    IDX_PAIR_CHAR_VAL_MAC,
+    IDX_PAIR_NB,
+};
+
 static const uint16_t s_attr_uuid_primary_service = ESP_GATT_UUID_PRI_SERVICE;
 static const uint16_t s_attr_uuid_char_declare = ESP_GATT_UUID_CHAR_DECLARE;
 static const uint16_t s_attr_uuid_char_client_cfg = ESP_GATT_UUID_CHAR_CLIENT_CONFIG;
 
 static const uint8_t s_char_prop_read_notify = ESP_GATT_CHAR_PROP_BIT_READ | ESP_GATT_CHAR_PROP_BIT_NOTIFY;
 static const uint8_t s_char_prop_write = ESP_GATT_CHAR_PROP_BIT_WRITE;
+static const uint8_t s_char_prop_read = ESP_GATT_CHAR_PROP_BIT_READ;
 
 static uint16_t s_service_uuid = RC_SERVICE_UUID;
 static uint16_t s_char_uuid_can_main = RC_CHAR_CAN_MAIN;
@@ -99,11 +113,34 @@ static uint16_t s_char_uuid_filter = RC_CHAR_FILTER;
 static uint16_t s_cccd_init = 0x0000;
 static uint8_t s_dummy_val[20] = {0};
 
+static uint16_t s_pair_service_uuid = GAUGE_PAIR_SERVICE_UUID;
+static uint16_t s_char_uuid_pair_mac = GAUGE_PAIR_CHAR_MAC;
+static uint8_t s_pair_mac[6] = {0};   // 本机 ESP-NOW/WiFi MAC, 仅 MASTER 角色时有意义
+
+// 广播/GAP 设备名: MASTER 角色广播 "SkyGauge-XXYY"(供从表配对发现), 否则维持 "SkyGarageRC"(RaceChrono 手机 App 用)。
+static char s_adv_name[20] = RC_DEVICE_NAME;
+
 static uint8_t s_adv_raw[] = {
-    0x02, 0x01, 0x06,             // Flags: LE General Discoverable + BR/EDR not supported
-    0x03, 0x03, 0xF8, 0x1F        // Complete List of 16-bit Service UUIDs: 0x1FF8
+    0x02, 0x01, 0x06,                    // Flags: LE General Discoverable + BR/EDR not supported
+    0x05, 0x03, 0xF8, 0x1F, 0xF9, 0x1F    // Complete List of 16-bit Service UUIDs: 0x1FF8, 0x1FF9
 };
 static uint8_t s_scan_rsp_raw[31] = {0};
+
+// 按当前 device_role 决定广播名和配对 MAC 特征值内容; 在启动流程/角色变化前调用一次。
+static void build_adv_identity(void)
+{
+    const nvs_user_cfg_t *cfg = nvs_cfg_get();
+    if (cfg->device_role == ESPNOW_ROLE_MASTER) {
+        uint8_t mac[6] = {0};
+        esp_read_mac(mac, ESP_MAC_WIFI_STA);
+        memcpy(s_pair_mac, mac, sizeof(s_pair_mac));
+        snprintf(s_adv_name, sizeof(s_adv_name), "SkyGauge-%02X%02X", mac[4], mac[5]);
+    } else {
+        memset(s_pair_mac, 0, sizeof(s_pair_mac));
+        strncpy(s_adv_name, RC_DEVICE_NAME, sizeof(s_adv_name) - 1);
+        s_adv_name[sizeof(s_adv_name) - 1] = '\0';
+    }
+}
 
 static esp_ble_adv_params_t s_adv_params = {
     .adv_int_min = 0x40,
@@ -118,14 +155,14 @@ static void request_adv_config(void)
 {
     // Build scan response with complete local name.
     // AD format: [len][type=0x09][name bytes...]
-    size_t name_len = strlen(RC_DEVICE_NAME);
+    size_t name_len = strlen(s_adv_name);
     if (name_len > 29) {
         name_len = 29;
     }
     memset(s_scan_rsp_raw, 0, sizeof(s_scan_rsp_raw));
     s_scan_rsp_raw[0] = (uint8_t)(1 + name_len);
     s_scan_rsp_raw[1] = 0x09;
-    memcpy(&s_scan_rsp_raw[2], RC_DEVICE_NAME, name_len);
+    memcpy(&s_scan_rsp_raw[2], s_adv_name, name_len);
 
     s_adv_raw_done = false;
     s_scan_rsp_raw_done = false;
@@ -175,6 +212,24 @@ static const esp_gatts_attr_db_t s_gatt_db[IDX_NB] = {
     {{ESP_GATT_AUTO_RSP},
      {ESP_UUID_LEN_16, (uint8_t *)&s_char_uuid_filter, ESP_GATT_PERM_WRITE,
       sizeof(s_dummy_val), sizeof(uint8_t), s_dummy_val}},
+};
+
+// ---- 配对服务(独立属性表; 仅 MASTER 角色时 s_pair_mac 有效, 供从表蓝牙配对读取) ----
+static const esp_gatts_attr_db_t s_gatt_db_pair[IDX_PAIR_NB] = {
+    [IDX_PAIR_SVC] =
+    {{ESP_GATT_AUTO_RSP},
+     {ESP_UUID_LEN_16, (uint8_t *)&s_attr_uuid_primary_service, ESP_GATT_PERM_READ,
+      sizeof(uint16_t), sizeof(s_pair_service_uuid), (uint8_t *)&s_pair_service_uuid}},
+
+    [IDX_PAIR_CHAR_MAC] =
+    {{ESP_GATT_AUTO_RSP},
+     {ESP_UUID_LEN_16, (uint8_t *)&s_attr_uuid_char_declare, ESP_GATT_PERM_READ,
+      sizeof(uint8_t), sizeof(uint8_t), (uint8_t *)&s_char_prop_read}},
+
+    [IDX_PAIR_CHAR_VAL_MAC] =
+    {{ESP_GATT_AUTO_RSP},
+     {ESP_UUID_LEN_16, (uint8_t *)&s_char_uuid_pair_mac, ESP_GATT_PERM_READ,
+      sizeof(s_pair_mac), sizeof(s_pair_mac), s_pair_mac}},
 };
 
 static int32_t read_rpm(bool *valid)
@@ -493,28 +548,42 @@ static void gatts_cb(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble
     switch (event) {
     case ESP_GATTS_REG_EVT:
         s_gatts_if = gatts_if;
+        build_adv_identity();
         {
-            esp_err_t err = esp_ble_gap_set_device_name(RC_DEVICE_NAME);
+            esp_err_t err = esp_ble_gap_set_device_name(s_adv_name);
             if (err != ESP_OK) {
                 ESP_LOGW(RC_TAG, "Set device name failed: %s", esp_err_to_name(err));
             }
         }
         request_adv_config();
         esp_ble_gatts_create_attr_tab(s_gatt_db, gatts_if, IDX_NB, 0);
-        ESP_LOGI(RC_TAG, "GATTS registered, waiting for adv+attr table");
+        ESP_LOGI(RC_TAG, "GATTS registered (adv name=%s), waiting for adv+attr table", s_adv_name);
         break;
 
     case ESP_GATTS_CREAT_ATTR_TAB_EVT:
-        if (param->add_attr_tab.status == ESP_GATT_OK && param->add_attr_tab.num_handle == IDX_NB) {
+        if (param->add_attr_tab.status == ESP_GATT_OK &&
+            param->add_attr_tab.num_handle == IDX_NB &&
+            param->add_attr_tab.svc_uuid.uuid.uuid16 == RC_SERVICE_UUID) {
             uint16_t *h = param->add_attr_tab.handles;
             s_handle_can_main = h[IDX_CHAR_VAL_CAN_MAIN];
             s_handle_can_cccd = h[IDX_CHAR_CFG_CAN_MAIN];
             s_handle_filter = h[IDX_CHAR_VAL_FILTER];
             esp_ble_gatts_start_service(h[IDX_SVC]);
             s_attr_ready = true;
-            ESP_LOGI(RC_TAG, "Attr table ready, CAN main handle=0x%04X", s_handle_can_main);
+            ESP_LOGI(RC_TAG, "RC attr table ready, CAN main handle=0x%04X", s_handle_can_main);
+            // RC 服务表建好后, 再单独建配对服务的属性表(各自独立的 create_attr_tab 调用,
+            // 保证两个服务在对端 GATT 数据库里是各自独立可发现的 Primary Service)。
+            esp_ble_gatts_create_attr_tab(s_gatt_db_pair, gatts_if, IDX_PAIR_NB, 1);
+        } else if (param->add_attr_tab.status == ESP_GATT_OK &&
+                   param->add_attr_tab.num_handle == IDX_PAIR_NB &&
+                   param->add_attr_tab.svc_uuid.uuid.uuid16 == GAUGE_PAIR_SERVICE_UUID) {
+            uint16_t *h = param->add_attr_tab.handles;
+            esp_ble_gatts_start_service(h[IDX_PAIR_SVC]);
+            ESP_LOGI(RC_TAG, "Pair attr table ready, service handle=0x%04X", h[IDX_PAIR_SVC]);
         } else {
-            ESP_LOGE(RC_TAG, "Create attr table failed, status=%d", param->add_attr_tab.status);
+            ESP_LOGE(RC_TAG, "Create attr table failed, status=%d uuid=0x%04X num_handle=%d",
+                     param->add_attr_tab.status, param->add_attr_tab.svc_uuid.uuid.uuid16,
+                     param->add_attr_tab.num_handle);
         }
         break;
 

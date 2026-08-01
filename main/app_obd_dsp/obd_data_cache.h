@@ -52,29 +52,9 @@ int16_t  obd_data_get_oil_pressure_x10(void); // -1 = 无效
 int16_t  obd_data_get_boost_x10(void); // -32768 = 无效
 int16_t  obd_data_get_brake_temp_x10(void); // -1000 = 无效
 int8_t   obd_data_get_gear(void);            // 127 = 无效 (用计算档位回退)
-brake_rs485_status_t obd_data_get_brake_rs485_status(void);
 enGear calculate_gear(float rpm, float speed);
 void vMileageDataStatisticTask(void);
 
-// ---- Dirty flags: UI 按需刷新, 跳过未变化的通道 ----
-#define OBD_DIRTY_RPM          (1u << 0)
-#define OBD_DIRTY_SPEED        (1u << 1)
-#define OBD_DIRTY_COOLANT      (1u << 2)
-#define OBD_DIRTY_OIL_TEMP     (1u << 3)
-#define OBD_DIRTY_INTAKE       (1u << 4)
-#define OBD_DIRTY_LOAD         (1u << 5)
-#define OBD_DIRTY_TPS          (1u << 6)
-#define OBD_DIRTY_BAT          (1u << 7)
-#define OBD_DIRTY_OIL_PRESS    (1u << 8)
-#define OBD_DIRTY_BOOST        (1u << 9)
-#define OBD_DIRTY_BRAKE_TEMP   (1u << 10)
-#define OBD_DIRTY_GEAR         (1u << 11)
-#define OBD_DIRTY_ALL          0xFFFFu
-
-// 读取并清除 dirty flags (原子操作)
-uint32_t obd_data_take_dirty(void);
-// 标记全部 dirty (初始/重连时)
-void obd_data_mark_all_dirty(void);
 #ifdef __cplusplus
 }
 #endif

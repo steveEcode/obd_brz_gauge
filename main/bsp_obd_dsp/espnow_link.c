@@ -211,10 +211,38 @@ static void handle_rx(const uint8_t *mac, const uint8_t *data, int len) {
 // recv 回调签名在 IDF 5.0 变更, 兼容两版
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
 static void recv_cb(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+    // 从表 MAC 过滤: 绑定了主表 MAC 后, 只接收该 MAC 的包
+    if (!s_is_master && info) {
+        const nvs_user_cfg_t *cfg = nvs_cfg_get();
+        if (cfg->espnow_master_mac[0] != 0) {  // 已绑定
+            bool mac_match = true;
+            for (int i = 0; i < 6; i++) {
+                if (info->src_addr[i] != cfg->espnow_master_mac[i]) {
+                    mac_match = false;
+                    break;
+                }
+            }
+            if (!mac_match) return;  // 忽略非绑定主表的包
+        }
+    }
     handle_rx(info ? info->src_addr : NULL, data, len);
 }
 #else
 static void recv_cb(const uint8_t *mac, const uint8_t *data, int len) {
+    // 从表 MAC 过滤: 绑定了主表 MAC 后, 只接收该 MAC 的包
+    if (!s_is_master && mac) {
+        const nvs_user_cfg_t *cfg = nvs_cfg_get();
+        if (cfg->espnow_master_mac[0] != 0) {  // 已绑定
+            bool mac_match = true;
+            for (int i = 0; i < 6; i++) {
+                if (mac[i] != cfg->espnow_master_mac[i]) {
+                    mac_match = false;
+                    break;
+                }
+            }
+            if (!mac_match) return;  // 忽略非绑定主表的包
+        }
+    }
     handle_rx(mac, data, len);
 }
 #endif
@@ -251,6 +279,30 @@ bool espnow_link_slave_has_data(void) {
 
 const char *espnow_link_get_master_name(void) {
     return s_master_name;   // 空串=尚未收到主表数据
+}
+
+// 从表: 获取当前绑定主表的 MAC 地址 (全 0 表示未绑定)
+const uint8_t *espnow_link_get_bound_master_mac(void) {
+    return nvs_cfg_get()->espnow_master_mac;
+}
+
+// 从表: 绑定到指定的主表 MAC 地址(蓝牙配对读到的 ESP-NOW MAC)
+void espnow_link_bind_master(const uint8_t mac[6]) {
+    if (!mac) return;
+    nvs_user_cfg_t cfg = *nvs_cfg_get();
+    memcpy(cfg.espnow_master_mac, mac, 6);
+    nvs_cfg_set(&cfg);
+    ESP_LOGI(TAG, "Bound to master MAC: %02x:%02x:%02x:%02x:%02x:%02x",
+             cfg.espnow_master_mac[0], cfg.espnow_master_mac[1], cfg.espnow_master_mac[2],
+             cfg.espnow_master_mac[3], cfg.espnow_master_mac[4], cfg.espnow_master_mac[5]);
+}
+
+// 从表: 解除主表绑定 (恢复全收模式)
+void espnow_link_unbind_master(void) {
+    nvs_user_cfg_t cfg = *nvs_cfg_get();
+    memset(cfg.espnow_master_mac, 0, 6);
+    nvs_cfg_set(&cfg);
+    ESP_LOGI(TAG, "Unbound master MAC (receive from any master)");
 }
 
 // 主表: 当前在线从表数(近 MG_SLAVE_TIMEOUT_US 内有上报)

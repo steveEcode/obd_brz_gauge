@@ -82,17 +82,7 @@ void ui_ScreenPageChartConfig_screen_init(void)
     lv_roller_set_visible_row_count(s_roller_chart_src, 3);
     lv_roller_set_selected(s_roller_chart_src, chart_source_to_pos(cfg->chart_source_idx), LV_ANIM_OFF);
     lv_obj_set_width(s_roller_chart_src, 160);
-    lv_obj_set_style_text_font(s_roller_chart_src, &ui_font_FontTypoderSize24, LV_PART_MAIN);
-    lv_obj_set_style_text_color(s_roller_chart_src, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-    lv_obj_set_style_bg_color(s_roller_chart_src, lv_color_hex(0x222222), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(s_roller_chart_src, 255, LV_PART_MAIN);
-    lv_obj_set_style_border_width(s_roller_chart_src, 1, LV_PART_MAIN);
-    lv_obj_set_style_border_color(s_roller_chart_src, lv_color_hex(0x444444), LV_PART_MAIN);
-    lv_obj_set_style_radius(s_roller_chart_src, 8, LV_PART_MAIN);
-    lv_obj_set_style_text_font(s_roller_chart_src, &ui_font_FontTypoderSize24, LV_PART_SELECTED);
-    lv_obj_set_style_text_color(s_roller_chart_src, lv_color_hex(0x000000), LV_PART_SELECTED);
-    lv_obj_set_style_bg_color(s_roller_chart_src, lv_color_hex(0xFFFFFF), LV_PART_SELECTED);
-    lv_obj_set_style_bg_opa(s_roller_chart_src, 255, LV_PART_SELECTED);
+    ui_helpers_style_dark_roller(s_roller_chart_src, &ui_font_FontTypoderSize24);
     lv_obj_align(s_roller_chart_src, LV_ALIGN_CENTER, 0, 8);
     lv_obj_add_event_cb(s_roller_chart_src, on_chart_source_changed, LV_EVENT_VALUE_CHANGED, NULL);
 

@@ -40,6 +40,10 @@ typedef struct {
 // target_name 可为 NULL 使用默认 "OBDII"
 void elm327_ble_init_and_start(const char *target_name, const elm327_ble_callbacks_t *cbs);
 
+// 仅初始化 BT 控制器+Bluedroid+GAP/GATTC 回调(幂等,可重复调用),不发起任何 ELM327 扫描/连接。
+// 供暂无 OBD 设备但仍需要蓝牙外围广播的场景使用(如 RaceChrono DIY / SkyGauge 配对广播)。
+void elm327_ble_ensure_stack_init(void);
+
 // 发送 OBD 命令（如 "01 0C\r" 转成字节再调用本函数）
 bool elm327_ble_send_command(const uint8_t *data, size_t len);
 

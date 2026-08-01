@@ -23,6 +23,15 @@ bool espnow_link_slave_has_data(void);
 // 从表: 最近收到的主表名字(空串=尚未收到)。
 const char *espnow_link_get_master_name(void);
 
+// 从表: 获取当前绑定主表的 MAC 地址 (返回 6 字节数组, 全 0 表示未绑定)
+const uint8_t *espnow_link_get_bound_master_mac(void);
+
+// 从表: 绑定到指定的主表 MAC 地址(蓝牙配对读到的 ESP-NOW MAC)
+void espnow_link_bind_master(const uint8_t mac[6]);
+
+// 从表: 解除主表绑定 (恢复全收模式)
+void espnow_link_unbind_master(void);
+
 // 主表: 当前在线从表数(用于判定是否多表/是否播放开机动画)。
 uint8_t espnow_master_online_slaves(void);
 

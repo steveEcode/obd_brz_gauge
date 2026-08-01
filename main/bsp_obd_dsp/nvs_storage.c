@@ -13,14 +13,12 @@
 #define TAG                   "nvs_storage"
 #define NS_CFG                "cfg"
 #define KEY_CFG               "settings"
-#define NS_STAT               "stat"
-#define KEY_STAT              "runtime"
 #define KEY_CHART_ALARM       "chartalarm"
 #define CHART_ALARM_N         11   // = DISP_ITEM_COUNT (需与 ui.c disp_item_t 同步)
+#define CHART_ALARM_OFF       32767 // 报警阈值"关闭"哨兵值(超不到, 不误红)
 #define KEY_MG_EXTRA          "mgextra"   // 三连表开机动画设置
 #define KEY_CFG_VERSION       "cfgver"    // 配置版本号 (缺失=v0)
 #define CFG_VERSION_CURRENT   1           // 当前版本; 每次加字段 +1
-#define STAT_FLUSH_PERIOD_MS  30000 //30s 落盘
 
 static nvs_user_cfg_t s_cfg =   { 
                         .protocol = 0, //车辆OBD的协议类型选择 0:自动,1~9:固定协议 默认为自动
@@ -36,14 +34,15 @@ static nvs_user_cfg_t s_cfg =   {
                         .rpm_warn_threshold = 6000,
                         .rpm_warn_anim_en = 0,
                     };
-static nvs_stat_t     s_stat = {0};
-static bool           s_stat_dirty = false;
+static nvs_stat_t     s_stat = {0};   // 仅运行时内存统计, 不落盘(每次开机清零, 省 flash 寿命)
 static SemaphoreHandle_t s_mux;
 
 // 每数据项报警阈值(原始值单位), 索引=disp_item_t: CLT,IAT,OIL,LOD,TPS,RPM,SPD,BAT,OIP,BKT,BST
-// 默认只给油压(8.0bar=x10 80)和刹车温(600°C=x10 6000)保留旧报警值, 其余 32767=关闭(不误红)
+// 默认只给油压(8.0bar=x10 80)和刹车温(600°C=x10 6000)保留旧报警值, 其余关闭(不误红)
 static int16_t s_chart_alarm[CHART_ALARM_N] = {
-    32767, 32767, 32767, 32767, 32767, 32767, 32767, 32767, 80, 6000, 32767
+    CHART_ALARM_OFF, CHART_ALARM_OFF, CHART_ALARM_OFF, CHART_ALARM_OFF,
+    CHART_ALARM_OFF, CHART_ALARM_OFF, CHART_ALARM_OFF, CHART_ALARM_OFF,
+    80, 6000, CHART_ALARM_OFF
 };
 
 // 三连表开机动画设置(独立 blob): 默认 关闭, 位置 1
@@ -56,7 +55,6 @@ static struct __attribute__((packed)) {
 /* 前向声明 */
 static esp_err_t load_blob(const char *ns,const char *key,void *out,size_t len);
 static esp_err_t save_blob(const char *ns,const char *key,const void *data,size_t len);
-static void stat_flush_task(void *arg);
 
 esp_err_t nvs_storage_init(void)
 {
@@ -69,7 +67,7 @@ esp_err_t nvs_storage_init(void)
     ESP_ERROR_CHECK(err);
 
     load_blob(NS_CFG, KEY_CFG, &s_cfg, sizeof(s_cfg));
-    load_blob(NS_STAT, KEY_STAT, &s_stat, sizeof(s_stat));
+    // 里程/行程统计不再落盘(见 s_stat 声明处注释), 保持 {0} 每次开机从零开始, 不从 NVS 加载。
     {   // 曲线报警阈值: NVS 有则加载, 无/长度不符则保持静态默认(不覆盖, 故不会全变0)
         nvs_handle_t h; size_t sz = sizeof(s_chart_alarm);
         if (nvs_open(NS_CFG, NVS_READONLY, &h) == ESP_OK) {
@@ -89,7 +87,12 @@ esp_err_t nvs_storage_init(void)
         ESP_LOGI("nvs", "mg loaded: intro=%u pos=%u boot=%u (blob_sz=%u)", s_mg.intro_enable, s_mg.device_position, s_mg.boot_mode, (unsigned)sz);
     }
 
-    /* ---- 配置版本迁移 ---- */
+    /* ---- 配置版本迁移 ----
+       注意: 这一段版本号迁移目前只覆盖 s_mg (KEY_MG_EXTRA) 这个独立 blob。
+       nvs_user_cfg_t (s_cfg) 走的是另一套机制——load_blob() 里"旧 blob 比当前结构体
+       小就按旧长度部分拷贝、结构体尾部新字段保持编译期默认值、然后按新大小整体重写"的
+       通用扩容逻辑, 这套逻辑要求给 nvs_user_cfg_t 新增字段时必须加在结构体末尾, 否则旧数据
+       会被错误地解释到别的字段上。给 s_cfg 加字段时留意这个约束, 不要在中间插入新字段。 */
     {
         nvs_handle_t h;
         uint8_t stored_ver = 0;
@@ -117,7 +120,7 @@ esp_err_t nvs_storage_init(void)
     }
 
     /* 新增字段默认值修复 (旧NVS数据中rsv[x]全为0) */
-    if(s_cfg.brightness_day == 0) s_cfg.brightness_day = 100;
+    if(s_cfg.brightness_day < 10) s_cfg.brightness_day = 100; // 有效范围 10-100, 0/未配置或越界都归 100
     if(s_cfg.default_page > 6) s_cfg.default_page = 0; // 0=Temp,1=Info,2=Chart,3=Needle,4=Gear,5=Rpm,6=Speed(刹车温已并入Chart)
     if(s_cfg.needle_source_idx >= 11) s_cfg.needle_source_idx = 0; // DISP_ITEM_COUNT=11 (CLT..BOOST)
     if(s_cfg.device_role > 2) s_cfg.device_role = ESPNOW_ROLE_STANDALONE; // 角色: 0=主 1=从 2=单机, 越界归单机
@@ -128,6 +131,8 @@ esp_err_t nvs_storage_init(void)
     if(vehicle_count > 0 && s_cfg.vehicle_profile_idx >= vehicle_count) s_cfg.vehicle_profile_idx = 0;
     if(s_cfg.brake_temp_warn_c < 10 || s_cfg.brake_temp_warn_c > 1200) s_cfg.brake_temp_warn_c = 600;
     if(s_cfg.oil_pressure_warn_x10 > 100) s_cfg.oil_pressure_warn_x10 = 80;
+    // 0=未设置/旧NVS越界 → 默认 6000; 集中在这里夹紧, 调用方(ui.c / ui_ScreenPageRpmWarn.c)不用各自重复判断
+    if(s_cfg.rpm_warn_threshold < 1000) s_cfg.rpm_warn_threshold = 6000;
 
     // TEMP/INFO 自定义显示项映射范围校验: 0~9
     for (int i = 0; i < 3; ++i) {
@@ -141,7 +146,6 @@ esp_err_t nvs_storage_init(void)
     }
 
     s_mux = xSemaphoreCreateMutex();
-    xTaskCreate(stat_flush_task, "nvs_flush", 2048, NULL, 4, NULL);
     return ESP_OK;
 }
 
@@ -158,7 +162,7 @@ esp_err_t nvs_cfg_set(const nvs_user_cfg_t *cfg)
 
 /* 曲线报警阈值 */
 int16_t nvs_chart_alarm_get(uint8_t item){
-    return (item < CHART_ALARM_N) ? s_chart_alarm[item] : 32767;
+    return (item < CHART_ALARM_N) ? s_chart_alarm[item] : CHART_ALARM_OFF;
 }
 void nvs_chart_alarm_set(uint8_t item, int16_t raw_threshold){
     if(item >= CHART_ALARM_N) return;
@@ -192,18 +196,6 @@ void nvs_boot_mode_set(uint8_t mode){
 
 /* 统计 */
 const nvs_stat_t * nvs_stat_get(void){return &s_stat;}
-void nvs_stat_add_odometer(uint32_t d){
-    xSemaphoreTake(s_mux,portMAX_DELAY);
-    s_stat.odometer_m+=d;
-    s_stat_dirty=true;
-    xSemaphoreGive(s_mux);
-}
-void nvs_stat_add_runtime(uint32_t d){
-    xSemaphoreTake(s_mux,portMAX_DELAY);
-    s_stat.run_time_s+=d;
-    s_stat_dirty=true;
-    xSemaphoreGive(s_mux);
-}
 /**
  * @brief 更新行驶统计
  * @param speed_kmh 速度km/h
@@ -237,7 +229,6 @@ void nvs_stat_update_speed(uint8_t speed_kmh, uint32_t dt_ms)
         if(s_stat.avg_speed_kmh > s_stat.max_speed_kmh) s_stat.avg_speed_kmh = s_stat.max_speed_kmh;
     }
 
-    s_stat_dirty = true;
     xSemaphoreGive(s_mux);
 }
 
@@ -254,7 +245,6 @@ void nvs_stat_reset_trip(void){
     s_stat.avg_speed_kmh=0;
     s_stat.run_time_s=0;
     s_stat.trip_run_time_s=0;
-    s_stat_dirty=true;
     xSemaphoreGive(s_mux);
 }
 
@@ -268,29 +258,6 @@ nvs_stat_t nvs_stat_get_mileage(void){
     nvs_stat_t stat = s_stat;
     xSemaphoreGive(s_mux);
     return stat;
-}
-
-
-/* 后台任务 */
-static void stat_flush_task(void *arg){
-    while(1){
-        vTaskDelay(pdMS_TO_TICKS(STAT_FLUSH_PERIOD_MS));
-        if(!s_stat_dirty) continue;
-        // 锁内只做快照 + 清脏标志(极短临界区); 真正耗时的 flash 写入放到锁外,
-        // 避免持锁跨越 NVS I/O 阻塞里程统计等写 s_stat 的任务。
-        nvs_stat_t snapshot;
-        xSemaphoreTake(s_mux, portMAX_DELAY);
-        snapshot = s_stat;
-        s_stat_dirty = false;   // 若写盘期间有新数据写入, 写方会再置脏, 下一轮再落盘(不丢更新)
-        xSemaphoreGive(s_mux);
-
-        if (save_blob(NS_STAT, KEY_STAT, &snapshot, sizeof(snapshot)) != ESP_OK) {
-            // 写失败 → 重新标脏, 下一轮重试
-            xSemaphoreTake(s_mux, portMAX_DELAY);
-            s_stat_dirty = true;
-            xSemaphoreGive(s_mux);
-        }
-    }
 }
 
 /* 工具函数 */

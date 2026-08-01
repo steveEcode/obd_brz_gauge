@@ -1,5 +1,5 @@
 // Multi-Gauge (三连表) Settings Page  (设置页下滑进入)
-//  - MODE: MASTER(连ELM327+广播) / SLAVE(收主表数据) / STANDALONE(单机, 不启WiFi) → NVS device_role
+//  - MODE: MASTER(连 ELM327+广播) / SLAVE(收主表数据) / STANDALONE(单机，不启 WiFi) → NVS device_role
 //  - POSITION: 本机在开机动画中的位置 1/2/3(RACE/AS/ONE)     → NVS device_position
 //  - INTRO: 开机动画开/关(仅多表时播放)                        → NVS intro_enable
 //  改动重启(下次点火)生效。上滑/左右滑返回设置页。
@@ -9,7 +9,7 @@
 #include "bsp_obd_dsp/espnow_link.h"   // ESPNOW_ROLE_STANDALONE
 
 static const char *mode_names = "MASTER\nSLAVE\nSTANDALONE";   // 索引=device_role: 0=MASTER,1=SLAVE,2=STANDALONE
-static const char *pos_names  = "1\n2\n3";          // 索引0/1/2 → 位置1/2/3
+static const char *pos_names  = "1\n2\n3";          // 索引 0/1/2 → 位置 1/2/3
 static const char *intro_names = "OFF\nRACE\nREI\nSHINJI\nASUKA";  // 0=OFF, 1=RACE, 2/3/4=VIDEO A/B/C
 
 static lv_obj_t *s_roller_mode = NULL;
@@ -48,18 +48,9 @@ static void style_mg_roller(lv_obj_t *r)
     lv_obj_clear_flag(r, LV_OBJ_FLAG_GESTURE_BUBBLE);
     lv_roller_set_visible_row_count(r, 1);
     lv_obj_set_width(r, 160);
-    lv_obj_set_style_text_font(r, &ui_font_FontTypoderSize20, LV_PART_MAIN);
-    lv_obj_set_style_text_color(r, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-    lv_obj_set_style_bg_color(r, lv_color_hex(0x222222), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(r, 255, LV_PART_MAIN);
-    lv_obj_set_style_border_width(r, 1, LV_PART_MAIN);
-    lv_obj_set_style_border_color(r, lv_color_hex(0x444444), LV_PART_MAIN);
-    lv_obj_set_style_radius(r, 8, LV_PART_MAIN);
-    lv_obj_set_style_text_font(r, &ui_font_FontTypoderSize20, LV_PART_SELECTED);
-    lv_obj_set_style_text_color(r, lv_color_hex(0x000000), LV_PART_SELECTED);
-    lv_obj_set_style_bg_color(r, lv_color_hex(0xFFFFFF), LV_PART_SELECTED);
-    lv_obj_set_style_bg_opa(r, 255, LV_PART_SELECTED);
+    ui_helpers_style_dark_roller(r, &ui_font_FontTypoderSize20);
 }
+
 static void make_mg_label(lv_obj_t *parent, const char *txt, int y)
 {
     lv_obj_t *l = lv_label_create(parent);
@@ -80,16 +71,7 @@ void ui_ScreenPageMultiGauge_screen_init(void)
     lv_obj_set_style_bg_opa(ui_ScreenPageMultiGauge, 255, LV_PART_MAIN);
 
     // White border ring
-    lv_obj_t *ring = lv_obj_create(ui_ScreenPageMultiGauge);
-    lv_obj_set_size(ring, 360, 360);
-    lv_obj_set_align(ring, LV_ALIGN_CENTER);
-    lv_obj_clear_flag(ring, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(ring, 0, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(ring, 0, LV_PART_MAIN);
-    lv_obj_set_style_border_color(ring, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-    lv_obj_set_style_border_width(ring, 10, LV_PART_MAIN);
-    lv_obj_set_style_border_opa(ring, 255, LV_PART_MAIN);
+    lv_obj_t *ring = ui_helpers_create_ring(ui_ScreenPageMultiGauge, 10);
 
     lv_obj_t *title = lv_label_create(ui_ScreenPageMultiGauge);
     lv_label_set_text(title, "MULTI-GAUGE");
@@ -123,7 +105,7 @@ void ui_ScreenPageMultiGauge_screen_init(void)
     lv_obj_align(s_roller_pos, LV_ALIGN_CENTER, 0, -35);
     lv_obj_add_event_cb(s_roller_pos, on_pos_roller_change, LV_EVENT_VALUE_CHANGED, NULL);
 
-    // Row 3: INTRO (多表: OFF/RACE/VIDEO)
+    // Row 3: INTRO (多表：OFF/RACE/VIDEO)
     s_lbl_intro = lv_label_create(ui_ScreenPageMultiGauge);
     lv_label_set_text(s_lbl_intro, "INTRO");
     lv_obj_set_style_text_font(s_lbl_intro, &ui_font_FontTypoderSize16, LV_PART_MAIN);

@@ -102,16 +102,12 @@ static void oil_pressure_task(void *arg)
 {
     (void)arg;
 
-    uint32_t log_count = 0;
-
     while (1) {
         int32_t mv = 0;
         esp_err_t err = ads1115_read_ain0_mv(&mv);
         if (err == ESP_OK) {
             int16_t pressure_x10 = mv_to_oil_pressure_x10(mv);
             obd_data_set_oil_pressure_x10(pressure_x10);
-
-            (void)log_count;
         } else {
             obd_data_set_oil_pressure_x10(-1);
         }
@@ -128,9 +124,4 @@ void oil_pressure_start(void)
 
     s_started = true;
     xTaskCreate(oil_pressure_task, "oil_press", 3072, NULL, 4, NULL);
-}
-
-void ads1115_oil_pressure_start(void)
-{
-    oil_pressure_start();
 }

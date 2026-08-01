@@ -19,16 +19,7 @@ void ui_ScreenPageIntro_screen_init(void)
     lv_obj_set_style_outline_width(ui_ScreenPageIntro, 0, LV_PART_MAIN);
 
     // White border ring (与其它页面一致)
-    lv_obj_t *ring = lv_obj_create(ui_ScreenPageIntro);
-    lv_obj_set_size(ring, 360, 360);
-    lv_obj_set_align(ring, LV_ALIGN_CENTER);
-    lv_obj_clear_flag(ring, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(ring, 0, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(ring, 0, LV_PART_MAIN);
-    lv_obj_set_style_border_color(ring, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-    lv_obj_set_style_border_width(ring, 10, LV_PART_MAIN);
-    lv_obj_set_style_border_opa(ring, 255, LV_PART_MAIN);
+    lv_obj_t *ring = ui_helpers_create_ring(ui_ScreenPageIntro, 10);
 
     ui_LabelIntroWord = lv_label_create(ui_ScreenPageIntro);
     lv_label_set_text(ui_LabelIntroWord, "");

@@ -21,8 +21,8 @@ OBD BRZ Gauge is an ESP-IDF based round dashboard project for the Waveshare ESP3
   - ZD8 (Gen2): 0x40 (RPM + TPS) + 0x345 (oil + coolant temp)
 - **Custom boot logo & boot media playback**: configurable boot logo with multi-block animation, SPIFFS-mounted bootmedia partition for rich startup sequences
 - **Unified vehicle configuration system**: compile-time `vehicle_custom_config.h` for per-vehicle thresholds, warnings, and gauge ranges
-- **FSM-based app event system**: modular state machine for boot sequence, media mount, and data source management
-- Real-time display for RPM, speed, coolant/intake/oil temperature, oil pressure, turbo boost, throttle, engine load, battery voltage, gear, and related values
+- Real-time display for RPM, speed, coolant/intake/oil temperature, oil pressure, turbo boost, throttle, engine load, battery voltage, gear (prefers CAN-decoded precise gear when available, falls back to RPM/speed estimate), and related values
+- "NO SIGNAL" indicator on the gauge pages when BLE/ESP-NOW data goes stale
 - Vehicle profile selector: per-car gear ratios (up to 8-speed), oil-temp strategy, turbo boost, and per-vehicle protocol lock (e.g. BMW/Porsche force ISO 15765-4 CAN)
 - Manufacturer oil-temp paths beyond standard PID 01 5C: Toyota/Subaru Mode 21, Mazda Mode 22, MINI/BMW Mode 22, BMW F-series Mode 22 44 02, Porsche CAN broadcast 0x441 monitoring
 - Configurable pointer (needle) gauge page with swipe-down data-source selection
@@ -32,16 +32,18 @@ OBD BRZ Gauge is an ESP-IDF based round dashboard project for the Waveshare ESP3
 - Multi-gauge over ESP-NOW: a master reads OBD and broadcasts; slaves display the same data with no extra OBD load; role is chosen in settings; startup sweep is synchronized; slaves show the master name
 - Optional custom boot logo via a compile-time switch
 - LVGL touch UI exported from SquareLine-based assets
-- Local persistence for user configuration and mileage statistics via NVS
+- User configuration persisted via NVS; mileage/trip statistics are runtime-only (reset each power cycle, not written to flash)
 
 ## Multi-Gauge
 
 An ELM327 BLE adapter accepts only one client, so multiple gauges cannot each connect to it. Instead, one board is the **master** (keeps the BLE + ELM327 link and reads OBD) and the others are **slaves**. The master broadcasts the parsed data cache over ESP-NOW; slaves render it with no extra OBD load. Flash the same firmware to every board and pick the role in Settings → swipe down → MULTI-GAUGE (reboot to apply). The master's BLE/WiFi coexist on the ESP32-S3; slaves run ESP-NOW only.
 
+Pairing is done over real BLE, not a blind "bind whatever I last heard" button: once a board is set to MASTER, it advertises as `SkyGauge-XXYY` (a per-device suffix so multiple masters at a meet don't collide). An unbound slave boots straight into a "FIND MASTER" scan screen (the same screen used to pick an OBD adapter), lets you pick the right master from the list, and remembers it — every following boot skips the scan and goes straight to the gauge display.
+
 ## Repository Layout
 
 - [main/app_main.c](../main/app_main.c): application entry, LVGL initialization, BLE startup, task startup
-- [main/app_obd_dsp](../main/app_obd_dsp): runtime OBD data cache, vehicle profiles, CAN frame decoders, mileage statistics, boot media playback, FSM event system, and vehicle custom config
+- [main/app_obd_dsp](../main/app_obd_dsp): runtime OBD data cache, vehicle profiles, CAN frame decoders, mileage statistics, boot media playback, and vehicle custom config
 - [main/bsp_obd_dsp](../main/bsp_obd_dsp): board support package, BLE client, NVS, LCD, touch, I2C (ESP-IDF 5.5 new API), IO expander, and ESP-NOW link drivers
 - [main/export_path](../main/export_path): UI source exported from the design tool (SquareLine)
 - [bootmedia](../bootmedia): boot animation media blocks (SPIFFS partition source)
@@ -104,6 +106,36 @@ esptool.py --chip esp32s3 -p PORT -b 460800 write_flash \
 2. If you change the display, touch controller, IO expander, or pin mapping, review the drivers under [main/bsp_obd_dsp](../main/bsp_obd_dsp).
 3. If you use another vehicle or another OBD adapter, verify BLE services, characteristics, command formatting, and response parsing again.
 4. UI assets are located under [main/export_path](../main/export_path) and can be edited further.
+
+## Changelog
+
+### Multi-gauge: real BLE pairing replaces the MAC-bind button
+
+The old "BIND MASTER" button worked by grabbing whichever master's ESP-NOW broadcast the slave happened to be receiving at the moment — with no way to pick a specific one when multiple masters are nearby (e.g. a track day with several cars running the same product). The master now advertises a real BLE peripheral (`SkyGauge-XXYY`); the slave discovers and binds to it through the existing BLE scan page (now doubling as a "FIND MASTER" screen when the device role is SLAVE), and reconnects automatically on every following boot.
+
+- New `gauge_pair_ble_client.c/h` (slave-side one-shot BLE pairing client) and `ble_adv_util.c/h` (shared BLE advertisement-name parsing, deduplicated out of the OBD BLE client).
+- `racechrono_ble_diy.c` gained an independent pairing GATT service alongside the existing RaceChrono service, sharing one BLE advertisement.
+- `ui_ScreenPageMultiGauge.c` no longer has BIND MASTER / UNBIND buttons.
+- Boot flow: an unbound slave lands on the pairing screen; a bound slave skips straight to its gauge display.
+
+### Fixed: master watchdog reboot during OBD protocol detection
+
+Root-caused a board reboot seen during testing: the blocking wait for an ELM327 response could sit for up to 3 seconds without feeding the task watchdog. A run of consecutive protocol auto-detect timeouts could add up past the 5 s TWDT window and reboot the board mid-poll. Fixed by resetting the watchdog inside that wait loop.
+
+### Other fixes
+
+- Slave-side BLE scan state could get stuck once its 15 s scan window elapsed, silently blocking retry/rescan.
+- Leaving the pairing screen in slave mode stopped the wrong BLE scan API, leaving a scan running in the background.
+- I2C device cache could read out of bounds once more than 8 addresses were queried (latent crash, not yet hit in practice).
+- LCD init could read an uninitialized register value if the QSPI probe failed.
+
+### Improvements
+
+- "NO SIGNAL" indicator on the gauge pages when BLE/ESP-NOW data goes stale.
+- Gear display now prefers the CAN-decoded precise gear over the RPM/speed estimate when a vehicle profile provides one.
+- Mileage/trip statistics are runtime-only now (no longer written to flash every 30 s) — nothing displayed them, so it was pure flash wear.
+- Removed unused `fsm.h` state-machine scaffolding and an unused OBD-data "dirty flag" tracking layer — neither was ever wired up to anything.
+- De-duplicated a shared BLE-advertisement-name parser, a screen ring border, and a dark roller LVGL style across ~18 screens; throttled a full chart redraw and a few gauge pages to only refresh when actually visible or actually changed.
 
 ## Known Limitations
 

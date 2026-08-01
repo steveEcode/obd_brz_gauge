@@ -13,6 +13,7 @@
 #include "app_obd_dsp/vehicle_profiles.h"
 #include "app_obd_dsp/vehicle_custom_config.h"
 #include "racechrono_ble_diy.h"
+#include "ble_adv_util.h"
 #include "esp_task_wdt.h"
 #include <string.h>
 #include <stdlib.h>
@@ -29,7 +30,7 @@
 
 static const char *TAG = "elm327_ble";
 
-static esp_gatt_if_t s_gattc_if = 0;
+static esp_gatt_if_t s_gattc_if = ESP_GATT_IF_NONE;   // 0 是合法的真实接口号, 用 NONE 才能区分"尚未注册"
 static uint16_t s_conn_id = 0xFFFF;
 static esp_bd_addr_t s_peer_bda = {0};
 static volatile bool s_connected = false;
@@ -1294,33 +1295,6 @@ static bool parse_mac_string(const char *s, esp_bd_addr_t out_bda) {
     return true;
 }
 
-static void extract_adv_name(const uint8_t *adv_data, uint8_t adv_data_len, uint8_t scan_rsp_len,
-                             char *out_name, size_t out_name_len) {
-    if (!out_name || out_name_len == 0) return;
-    out_name[0] = '\0';
-    if (!adv_data) return;
-
-    uint8_t total_len = adv_data_len + scan_rsp_len;
-    uint8_t idx = 0;
-    while (idx + 1 < total_len) {
-        uint8_t field_len = adv_data[idx];
-        if (field_len == 0) break;
-        if (idx + 1 + field_len > total_len) break;
-
-        uint8_t ad_type = adv_data[idx + 1];
-        uint8_t payload_len = field_len - 1;
-        const uint8_t *payload = &adv_data[idx + 2];
-
-        if ((ad_type == ESP_BLE_AD_TYPE_NAME_CMPL || ad_type == ESP_BLE_AD_TYPE_NAME_SHORT) && payload_len > 0) {
-            size_t copy_len = payload_len < (out_name_len - 1) ? payload_len : (out_name_len - 1);
-            memcpy(out_name, payload, copy_len);
-            out_name[copy_len] = '\0';
-            return;
-        }
-        idx += (uint8_t)(field_len + 1);
-    }
-}
-
 static void normalize_name(const char *src, char *dst, size_t dst_len) {
     if (!dst || dst_len == 0) return;
     if (!src) {
@@ -1340,7 +1314,7 @@ static void normalize_name(const char *src, char *dst, size_t dst_len) {
 static bool match_device_target(const esp_ble_gap_cb_param_t *pr, const char *target_name,
                                 char *found_name, size_t found_name_len) {
     if (!pr) return false;
-    extract_adv_name(pr->scan_rst.ble_adv, pr->scan_rst.adv_data_len, pr->scan_rst.scan_rsp_len,
+    ble_adv_extract_name(pr->scan_rst.ble_adv, pr->scan_rst.adv_data_len, pr->scan_rst.scan_rsp_len,
                      found_name, found_name_len);
 
     if (target_name == NULL || target_name[0] == '\0') return true;
@@ -1432,6 +1406,10 @@ bool elm327_ble_send_ascii_blocking(const char *ascii_cmd)
             // 最多等 10ms（作为兜底），但 '>' 到达时 xTaskNotify 会提前唤醒
             ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10));
             waited_ms += 10;
+            // 喂狗: 这个等待循环本身可能跑到接近 3s(适配器无响应/协议探测连续多次超时时),
+            // TWDT 超时配置只有 5s, 之前这里不喂狗导致协议探测连续超时几次就会把 obd_poll
+            // 任务的看门狗喂饱触发重启(实测复现过)。
+            esp_task_wdt_reset();
         }
         if (!s_elm_ready) {
             ESP_LOGW(TAG, "Timeout (>3s) waiting previous response, forcing send: %s", ascii_cmd);
@@ -1474,7 +1452,7 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
         esp_ble_gap_cb_param_t *pr = param;
         if (pr->scan_rst.search_evt == ESP_GAP_SEARCH_INQ_RES_EVT) {
             char dev_name[32] = {0};
-            extract_adv_name(pr->scan_rst.ble_adv, pr->scan_rst.adv_data_len,
+            ble_adv_extract_name(pr->scan_rst.ble_adv, pr->scan_rst.adv_data_len,
                              pr->scan_rst.scan_rsp_len, dev_name, sizeof(dev_name));
 
             if (s_scan_only_mode) {
@@ -2261,6 +2239,12 @@ static void ble_ensure_init(void) {
     if (s_ble_inited) return;
     // 初始化 BLE 协议栈（不设目标名，仅初始化）
     elm327_ble_init_and_start(NULL, NULL);
+}
+
+// 供其他仅需要蓝牙外围广播(RaceChrono DIY / SkyGauge 配对)、暂不需要连接 OBD 设备的场景调用:
+// 幂等地把控制器+Bluedroid+GAP/GATTC 回调启起来，不发起任何 ELM327 扫描/连接。
+void elm327_ble_ensure_stack_init(void) {
+    ble_ensure_init();
 }
 
 void elm327_ble_scan_only_start(int duration_s, ble_scan_found_cb_t cb) {

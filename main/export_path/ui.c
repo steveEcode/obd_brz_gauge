@@ -14,6 +14,7 @@
 #include "bsp_obd_dsp/lcd_driver/ST77916.h"
 #include "bsp_obd_dsp/elm327_ble_client.h"
 #include "bsp_obd_dsp/espnow_link.h"
+#include "bsp_obd_dsp/gauge_pair_ble_client.h"
 #include "app_obd_dsp/vehicle_profiles.h"
 #include "app_obd_dsp/boot_block_player.h"
 #include "app_obd_dsp/boot_media_mount.h"
@@ -195,7 +196,8 @@ static uint16_t usSaveProtTimeCnt = 0; //OBD协议保存计时
 #define OIL_PRESS_TREND_POINTS 30
 #define OIL_PRESS_TREND_SAMPLE_MS 1000
 // 扫表进度仅在 LVGL 任务内推进; 主表 espnow TX 任务通过 ui_sweep_get_step() 只读广播。
-// 取值 0=关闭, 1~SWEEP_TOTAL=动画中。showroom 广播值(200+)由 espnow_link 自行编码, 不再复用此变量。
+// 取值: 0=关闭, 1~SWEEP_TOTAL=刷表动画中(从表原样镜像, 见 ui_showroom_set_page_from_sync),
+// 200~209=展厅模式当前 slot(展厅模式同样复用这个变量来编码广播值, 而不是另开一个)。
 static volatile int  s_sweep_step = 0;
 static int  s_sweep_bl_last = -1;       // 扫表期间已下发的背光(%), -1=非扫表态; 用于变化时才写LEDC及结束时恢复设定亮度
 static bool s_sweep_pending = false;    // BLE 在 Logo 期间连上，Logo 消失后再触发
@@ -382,10 +384,8 @@ static void boot_video_timer_cb(lv_timer_t *t)
     }
 }
 
-// 前向声明
+// 前向声明(ui_showroom_set_active/ui_showroom_set_page_from_sync 已在 ui.h 声明, 这里不用重复)
 static void showroom_handle_tap(void);
-void ui_showroom_set_active(bool en);
-void ui_showroom_set_page_from_sync(int sweep_step);
 
 // 主表 espnow TX 任务只读广播扫表进度; 从表不再回写(扫表由 OBD 缓存值自然跟随)。
 int  ui_sweep_get_step(void) { return s_sweep_step; }
@@ -423,6 +423,8 @@ void ui_showroom_set_page_from_sync(int sweep_step) {
         // 跟随主表 slot
         s_showroom_pending_slot = sweep_step - 200;
         if (!s_showroom_active) {
+            // 中途加入展厅模式: 先按 slot 0(Logo) 进入, 下一次主表广播的真实 slot 会
+            // 在很短时间内(~100ms)把它纠正过来, 这一下切换是预期内的短暂过渡, 不是 bug。
             s_showroom_pending_slot = -1;
             s_showroom_pending_enter = true;
             s_sweep_step = 0;
@@ -430,6 +432,10 @@ void ui_showroom_set_page_from_sync(int sweep_step) {
     } else if (sweep_step >= 100 && sweep_step < 200 && !s_showroom_active) {
         s_showroom_pending_enter = true;
         s_sweep_step = 0;
+    } else if (!s_showroom_active) {
+        // 0~SWEEP_TOTAL: 主表真实刷表进度(连 OBD 那一刻触发)。从表原样镜像(不自增,
+        // 由主表逐帧广播驱动), 使背光闪烁("同车三表一起闪")与主表保持同步。
+        s_sweep_step = (sweep_step > 0 && sweep_step <= SWEEP_TOTAL) ? sweep_step : 0;
     }
 }
 
@@ -629,18 +635,33 @@ void ui_chart_apply_source(void)
 // ===== 开机流程状态 =====
 static bool    s_boot_done = false;
 
+// 跳转到蓝牙扫描页并标记开机流程结束(未绑定主表的从表 / 未配置 OBD 设备的主表&单机, 共用这一段)
+static void boot_goto_ble_scan(void)
+{
+    if (ui_ScreenPageBLEScan == NULL) ui_ScreenPageBLEScan_screen_init();
+    lv_scr_load_anim(ui_ScreenPageBLEScan, LV_SCR_LOAD_ANIM_FADE_ON, 300, 0, true);
+    ui_ScreenPageLogo = NULL;
+    imageLogo = NULL;
+    s_boot_done = true;
+}
+
 // 开机结束进入默认页(Logo 超时 或 开机动画完成后调用)
 static void boot_enter_default_page(void)
 {
     const nvs_user_cfg_t *pg_cfg = nvs_cfg_get();
 
-    // 首次刷机无保存设备: 直接进 BLE 扫描页让用户手动选
-    if (pg_cfg->ble_device_name[0] == '\0') {
-        if (ui_ScreenPageBLEScan == NULL) ui_ScreenPageBLEScan_screen_init();
-        lv_scr_load_anim(ui_ScreenPageBLEScan, LV_SCR_LOAD_ANIM_FADE_ON, 300, 0, true);
-        ui_ScreenPageLogo = NULL;
-        imageLogo = NULL;
-        s_boot_done = true;
+    if (pg_cfg->device_role == ESPNOW_ROLE_SLAVE) {
+        // 从表: 尚未绑定主表 → 进蓝牙页配对(ui_ScreenPageBLEScan 会按角色自动进入 "FIND MASTER" 模式);
+        // 已绑定则什么都不做, 往下走跟主表一样的 default_page 分支, 直接显示仪表数据。
+        const uint8_t *bound_mac = espnow_link_get_bound_master_mac();
+        bool bound = (bound_mac[0] | bound_mac[1] | bound_mac[2] | bound_mac[3] | bound_mac[4] | bound_mac[5]) != 0;
+        if (!bound) {
+            boot_goto_ble_scan();
+            return;
+        }
+    } else if (pg_cfg->ble_device_name[0] == '\0') {
+        // 首次刷机无保存设备: 直接进 BLE 扫描页让用户手动选
+        boot_goto_ble_scan();
         return;
     }
 
@@ -663,6 +684,40 @@ static void boot_enter_default_page(void)
     imageLogo = NULL;
     s_boot_done = true;
     if(s_sweep_pending) { s_sweep_pending = false; s_sweep_step = 1; }  // 开机动画期间连上的刷表挂起, 全部播完进默认页此刻触发
+}
+
+// ---- "NO SIGNAL" 覆盖提示: 主表 OBD 蓝牙断开 / 从表收不到主表数据时, 盖在仪表页上方 ----
+// 断开是瞬时反映(ble_now 本身已经是"已连接"/"最近~2s内有数据"这个信号), 不需要额外计时。
+static lv_obj_t *s_no_signal_lbl = NULL;
+static void update_no_signal_overlay(bool signal_ok)
+{
+    lv_obj_t *act = lv_scr_act();
+    // 只在真正显示仪表数据的几个页面提示, 设置/扫描/开机动画等页面不需要
+    bool on_gauge_page = (act == ui_ScreenPageTemp || act == ui_ScreenPageInfo ||
+                           act == ui_ScreenPageOilPressure || act == ui_ScreenPageNeedle ||
+                           act == ui_ScreenPageGear || act == ui_ScreenPageRpm ||
+                           act == ui_ScreenPageSpeed);
+    bool show = s_boot_done && on_gauge_page && !signal_ok;
+
+    if (show) {
+        if (!s_no_signal_lbl) {
+            s_no_signal_lbl = lv_label_create(lv_layer_top());
+            lv_obj_clear_flag(s_no_signal_lbl, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_set_style_text_font(s_no_signal_lbl, &ui_font_FontTypoderSize16, LV_PART_MAIN);
+            lv_obj_set_style_text_color(s_no_signal_lbl, lv_color_hex(0xFF4D4D), LV_PART_MAIN);
+            lv_obj_set_style_bg_color(s_no_signal_lbl, lv_color_hex(0x000000), LV_PART_MAIN);
+            lv_obj_set_style_bg_opa(s_no_signal_lbl, 160, LV_PART_MAIN);
+            lv_obj_set_style_pad_hor(s_no_signal_lbl, 10, LV_PART_MAIN);
+            lv_obj_set_style_pad_ver(s_no_signal_lbl, 4, LV_PART_MAIN);
+            lv_obj_set_style_radius(s_no_signal_lbl, 6, LV_PART_MAIN);
+            lv_label_set_text(s_no_signal_lbl, "NO SIGNAL");
+            lv_obj_align(s_no_signal_lbl, LV_ALIGN_TOP_MID, 0, 34);
+        }
+        lv_obj_move_foreground(s_no_signal_lbl);
+        lv_obj_clear_flag(s_no_signal_lbl, LV_OBJ_FLAG_HIDDEN);
+    } else if (s_no_signal_lbl) {
+        lv_obj_add_flag(s_no_signal_lbl, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 void my_timerMain(lv_timer_t * timer)
@@ -724,6 +779,7 @@ void my_timerMain(lv_timer_t * timer)
         }
         s_prev_ble_connected = ble_now;
     }
+    if (!s_showroom_active) update_no_signal_overlay(ble_now);   // 展厅模式是假数据演示, 不提示无信号
 
     /* ---- Showroom 模式: 主表驱动 slot, 从表跟随 ---- */
     // 从表: 进入 showroom
@@ -834,10 +890,14 @@ void my_timerMain(lv_timer_t * timer)
         }
         usRpm   = obd_data_get_rpm();
         ucSpeed = obd_data_get_speed();
-        eGear   = calculate_gear(usRpm, ucSpeed);
+        // 优先用 CAN 直接解码的精确档位(部分车型支持, 127=无效); 无效或倒挡(-1, 当前
+        // 档位页没有 "R" 显示位, 和原来一样回退)时才用转速/车速估算的档位兜底。
+        int8_t decoded_gear = obd_data_get_gear();
+        eGear = (decoded_gear >= 0 && decoded_gear <= GEAR_8) ? (enGear)decoded_gear
+                                                               : calculate_gear(usRpm, ucSpeed);
     }
-    /*档位页面*/
-    {
+    /*档位页面: 只在这页真正显示时才刷新, 不在后台空跑*/
+    if (lv_scr_act() == ui_ScreenPageGear) {
         static const char *pGearNum[] = {"N","1","2","3","4","5","6","7","8"};
         static enGear s_last_gear_disp = GEAR_NEUTRAL;
         enGear g = (eGear <= GEAR_8) ? eGear : GEAR_8;
@@ -849,8 +909,8 @@ void my_timerMain(lv_timer_t * timer)
             lv_arc_set_value(ui_GearPageArcGearNumBack, (uint16_t)g * 100 / gc);
         }
     }
-    /*转速页面*/
-    {
+    /*转速页面: 同上, 只在页面激活时刷新*/
+    if (lv_scr_act() == ui_ScreenPageRpm) {
         static int32_t s_disp_rpm = 0;
         static int32_t s_last_rpm = -1;
         if (IN_SWEEP) { s_disp_rpm = usRpm; }
@@ -861,8 +921,8 @@ void my_timerMain(lv_timer_t * timer)
             lv_arc_set_value(ui_RpmPageArcRpmBack, (uint32_t)s_disp_rpm*100/SWEEP_RPM_PEAK);
         }
     }
-    /*速度页面*/
-    {
+    /*速度页面: 同上, 只在页面激活时刷新*/
+    if (lv_scr_act() == ui_ScreenPageSpeed) {
         static int32_t s_disp_spd = 0;
         static int32_t s_last_spd = -1;
         if (IN_SWEEP) { s_disp_spd = ucSpeed; }
@@ -952,11 +1012,14 @@ void my_timerMain(lv_timer_t * timer)
                 oil_pressure_trend_init();
                 s_oil_pressure_trend_tick = now;
             }
+            bool trend_updated = false;
             while ((now - s_oil_pressure_trend_tick) >= OIL_PRESS_TREND_SAMPLE_MS) {
                 oil_pressure_trend_push(cvalid ? (int16_t)s_disp_chart : CHART_INVALID);
                 s_oil_pressure_trend_tick += OIL_PRESS_TREND_SAMPLE_MS;
+                trend_updated = true;
             }
-            oil_pressure_chart_refresh();
+            // 趋势缓冲区只有真正采样一次(约每秒)才变化, 不必每个 timer tick 都整条曲线重绘
+            if (trend_updated) oil_pressure_chart_refresh();
         }
     }
 
@@ -1193,8 +1256,7 @@ void my_timerMain(lv_timer_t * timer)
 
     /* ---- 转速超限闪烁报警 ---- */
     {
-        uint16_t warn_thresh = user_cfg->rpm_warn_threshold;
-        if (warn_thresh < 1000) warn_thresh = 6000;
+        uint16_t warn_thresh = user_cfg->rpm_warn_threshold; // 已在 nvs_storage_init() 里夹紧到 [1000,...]/默认6000
         bool over = (!IN_SWEEP && user_cfg->rpm_warn_anim_en && usRpm >= warn_thresh);
         // 测试模式: 强制触发
         if (s_rpm_flash_test_ticks > 0) { over = true; s_rpm_flash_test_ticks--; }
@@ -1634,7 +1696,12 @@ void ui_event_ble_scan_background(lv_event_t * e)
     if(code == LV_EVENT_GESTURE){
         lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
         if(dir == LV_DIR_LEFT || dir == LV_DIR_RIGHT){
-            elm327_ble_scan_only_stop();
+            // 从表在这个页面跑的是配对扫描(gauge_pair_ble), 不是 OBD 扫描(elm327_ble); 划走时要停对应的那个。
+            if (nvs_cfg_get()->device_role == ESPNOW_ROLE_SLAVE) {
+                gauge_pair_ble_scan_stop();
+            } else {
+                elm327_ble_scan_only_stop();
+            }
             lv_indev_wait_release(lv_indev_get_act());
             _ui_screen_change(&ui_ScreenPageEasterEgg, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageEasterEgg_screen_init);
         }

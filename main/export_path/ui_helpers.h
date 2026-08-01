@@ -42,8 +42,6 @@ void _ui_slider_set_property(lv_obj_t * target, int id, int val);
 
 void _ui_screen_change(lv_obj_t ** target, lv_scr_load_anim_t fademode, int spd, int delay, void (*target_init)(void));
 
-void _ui_screen_delete(lv_obj_t ** target);
-
 void _ui_arc_increment(lv_obj_t * target, int val);
 
 void _ui_bar_increment(lv_obj_t * target, int val, int anm);
@@ -139,7 +137,9 @@ void _ui_spinbox_step(lv_obj_t * target, int val)
 void _ui_switch_theme(int val)
 ;
 
-
+// ---- 项目自定义 helper(非 SquareLine 生成, 多个 screen 共用的样式) ----
+lv_obj_t * ui_helpers_create_ring(lv_obj_t * parent, uint8_t border_width);
+void ui_helpers_style_dark_roller(lv_obj_t * r, const lv_font_t * font);
 
 #ifdef __cplusplus
 } /*extern "C"*/

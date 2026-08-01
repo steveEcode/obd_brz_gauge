@@ -291,9 +291,16 @@ void app_main(void)
 #endif
 
     if (dev_role == ESPNOW_ROLE_SLAVE) {
-        /* ---- 从表: 不连 ELM327, 只启动 ESP-NOW 接收, UI 显示主表广播的数据 ---- */
+        /* ---- 从表: 不连 ELM327, 只启动 ESP-NOW 接收, UI 显示主表广播的数据 ----
+           屏幕导航(未绑定主表→蓝牙配对页; 已绑定→正常开机流程)由 ui.c 的
+           boot_enter_default_page() 统一处理, 这里不用管。 */
         ESP_LOGI(TAG, "Device role: SLAVE (ESP-NOW receiver, no BLE/OBD)");
         espnow_link_start_slave();
+        {
+            const uint8_t *bm = espnow_link_get_bound_master_mac();
+            ESP_LOGI(TAG, "Bound master MAC at boot: %02x:%02x:%02x:%02x:%02x:%02x (0=unbound)",
+                     bm[0], bm[1], bm[2], bm[3], bm[4], bm[5]);
+        }
     } else {
         /* ---- 主表 / 单机: 都是 BLE OBD 全链路; 区别仅 ESP-NOW(=WiFi)是否启动 ----
            STANDALONE: 不启 WiFi/ESP-NOW, 现有(已选主/从)设备不受影响。 */
@@ -302,17 +309,22 @@ void app_main(void)
                  espnow_on ? "MASTER" : "STANDALONE",
                  espnow_on ? " + ESP-NOW broadcast" : ", no WiFi/ESP-NOW");
 
-        /* 8.1 启动 BLE OBD - 仅 NVS 有保存设备名时自动连; 否则等用户在扫描页手动选 */
+        /* 8.1 启动 BLE OBD - 仅 NVS 有保存设备名时自动连; 否则等用户在扫描页手动选。
+               MASTER 即使还没配置 OBD 设备, 也要把蓝牙栈启起来, 以便广播 SkyGauge 配对信号。 */
         const nvs_user_cfg_t *user_cfg = nvs_cfg_get();
         if (user_cfg->ble_device_name[0] != '\0') {
             ESP_LOGI(TAG, "BLE target device: %s", user_cfg->ble_device_name);
             elm327_ble_start_default(user_cfg->ble_device_name);
+        } else if (espnow_on) {
+            ESP_LOGI(TAG, "No saved BLE device, but MASTER needs BLE stack for SkyGauge pairing broadcast");
+            elm327_ble_ensure_stack_init();
         } else {
             ESP_LOGI(TAG, "No saved BLE device, waiting for user selection");
         }
 
-        /* 8.5 启动 RaceChrono BLE DIY 服务（仅 BT 栈已初始化时） */
-        if (user_cfg->ble_device_name[0] != '\0') {
+        /* 8.5 启动 RaceChrono BLE DIY 服务（仅 BT 栈已初始化时）——
+               MASTER 时该服务同时承载 SkyGauge 配对广播, 与是否已配置 OBD 设备无关。 */
+        if (user_cfg->ble_device_name[0] != '\0' || espnow_on) {
             vTaskDelay(pdMS_TO_TICKS(500));
             racechrono_ble_diy_start();
         }

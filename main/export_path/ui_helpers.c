@@ -56,14 +56,6 @@ void _ui_screen_change(lv_obj_t ** target, lv_scr_load_anim_t fademode, int spd,
     lv_scr_load_anim(*target, fademode, spd, delay, false);
 }
 
-void _ui_screen_delete(lv_obj_t ** target)
-{
-    if(*target == NULL) {
-        lv_obj_del(*target);
-        target = NULL;
-    }
-}
-
 void _ui_arc_increment(lv_obj_t * target, int val)
 {
     int old = lv_arc_get_value(target);
@@ -342,6 +334,44 @@ void _ui_switch_theme(int val)
 #ifdef UI_THEME_ACTIVE
     ui_theme_set(val);
 #endif
+}
+
+// ==================== 项目自定义 helper(非 SquareLine 生成) ====================
+// 多个 screen 手写重复的样式代码, 抽到这里共用。
+
+// 白色圆环边框(360x360, 居中, 静态圆形 border, 替代旋转 spinner 消除弧接缝缺口)。
+// border_width 大多数页面是 10, 少数(Info/Needle/OilPressure)是 8, 由调用方传入, 不写死。
+// 各 screen 原样调用后自行 lv_obj_move_foreground(), 这里不做前置/置顶处理。
+lv_obj_t * ui_helpers_create_ring(lv_obj_t * parent, uint8_t border_width)
+{
+    lv_obj_t *ring = lv_obj_create(parent);
+    lv_obj_set_size(ring, 360, 360);
+    lv_obj_set_align(ring, LV_ALIGN_CENTER);
+    lv_obj_clear_flag(ring, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(ring, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(ring, 0, LV_PART_MAIN);
+    lv_obj_set_style_border_color(ring, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_style_border_width(ring, border_width, LV_PART_MAIN);
+    lv_obj_set_style_border_opa(ring, 255, LV_PART_MAIN);
+    return ring;
+}
+
+// 深色滚轮共用配色/边框/圆角(白底黑字选中态), 只需传字体; 宽度/可见行数/手势屏蔽等
+// 结构性设置因页面而异, 仍由调用方自己设置。
+void ui_helpers_style_dark_roller(lv_obj_t * r, const lv_font_t * font)
+{
+    lv_obj_set_style_text_font(r, font, LV_PART_MAIN);
+    lv_obj_set_style_text_color(r, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(r, lv_color_hex(0x222222), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(r, 255, LV_PART_MAIN);
+    lv_obj_set_style_border_width(r, 1, LV_PART_MAIN);
+    lv_obj_set_style_border_color(r, lv_color_hex(0x444444), LV_PART_MAIN);
+    lv_obj_set_style_radius(r, 8, LV_PART_MAIN);
+    lv_obj_set_style_text_font(r, font, LV_PART_SELECTED);
+    lv_obj_set_style_text_color(r, lv_color_hex(0x000000), LV_PART_SELECTED);
+    lv_obj_set_style_bg_color(r, lv_color_hex(0xFFFFFF), LV_PART_SELECTED);
+    lv_obj_set_style_bg_opa(r, 255, LV_PART_SELECTED);
 }
 
 

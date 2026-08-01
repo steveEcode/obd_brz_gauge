@@ -18,28 +18,12 @@ static volatile int16_t  s_intake_temp = -40;
 static volatile int16_t  s_load_pct = -1;   // 发动机负荷 0~100%, -1=无效
 static volatile int16_t  s_tps = -1;         // 节气门开度 0~100%, -1=无效
 static volatile int32_t  s_bat_mv = -1;     // 电压 mV, -1=无效
-static volatile uint32_t s_dirty_flags = OBD_DIRTY_ALL;  // 初始全 dirty
 static volatile int16_t  s_oil_pressure_x10 = -1; // 油压, 0.1bar, -1=无效
 static volatile int16_t  s_brake_temp_x10 = -1000; // 刹车温度, 0.1°C, -1000=无效
 static volatile int16_t  s_boost_x10 = -32768; // 涡轮表压, 0.1bar(可为负=真空), -32768=无效
 static volatile int8_t   s_gear = 127;          // 直接档位: -1=R, 0=N, 1+=前进挡, 127=无效
 static volatile brake_rs485_status_t s_brake_rs485_status = BRAKE_RS485_IDLE;
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
-
-#define SET_DIRTY(flag) do { portENTER_CRITICAL(&s_mux); s_dirty_flags |= (flag); portEXIT_CRITICAL(&s_mux); } while(0)
-
-uint32_t obd_data_take_dirty(void) {
-    uint32_t f;
-    portENTER_CRITICAL(&s_mux);
-    f = s_dirty_flags;
-    s_dirty_flags = 0;
-    portEXIT_CRITICAL(&s_mux);
-    return f;
-}
-
-void obd_data_mark_all_dirty(void) {
-    SET_DIRTY(OBD_DIRTY_ALL);
-}
 
 #define RPM_SMOOTH_TIME_MS   100   // 转速时间常数 (ms); CAN 100Hz 下 ~300ms 达 95%
 #define SPEED_SMOOTH_TIME_MS 300   // 速度缓升缓降时间常数 (ms); UI 侧已有 anim_step, 此处不宜过大
@@ -70,7 +54,6 @@ void obd_data_set_rpm(uint16_t rpm)
     s_rpm = rpm;
     s_rpm_smooth = smoothed;
     portEXIT_CRITICAL(&s_mux);
-    SET_DIRTY(OBD_DIRTY_RPM);
 }
 
 void obd_data_set_speed(uint8_t kmh)
@@ -90,7 +73,6 @@ void obd_data_set_speed(uint8_t kmh)
     s_speed = kmh;
     s_speed_smooth = smoothed;
     portEXIT_CRITICAL(&s_mux);
-    SET_DIRTY(OBD_DIRTY_SPEED);
 }
 
 void obd_data_set_coolant_temp(int16_t temp)
@@ -98,7 +80,6 @@ void obd_data_set_coolant_temp(int16_t temp)
     portENTER_CRITICAL(&s_mux);
     s_coolant_temp = temp;
     portEXIT_CRITICAL(&s_mux);
-    SET_DIRTY(OBD_DIRTY_COOLANT);
 }
 
 void obd_data_set_oil_temp(int16_t temp)
@@ -108,7 +89,6 @@ void obd_data_set_oil_temp(int16_t temp)
     portENTER_CRITICAL(&s_mux);
     s_oil_temp = temp;
     portEXIT_CRITICAL(&s_mux);
-    SET_DIRTY(OBD_DIRTY_OIL_TEMP);
 }
 
 void obd_data_set_intake_temp(int16_t temp)
@@ -116,7 +96,6 @@ void obd_data_set_intake_temp(int16_t temp)
     portENTER_CRITICAL(&s_mux);
     s_intake_temp = temp;
     portEXIT_CRITICAL(&s_mux);
-    SET_DIRTY(OBD_DIRTY_INTAKE);
 }
 
 // 转速/速度: 平滑已在 setter 侧完成, getter 直接返回平滑值(多调用者安全)
@@ -170,7 +149,6 @@ void obd_data_set_load_pct(int16_t pct)
     portENTER_CRITICAL(&s_mux);
     s_load_pct = pct;
     portEXIT_CRITICAL(&s_mux);
-    SET_DIRTY(OBD_DIRTY_LOAD);
 }
 
 int16_t obd_data_get_load_pct(void)
@@ -187,7 +165,6 @@ void obd_data_set_tps(int16_t pct)
     portENTER_CRITICAL(&s_mux);
     s_tps = pct;
     portEXIT_CRITICAL(&s_mux);
-    SET_DIRTY(OBD_DIRTY_TPS);
 }
 
 int16_t obd_data_get_tps(void)
@@ -204,7 +181,6 @@ void obd_data_set_bat_mv(int32_t mv)
     portENTER_CRITICAL(&s_mux);
     s_bat_mv = mv;
     portEXIT_CRITICAL(&s_mux);
-    SET_DIRTY(OBD_DIRTY_BAT);
 }
 
 int32_t obd_data_get_bat_mv(void)
@@ -223,7 +199,6 @@ void obd_data_set_oil_pressure_x10(int16_t pressure_x10)
     portENTER_CRITICAL(&s_mux);
     s_oil_pressure_x10 = pressure_x10;
     portEXIT_CRITICAL(&s_mux);
-    SET_DIRTY(OBD_DIRTY_OIL_PRESS);
 }
 
 int16_t obd_data_get_oil_pressure_x10(void)
@@ -242,7 +217,6 @@ void obd_data_set_boost_x10(int16_t boost_x10)
     portENTER_CRITICAL(&s_mux);
     s_boost_x10 = boost_x10;
     portEXIT_CRITICAL(&s_mux);
-    SET_DIRTY(OBD_DIRTY_BOOST);
 }
 
 int16_t obd_data_get_boost_x10(void)
@@ -261,7 +235,6 @@ void obd_data_set_brake_temp_x10(int16_t temp_x10)
     portENTER_CRITICAL(&s_mux);
     s_brake_temp_x10 = temp_x10;
     portEXIT_CRITICAL(&s_mux);
-    SET_DIRTY(OBD_DIRTY_BRAKE_TEMP);
 }
 
 void obd_data_set_brake_rs485_status(brake_rs485_status_t status)
@@ -269,7 +242,6 @@ void obd_data_set_brake_rs485_status(brake_rs485_status_t status)
     portENTER_CRITICAL(&s_mux);
     s_brake_rs485_status = status;
     portEXIT_CRITICAL(&s_mux);
-    SET_DIRTY(OBD_DIRTY_BRAKE_TEMP);
 }
 
 int16_t obd_data_get_brake_temp_x10(void)
@@ -281,21 +253,11 @@ int16_t obd_data_get_brake_temp_x10(void)
     return val;
 }
 
-brake_rs485_status_t obd_data_get_brake_rs485_status(void)
-{
-    brake_rs485_status_t val;
-    portENTER_CRITICAL(&s_mux);
-    val = s_brake_rs485_status;
-    portEXIT_CRITICAL(&s_mux);
-    return val;
-}
-
 void obd_data_set_gear(int8_t gear)
 {
     portENTER_CRITICAL(&s_mux);
     s_gear = gear;
     portEXIT_CRITICAL(&s_mux);
-    SET_DIRTY(OBD_DIRTY_GEAR);
 }
 
 int8_t obd_data_get_gear(void)
