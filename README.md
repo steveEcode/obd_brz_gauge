@@ -16,22 +16,22 @@ https://www.douyin.com/video/7614174567678984187
 - Hardware platform: Waveshare ESP32-S3-Touch-LCD-1.85
 - Software stack: ESP-IDF 5.5.3, LVGL 8
 - Protocol path: BLE + ELM327 (standard OBD PID + CAN broadcast frame ATMA monitoring)
-- Vehicle profiles: BRZ ZC6 CAN / ZD8 CAN, Toyota GT86 ZN6, Mazda MX-5 ND, BMW G-series, Porsche 987.1/997.1/997.2, MINI JCW F56, OBD2 Generic
+- Vehicle profiles: BRZ ZC/N6 CAN / ZD8 CAN, Mazda MX-5 ND, BMW G-series, Porsche 987.1/997.1/997.2, MINI JCW F56, OBD2 Generic
 - Multi-gauge: one master + multiple slaves linked over ESP-NOW
-- Validation status: fully verified on Subaru BRZ ZC6; other profiles are configured and may still need on-car verification
+- Validation status: fully verified on Subaru BRZ ZC/N6; other profiles are configured and may still need on-car verification
 
 - 硬件平台：微雪 Waveshare ESP32-S3-Touch-LCD-1.85
 - 软件栈：ESP-IDF 5.5.3、LVGL 8
 - 通信链路：BLE + ELM327（标准 OBD PID + CAN 广播帧 ATMA 监听）
-- 已内置车型：BRZ ZC6 CAN / ZD8 CAN、丰田 GT86 ZN6、马自达 MX-5 ND、宝马 G 系、保时捷 987.1/997.1/997.2、MINI JCW F56、OBD2 通用
+- 已内置车型：BRZ ZC/N6 CAN / ZD8 CAN、马自达 MX-5 ND、宝马 G 系、保时捷 987.1/997.1/997.2、MINI JCW F56、OBD2 通用
 - 三连表：一主多从，通过 ESP-NOW 联动
-- 当前验证状态：已在斯巴鲁 BRZ ZC6 上完整验证；其余车型已配置，部分仍需上车验证
+- 当前验证状态：已在斯巴鲁 BRZ ZC/N6 上完整验证；其余车型已配置，部分仍需上车验证
 
 ## Features
 
 - BLE scan and connection for ELM327-compatible adapters
 - **CAN broadcast frame ATMA monitoring**: bypasses standard OBD PID polling for high-frequency data — RPM at 100 Hz, oil/coolant temp at 10–20 Hz, with periodic OBD fallback for remaining channels (speed, load, voltage, intake temp)
-  - ZC6 (Gen1): 0x140 (RPM + TPS) + 0x360 (oil + coolant temp)
+  - ZC/N6 (Gen1): 0x140 (RPM + TPS) + 0x360 (oil + coolant temp)
   - ZD8 (Gen2): 0x40 (RPM + TPS) + 0x345 (oil + coolant temp)
 - **Custom boot logo & boot media playback**: configurable boot logo with multi-block animation, SPIFFS-mounted bootmedia partition for rich startup sequences
 - **Unified vehicle configuration system**: compile-time `vehicle_custom_config.h` for per-vehicle thresholds, warnings, and gauge ranges
@@ -50,7 +50,7 @@ https://www.douyin.com/video/7614174567678984187
 
 - 支持扫描并连接兼容 ELM327 的 BLE OBD 设备
 - **CAN 广播帧 ATMA 监听**：绕过标准 OBD PID 轮询，高频直读 — 转速 100Hz、油温/水温 10–20Hz，其余通道（车速/负荷/电压/进气温）定期 OBD 回退查询
-  - ZC6 (Gen1)：0x140（转速+节气门）+ 0x360（油温+水温）
+  - ZC/N6 (Gen1)：0x140（转速+节气门）+ 0x360（油温+水温）
   - ZD8 (Gen2)：0x40（转速+节气门）+ 0x345（油温+水温）
 - **自定义开机图 & 开机动画**：可配置开机 Logo，支持多 Block 动画播放，SPIFFS 分区挂载 bootmedia 实现丰富开机流程
 - **统一车辆配置系统**：编译时 `vehicle_custom_config.h` 管理各车型阈值、报警、表盘范围
@@ -178,10 +178,10 @@ Root-caused a board reboot seen during testing: the blocking wait for an ELM327 
 ## Notes
 
 - This repository contains project-specific board adaptation and UI resources; if you port it to another ESP32-S3 board or another vehicle, you will likely need to adjust pin mapping, display settings, and OBD parsing behavior.
-- The current parsing and verification focus on Subaru BRZ ZC6. Other vehicles may require protocol, PID, or adapter compatibility adjustments.
+- The current parsing and verification focus on Subaru BRZ ZC/N6. Other vehicles may require protocol, PID, or adapter compatibility adjustments.
 
 - 仓库内包含针对当前开发板的适配代码和 UI 资源；如果迁移到其他 ESP32-S3 开发板或其他车型，需要重新检查引脚定义、屏幕参数和 OBD 解析逻辑。
-- 当前解析和验证重点面向 Subaru BRZ ZC6，其他车型可能需要额外调整协议、PID 或适配器兼容性。
+- 当前解析和验证重点面向 Subaru BRZ ZC/N6，其他车型可能需要额外调整协议、PID 或适配器兼容性。
 
 ## 3D Models (开源模型)
 
@@ -192,8 +192,8 @@ The `model/` directory contains open-source 3D printable files for mounting the 
 | File | Description |
 |------|-------------|
 | `model/esp32_1.85_weixue/housing.stl` | ESP32-S3-Touch-LCD-1.85 board housing / 开发板外壳 |
-| `model/Subaru/brz_zc6/triple_gauge_pod.stp` | BRZ ZC6 triple gauge pod (3× 1.85" round) / 三连表底座 |
-| `model/Subaru/brz_zc6/passenger_dashboard_scan.stl` | BRZ ZC6 passenger dashboard scan (for fitting reference) / 副驾仪表台扫描件 |
+| `model/Subaru/brz_zc_n6/triple_gauge_pod.stp` | BRZ ZC/N6 triple gauge pod (3× 1.85" round) / 三连表底座 |
+| `model/Subaru/brz_zc_n6/passenger_dashboard_scan.stl` | BRZ ZC/N6 passenger dashboard scan (for fitting reference) / 副驾仪表台扫描件 |
 | `model/mazda/mx5_nd/air_vent_bracket.stl` | MX-5 ND air vent mount bracket / 出风口支架 |
 
 ## Acknowledgments

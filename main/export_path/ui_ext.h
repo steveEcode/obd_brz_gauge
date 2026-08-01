@@ -14,7 +14,7 @@
 extern "C" {
 #endif
 
-// 每 100ms 由 my_timerMain 调用一次
+// 每 50ms 由 my_timerMain 调用一次
 void ui_ext_tick(void);
 
 // 初始化 (app_main 中 ui_init 之后调用)

@@ -25,34 +25,21 @@ static volatile int8_t   s_gear = 127;          // 直接档位: -1=R, 0=N, 1+=�
 static volatile brake_rs485_status_t s_brake_rs485_status = BRAKE_RS485_IDLE;
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 
-#define RPM_SMOOTH_TIME_MS   100   // 转速时间常数 (ms); CAN 100Hz 下 ~300ms 达 95%
+#define RPM_SMOOTH_TIME_MS   30    // 已废弃: RPM 直出无需平滑, 保留以兼容旧引用
 #define SPEED_SMOOTH_TIME_MS 300   // 速度缓升缓降时间常数 (ms); UI 侧已有 anim_step, 此处不宜过大
 #define FALL_TO_ZERO_MS      500   // 归零缓降时间常数 (ms)
 
 // 平滑状态(在 setter 侧推进, getter 只读, 不受调用者数量影响)
 static volatile uint16_t s_rpm_smooth = 0;
 static volatile uint8_t  s_speed_smooth = 0;
-static TickType_t s_rpm_last_tick = 0;
 static TickType_t s_speed_last_tick = 0;
-static float s_rpm_smooth_f = 0.f;
 static float s_speed_smooth_f = 0.f;
 
 void obd_data_set_rpm(uint16_t rpm)
 {
-    TickType_t now_tick = xTaskGetTickCount();
-    uint32_t dt_ms = (now_tick - s_rpm_last_tick) * portTICK_PERIOD_MS;
-    if (dt_ms > 1000) dt_ms = 1000;
-    s_rpm_last_tick = now_tick;
-
-    uint32_t tc = (rpm == 0) ? FALL_TO_ZERO_MS : RPM_SMOOTH_TIME_MS;
-    float alpha = (float)dt_ms / (float)tc;
-    if (alpha > 1.0f) alpha = 1.0f;
-    s_rpm_smooth_f += alpha * ((float)rpm - s_rpm_smooth_f);
-
-    uint16_t smoothed = (uint16_t)(s_rpm_smooth_f + 0.5f);
     portENTER_CRITICAL(&s_mux);
     s_rpm = rpm;
-    s_rpm_smooth = smoothed;
+    s_rpm_smooth = rpm;  // CAN 100Hz 数据已经干净，不需要平滑
     portEXIT_CRITICAL(&s_mux);
 }
 

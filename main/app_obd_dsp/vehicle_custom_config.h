@@ -78,7 +78,7 @@ static const can_rule_t can_rules_zc6[] = {
     { 0x140, 48,  8, 100.0f/255,  0.0f, CH_TPS },       // 节气门 byte6
     { 0x360, 16,  8, 1.0f,      -40.0f, CH_OIL_TEMP },  // 油温 byte2
     { 0x360, 24,  8, 1.0f,      -40.0f, CH_COOLANT },   // 水温 byte3
-    { 0x0D1,  0, 16, 0.015694f,   0.0f, CH_SPEED },     // 车速 bytes0-1 LE
+    // 车速走 OBD PID 01 0D, 不走 CAN 0x0D1 (避免静止噪声导致非零爬升)
 };
 
 // BMW G-series (G20/G21/G22/G80/G82) PT-CAN
@@ -175,9 +175,9 @@ static const oil_formula_t oil_porsche_9971 = {
 // ================================================================
 static const vehicle_override_t s_vehicle_overrides[] = {
     {
-        .match_name      = "ZC6 CAN",
+        .match_name      = "ZC/N6",
         .can_rules       = can_rules_zc6,
-        .can_rule_count  = 5,
+        .can_rule_count  = 4,   // 转速/TPS/油温/水温, 车速走 OBD
         .oil_primary     = &oil_toyota_21,
         .forced_protocol = 6,
         .poll_gap_ms     = 1,
@@ -189,11 +189,6 @@ static const vehicle_override_t s_vehicle_overrides[] = {
         .oil_primary     = &oil_std_5c,
         .forced_protocol = 6,
         .poll_gap_ms     = 1,
-    },
-    {
-        .match_name      = "GT86 ZN6",
-        .oil_primary     = &oil_toyota_21,
-        .oil_secondary   = &oil_std_5c,
     },
     {
         .match_name      = "MX-5 ND",

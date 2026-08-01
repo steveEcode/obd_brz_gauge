@@ -72,10 +72,6 @@ static int s_mode21_oil_idx = 33;        // Mode21 机油温字节索引，自�
 static int16_t s_last_mode21_oil = -100; // 上次Mode21解析出的油温
 static int s_mode21_hold_cnt = 0;        // ZC6 一致性 hold 计数；持续噪声帧数，超阈值才采纳新值
 static int64_t s_last_mode21_oil_us = 0; // 上次接受油温值的时间戳(us)
-// GT86 Mode21 油温字节距响应末尾的固定偏移: 满帧 count=31 时油温在 d[27] -> 31-27=4。
-// ECU 有时会省略尾部若干可选字节导致总长度变化(如 31 -> 30)，用"距末尾偏移"而非绝对下标定位，
-// 使其自动适配任意总长度，不受截断/多帧长度波动影响。
-#define GT86_MODE21_OIL_TAIL_OFFSET 4
 
 // ---- 基于车型的油温查询策略 ----
 static oil_temp_query_mode_t s_oil_mode_priority[4] = {
@@ -124,7 +120,7 @@ static int8_t s_oil_temp_offset = 0;  // 用户校准偏移量，单位 °C
 static volatile bool s_elm_ready = true; // 初始允许发送首条 ATZ
 static volatile bool s_expect_mode21 = false; // true=上条命令是 21 01，等待 61 01 响应
 static volatile bool s_porsche_441_seen = false; // 本次监听是否成功解析到 0x441 帧
-static volatile bool s_zc6_can_rpm_seen = false; // 本次监听是否成功解析到 0x140 帧(ZC6/GT86 CAN RPM)
+static volatile bool s_zc6_can_rpm_seen = false; // 本次监听是否成功解析到 0x140 帧(ZC/N6 CAN RPM)
 static uint8_t s_can_rpm_fail_count = 0;         // CAN 140 连续失败计数
 #define CAN_RPM_FAIL_THRESHOLD 3                  // 连续失败此次数后回退 01 0C
 
@@ -201,15 +197,8 @@ static void init_oil_temp_strategy(void) {
     s_oil_override_fail = 0;
 
     if (s_oil_mode_priority[0] == OIL_TEMP_MODE_TOYOTA_21_01) {
-        // 根据车型设置固定的 mode21 油温索引
-        uint8_t vehicle_idx = get_active_vehicle_idx_safe();
-        if (vehicle_idx == 1) {
-            s_mode21_oil_idx = 33; // ZC6 固定 d[33]
-        } else if (vehicle_idx == 3) {
-            s_mode21_oil_idx = 27; // GT86 ZN6 固定 d[27]
-        } else {
-            s_mode21_oil_idx = 33; // 其他 Toyota 默认 d[33]
-        }
+        // ZC/N6 固定 d[33]
+        s_mode21_oil_idx = 33;
     }
     s_last_mode21_oil = -100;
     s_last_mode21_oil_us = 0;
@@ -442,6 +431,12 @@ static void default_on_parsed_speed(uint8_t kmh) {
     float sc = (p && p->speed_scale > 0.0f) ? p->speed_scale : 1.0f;
     int32_t v = (int32_t)((float)kmh * sc + 0.5f);
     if (v > 255) v = 255;
+    // CAN 车型: 转速<800时强制车速=0, 避免静止时CAN总线噪声导致车速非零爬升
+    const vehicle_profile_t *vp = vehicle_profile_get_active();
+    if (vp && vp->can_broadcast_mode && obd_data_get_rpm() < 800)
+        v = 0;
+    // 所有车型: ≤2km/h 视为静止, 避免低速噪声
+    if (v <= 2) v = 0;
     ESP_LOGD(TAG, "SPEED: %u -> %d km/h (x%.4f)", kmh, (int)v, sc);
     obd_data_set_speed((uint8_t)v);
 }
@@ -476,7 +471,7 @@ static void default_on_parsed_oil_temp(uint32_t oil_temp)
     s_oil_diag.last_raw_temp = in;
 
     if (in < -20 || in > 150) {
-        ESP_LOGW(TAG, "OIL: Out of range raw=%d", in);
+        ESP_LOGD(TAG, "OIL: Out of range raw=%d", in);
         return;
     }
 
@@ -579,6 +574,13 @@ static void default_on_parsed_manifold_pressure(uint32_t map_kpa) {
 // 帧解析在通知回调里(见 "441 " 分支)；本函数只负责按时序下发监听指令。
 // 注意：监听模式与普通请求/应答不同，且依赖适配器(廉价克隆可能不支持 ATMA/ATCRA)。
 static void porsche_read_can_441(void) {
+    // 油温/油压变化慢(以分钟为单位), 不需要每轮都做这次 520ms 阻塞式 CAN 监听。
+    // 隔几轮跳过一次, 省下来的时间让 RPM/其它槽转得更快, 显示保持上次读数即可。
+    const uint8_t skip_rounds = 4;
+    static uint8_t s_round = 0;
+    if (++s_round < skip_rounds) return;
+    s_round = 0;
+
     elm327_ble_send_ascii_blocking("AT CRA 441\r"); // 接收过滤：只收 ID=0x441
     elm327_ble_send_ascii_blocking("AT H1\r");        // 帧头打开：监听输出带 ID，便于识别 441
     // 启动监听（ATMA 持续刷帧、不产生 '>'，手动管理 ready 标志）
@@ -602,8 +604,8 @@ static void porsche_read_can_441(void) {
     elm327_ble_send_ascii_blocking("AT AR\r");
 }
 
-// ZC6/GT86：转速在 CAN 广播帧 0x140 (bits 16-29, 14bit LE, 直接 rpm)。
-// ---- ZC6 CAN 持续监听: 进入/退出/逐字节喂入/逐行解析 ----
+// ZC/N6：转速在 CAN 广播帧 0x140 (bits 16-29, 14bit LE, 直接 rpm)。
+// ---- ZC/N6 CAN 持续监听: 进入/退出/逐字节喂入/逐行解析 ----
 
 static void zc6_can_monitor_enter(void)
 {
@@ -625,7 +627,7 @@ static void zc6_can_monitor_enter(void)
     }
     s_zc6_can_monitor_active = true;
     s_zc6_can_monitor_entered_us = esp_timer_get_time();
-    ESP_LOGI(TAG, "[ZC6 CAN] Entered ATMA monitor (0x140/141/0D1)");
+    ESP_LOGI(TAG, "[ZC/N6 CAN] Entered ATMA monitor (0x140/141/0D1)");
 }
 
 static void zc6_can_monitor_exit(void)
@@ -640,10 +642,10 @@ static void zc6_can_monitor_exit(void)
     // 轻量还原: 清过滤+关帧头, 不做 ATZ 全复位 (省 ~500ms)
     elm327_ble_send_ascii_blocking("AT AR\r");
     elm327_ble_send_ascii_blocking("AT H0\r");
-    ESP_LOGI(TAG, "[ZC6 CAN] Exited ATMA (light restore)");
+    ESP_LOGI(TAG, "[ZC/N6 CAN] Exited ATMA (light restore)");
 }
 
-// 逐行解析: ZC6(0x140/0x360) + ZD8(0x40/0x345), 总线无此帧自动跳过
+// 逐行解析: ZC/N6(0x140/0x360) + ZD8(0x40/0x345), 总线无此帧自动跳过
 static bool zc6_can_monitor_parse_line(const char *line)
 {
     // 通用 CAN 帧解析: 从 ATMA 行提取 CAN ID + 数据, 应用 override 规则
@@ -707,9 +709,9 @@ static bool zc6_can_monitor_parse_line(const char *line)
             s_cbs.on_parsed_rpm((uint16_t)channels[CH_RPM]);
         if (channels[CH_SPEED] >= 0 && s_cbs.on_parsed_speed_kmh)
             s_cbs.on_parsed_speed_kmh((uint8_t)channels[CH_SPEED]);
-        if (channels[CH_OIL_TEMP] >= -40 && channels[CH_OIL_TEMP] <= 215 && s_cbs.on_parsed_oil_temp)
+        if (channels[CH_OIL_TEMP] > -40 && channels[CH_OIL_TEMP] <= 215 && s_cbs.on_parsed_oil_temp)
             s_cbs.on_parsed_oil_temp((uint32_t)(int16_t)channels[CH_OIL_TEMP]);
-        if (channels[CH_COOLANT] >= -40 && channels[CH_COOLANT] <= 215 && s_cbs.on_parsed_coolant_temp)
+        if (channels[CH_COOLANT] > -40 && channels[CH_COOLANT] <= 215 && s_cbs.on_parsed_coolant_temp)
             s_cbs.on_parsed_coolant_temp((uint32_t)(int16_t)channels[CH_COOLANT]);
         if (channels[CH_TPS] >= 0 && s_cbs.on_parsed_throttle_position)
             s_cbs.on_parsed_throttle_position((uint32_t)channels[CH_TPS]);
@@ -835,9 +837,9 @@ static void obd_poll_task(void *arg) {
             continue;
         }
         // 数据正常流动 → 清零自愈计数
-        if ((esp_timer_get_time() - s_last_obd_valid_us) < 2000000) heal_attempts = 0;
-        // 自愈: 连续 >5s 收不到任何有效数据(没响应/SEARCHING/UNABLE TO CONNECT/NO DATA 全覆盖)。
-        if ((esp_timer_get_time() - s_last_obd_valid_us) > 5000000) {
+        if ((esp_timer_get_time() - s_last_obd_valid_us) < 10000000) heal_attempts = 0;
+        // 自愈: 连续 >10s 收不到任何有效数据(没响应/SEARCHING/UNABLE TO CONNECT/NO DATA 全覆盖)。
+        if ((esp_timer_get_time() - s_last_obd_valid_us) > 10000000) {
             s_last_obd_valid_us = esp_timer_get_time();
             heal_attempts++;
             if (heal_attempts >= 3) {
@@ -854,13 +856,13 @@ static void obd_poll_task(void *arg) {
             inited = false;
             continue;
         }
-        // ---- ZC6 CAN 模式: 转速走 CAN 0x140, 其余走标准 OBD (和普通 BRZ ZC6 完全一致) ----
+        // ---- ZC/N6 CAN 模式: 转速走 CAN 0x140, 其余走标准 OBD (和普通 ZC/N6 完全一致) ----
         // 两阶段: ATMA 监听转速 → 每 N 轮退出, 跑一轮完整标准 OBD 轮询 → 再回 ATMA
         const vehicle_profile_t *vp_poll = vehicle_profile_get_active();
         bool can_broadcast = vp_poll && vp_poll->can_broadcast_mode;
-        static bool s_zc6_can_obd_phase = false;  // true=正在跑标准 OBD 轮询
+        static bool s_zc_can_obd_phase = false;  // true=正在跑标准 OBD 轮询
 
-        if (can_broadcast && !s_zc6_can_obd_phase) {
+        if (can_broadcast && !s_zc_can_obd_phase) {
             // ---- ATMA 阶段: 只收 0x140 转速 ----
             if (!s_zc6_can_monitor_active) {
                 zc6_can_monitor_enter();
@@ -868,8 +870,8 @@ static void obd_poll_task(void *arg) {
             }
             // 自愈
             if (s_zc6_can_monitor_entered_us > 0 &&
-                (esp_timer_get_time() - s_last_obd_valid_us) > 5000000) {
-                ESP_LOGW(TAG, "[ZC6 CAN] No data >5s, re-enter ATMA");
+                (esp_timer_get_time() - s_last_obd_valid_us) > 10000000) {
+                ESP_LOGW(TAG, "[ZC/N6 CAN] No data >10s, re-enter ATMA");
                 zc6_can_monitor_exit();
                 zc6_can_monitor_enter();
                 s_zc6_can_monitor_obd_cycle = 0;
@@ -880,18 +882,18 @@ static void obd_poll_task(void *arg) {
             if (s_zc6_can_monitor_obd_cycle >= ZC6_CAN_OBD_INTERVAL) {
                 // 切换到 OBD 阶段
                 zc6_can_monitor_exit();
-                s_zc6_can_obd_phase = true;
+                s_zc_can_obd_phase = true;
                 tick_count = 1;  // 从 slot1 开始, 跳过 slot0(RPM 已由 CAN 提供)
             }
             vTaskDelay(pdMS_TO_TICKS(120));
             continue;
         }
 
-        // ---- 标准 OBD 轮询 (ZC6 CAN 的 OBD 阶段 或 非 CAN 车型) ----
-        // 完全复用下面的 switch(tick_count), 和普通 BRZ ZC6 一模一样
-        if (can_broadcast && s_zc6_can_obd_phase && tick_count == 0) {
+        // ---- 标准 OBD 轮询 (ZC/N6 CAN 的 OBD 阶段 或 非 CAN 车型) ----
+        // 完全复用下面的 switch(tick_count), 和普通 ZC/N6 一模一样
+        if (can_broadcast && s_zc_can_obd_phase && tick_count == 0) {
             // 一轮标准 OBD 跑完, 回到 ATMA 阶段
-            s_zc6_can_obd_phase = false;
+            s_zc_can_obd_phase = false;
             zc6_can_monitor_enter();
             s_zc6_can_monitor_obd_cycle = 0;
             vTaskDelay(pdMS_TO_TICKS(120));
@@ -1018,6 +1020,14 @@ static void obd_poll_task(void *arg) {
                 break;
         }
 
+        // RPM 提频: 标准 OBD 轮询车型下, 转速不应该被绑定在整轮(9槽)周期上才刷新一次。
+        // slot0 本身已经查过 RPM, 这里给 slot1~8 每槽后面都补插一次 01 0C,
+        // 转速刷新间隔从"一整轮"降到"一个槽", 其它慢变量(温度/电压等)刷新节奏不变。
+        // CAN 广播车型转速走 ATMA 直通, 不需要(也不应该, 会和 ATMA 抢总线)。
+        if (!can_broadcast && tick_count != 0) {
+            elm327_ble_send_ascii_blocking("01 0C\r");
+        }
+
         tick_count++;
         if(tick_count >= 9)
         {
@@ -1085,9 +1095,8 @@ static int parse_mode21_data(const char *buf, uint32_t *out, int max_out) {
     return count;
 }
 
-// 从 Mode21 数据中提取机油温字节（以 BRZ ZC6 和 GT86 ZN6 为参考）
-// ZC6: 永远只用 d[33]，不进入自适应搜索（自适应搜索可能误选其他字节导致跳到 60/70°C）
-// GT86: 永远只用 d[27]，不进入自适应搜索
+// 从 Mode21 数据中提取机油温字节（以 ZC/N6 为参考）
+// ZC/N6: 永远只用 d[33]，不进入自适应搜索（自适应搜索可能误选其他字节导致跳到 60/70°C）
 static bool extract_mode21_oil_temp(const uint32_t *d, int count, int32_t *oil_c) {
     if (!d || count <= 0 || !oil_c) return false;
 
@@ -1095,19 +1104,19 @@ static bool extract_mode21_oil_temp(const uint32_t *d, int count, int32_t *oil_c
 
     ESP_LOGD(TAG, "Mode21 extract: total_count=%d, coolant=%d", count, coolant);
 
-    // ---- ZC6: 用尾部偏移定位(同GT86思路), 适配38/39字节两种响应长度 ----
+    // ---- ZC/N6: 用尾部偏移定位, 适配38/39字节两种响应长度 ----
     // 38字节时油温在d[33]=d[38-5]; 39字节时在d[34]=d[39-5]。固定d[33]在39字节帧会读到错误字节。
     if (get_active_vehicle_idx_safe() == 1) {
-        #define ZC6_MODE21_OIL_TAIL_OFFSET 5
-        int zc6_idx = count - ZC6_MODE21_OIL_TAIL_OFFSET;
-        if (zc6_idx < 0 || zc6_idx >= count) {
-            ESP_LOGW(TAG, "Mode21 ZC6 short response count=%d, skip", count);
+        #define ZC_MODE21_OIL_TAIL_OFFSET 5
+        int zc_idx = count - ZC_MODE21_OIL_TAIL_OFFSET;
+        if (zc_idx < 0 || zc_idx >= count) {
+            ESP_LOGW(TAG, "Mode21 ZC/N6 short response count=%d, skip", count);
             s_oil_diag.mode2_fail++;
             return false;
         }
-        int32_t zc6_temp = (int32_t)d[zc6_idx] - 40;
-        if (zc6_temp < -10 || zc6_temp > 150) {
-            ESP_LOGW(TAG, "Mode21 ZC6 d[%d] out of range: raw=%u, skip", zc6_idx, (unsigned)d[zc6_idx]);
+        int32_t zc_temp = (int32_t)d[zc_idx] - 40;
+        if (zc_temp < -10 || zc_temp > 150) {
+            ESP_LOGW(TAG, "Mode21 ZC/N6 d[%d] out of range: raw=%u, skip", zc_idx, (unsigned)d[zc_idx]);
             s_oil_diag.mode2_fail++;
             return false;
         }
@@ -1116,14 +1125,14 @@ static bool extract_mode21_oil_temp(const uint32_t *d, int count, int32_t *oil_c
         int64_t now_us = esp_timer_get_time();
         bool time_gap = (s_last_mode21_oil_us == 0) || ((now_us - s_last_mode21_oil_us) > 3000000);
         bool consistent = (s_last_mode21_oil <= -50) || time_gap ||
-                          (abs((int)zc6_temp - (int)s_last_mode21_oil) <= 8);
+                          (abs((int)zc_temp - (int)s_last_mode21_oil) <= 8);
         if (consistent) {
-            s_last_mode21_oil = (int16_t)zc6_temp;
+            s_last_mode21_oil = (int16_t)zc_temp;
             s_last_mode21_oil_us = now_us;
             s_mode21_hold_cnt = 0;
             s_oil_diag.mode2_ok++;
-            *oil_c = zc6_temp;
-            ESP_LOGI(TAG, "Mode21 ZC6 bytes=%d d[%d]=0x%02X -> %dC", count, zc6_idx, (unsigned)d[zc6_idx], (int)zc6_temp);
+            *oil_c = zc_temp;
+            ESP_LOGI(TAG, "Mode21 ZC/N6 bytes=%d d[%d]=0x%02X -> %dC", count, zc_idx, (unsigned)d[zc_idx], (int)zc_temp);
             return true;
         }
         // 一致性检查失败：hold 上次值，防止单帧噪声显示
@@ -1131,59 +1140,17 @@ static bool extract_mode21_oil_temp(const uint32_t *d, int count, int32_t *oil_c
             s_mode21_hold_cnt++;
             s_oil_diag.mode2_ok++;
             *oil_c = s_last_mode21_oil;
-            ESP_LOGW(TAG, "Mode21 ZC6 spike HELD(%d/30): prev=%d new=%d",
-                     s_mode21_hold_cnt, (int)s_last_mode21_oil, (int)zc6_temp);
+            ESP_LOGW(TAG, "Mode21 ZC/N6 spike HELD(%d/30): prev=%d new=%d",
+                     s_mode21_hold_cnt, (int)s_last_mode21_oil, (int)zc_temp);
             return true;
         }
         // Hold 超时（~8s 持续不一致）：视为真实温度变化，接受并重置基准
-        ESP_LOGW(TAG, "Mode21 ZC6 hold timeout: accept %d (was %d)", (int)zc6_temp, (int)s_last_mode21_oil);
-        s_last_mode21_oil = (int16_t)zc6_temp;
+        ESP_LOGW(TAG, "Mode21 ZC/N6 hold timeout: accept %d (was %d)", (int)zc_temp, (int)s_last_mode21_oil);
+        s_last_mode21_oil = (int16_t)zc_temp;
         s_last_mode21_oil_us = esp_timer_get_time();
         s_mode21_hold_cnt = 0;
         s_oil_diag.mode2_ok++;
-        *oil_c = zc6_temp;
-        return true;
-    }
-
-    // ---- GT86 ZN6: 距响应末尾固定偏移定位，不落入自适应搜索 ----
-    if (get_active_vehicle_idx_safe() == 3) {
-        int gt86_idx = count - GT86_MODE21_OIL_TAIL_OFFSET;
-        if (gt86_idx < 0 || gt86_idx >= count) {
-            ESP_LOGW(TAG, "Mode21 GT86 short response count=%d (need >=%d), skip",
-                     count, GT86_MODE21_OIL_TAIL_OFFSET);
-            s_oil_diag.mode2_fail++;
-            return false;
-        }
-        int32_t gt86_temp = (int32_t)d[gt86_idx] - 40;
-        if (gt86_temp < -10 || gt86_temp > 150) {
-            ESP_LOGW(TAG, "Mode21 GT86 d[%d] (count=%d) out of range: raw=%u, skip",
-                     gt86_idx, count, (unsigned)d[gt86_idx]);
-            s_oil_diag.mode2_fail++;
-            return false;
-        }
-        bool consistent = (s_last_mode21_oil <= -50) ||
-                          (abs((int)gt86_temp - (int)s_last_mode21_oil) <= 8);
-        if (consistent) {
-            s_last_mode21_oil = (int16_t)gt86_temp;
-            s_mode21_hold_cnt = 0;
-            s_oil_diag.mode2_ok++;
-            *oil_c = gt86_temp;
-            ESP_LOGI(TAG, "Mode21 GT86 bytes=%d d[%d]=0x%02X -> %dC", count, gt86_idx, (unsigned)d[gt86_idx], (int)gt86_temp);
-            return true;
-        }
-        if (s_mode21_hold_cnt < 30) {
-            s_mode21_hold_cnt++;
-            s_oil_diag.mode2_ok++;
-            *oil_c = s_last_mode21_oil;
-            ESP_LOGW(TAG, "Mode21 GT86 spike HELD(%d/30): prev=%d new=%d",
-                     s_mode21_hold_cnt, (int)s_last_mode21_oil, (int)gt86_temp);
-            return true;
-        }
-        ESP_LOGW(TAG, "Mode21 GT86 hold timeout: accept %d (was %d)", (int)gt86_temp, (int)s_last_mode21_oil);
-        s_last_mode21_oil = (int16_t)gt86_temp;
-        s_mode21_hold_cnt = 0;
-        s_oil_diag.mode2_ok++;
-        *oil_c = gt86_temp;
+        *oil_c = zc_temp;
         return true;
     }
 
@@ -1685,11 +1652,11 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
         }
 
         // ---- 累积多包数据直到收到 '>' （ELM327 提示符） ----
-        // 累积超时保护：5秒内未收到 '>' 则强制刷新
+        // 累积超时保护：10秒内未收到 '>' 则强制刷新 (ATMA 模式下可能长时间无 '>' 提示符)
         if (s_accum_len > 0) {
             int64_t now_us = esp_timer_get_time();
-            if ((now_us - s_accum_start_us) > 5000000) {
-                ESP_LOGW(TAG, "Accum timeout (>5s), flushing %d bytes", (int)s_accum_len);
+            if ((now_us - s_accum_start_us) > 10000000) {
+                ESP_LOGW(TAG, "Accum timeout (>10s), flushing %d bytes", (int)s_accum_len);
                 s_accum_len = 0;
                 s_accum_buf[0] = '\0';
                 s_elm_ready = true;
@@ -1750,7 +1717,7 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
 
             // 如果没有 override 规则但 can_broadcast_mode=true, 用旧内联解析 (兼容)
             if (!has_can_rules) {
-                // 旧 ZC6/GT86 硬编码解析 (保留兼容)
+                // 旧 ZC/N6 硬编码解析 (保留兼容)
                 char *p140 = strstr(buf, "140 ");
                 if (p140) {
                     unsigned id=0,b0,b1,b2,b3,b4,b5,b6,b7;
@@ -1827,9 +1794,9 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
                     s_cbs.on_parsed_rpm((uint16_t)channels[CH_RPM]);
                 if (channels[CH_SPEED] >= 0 && s_cbs.on_parsed_speed_kmh)
                     s_cbs.on_parsed_speed_kmh((uint8_t)channels[CH_SPEED]);
-                if (channels[CH_OIL_TEMP] >= -40 && channels[CH_OIL_TEMP] <= 215 && s_cbs.on_parsed_oil_temp)
+                if (channels[CH_OIL_TEMP] > -40 && channels[CH_OIL_TEMP] <= 215 && s_cbs.on_parsed_oil_temp)
                     s_cbs.on_parsed_oil_temp((uint32_t)(int16_t)channels[CH_OIL_TEMP]);
-                if (channels[CH_COOLANT] >= -40 && channels[CH_COOLANT] <= 215 && s_cbs.on_parsed_coolant_temp)
+                if (channels[CH_COOLANT] > -40 && channels[CH_COOLANT] <= 215 && s_cbs.on_parsed_coolant_temp)
                     s_cbs.on_parsed_coolant_temp((uint32_t)(int16_t)channels[CH_COOLANT]);
                 if (channels[CH_TPS] >= 0 && s_cbs.on_parsed_throttle_position)
                     s_cbs.on_parsed_throttle_position((uint32_t)channels[CH_TPS]);

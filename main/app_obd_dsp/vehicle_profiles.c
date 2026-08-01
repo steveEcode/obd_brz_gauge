@@ -30,7 +30,7 @@ static const vehicle_profile_t s_profiles[] = {
         // ATMA monitor: 0x140 (100Hz RPM+TPS), 0x360 (20Hz oil+coolant temp)
         // Remaining channels use standard OBD PID
         // Ref: https://github.com/timurrrr/ft86/blob/main/can_bus/gen1.md
-        .name = "ZC6 CAN",
+        .name = "ZC/N6",
         .final_drive_ratio = 4.100f,
         .tire_rolling_radius_m = 0.314f,   // 215/45R17
         .gear_count = 6,
@@ -64,22 +64,6 @@ static const vehicle_profile_t s_profiles[] = {
         .forced_protocol = 6,
         .can_broadcast_mode = true,
         .poll_gap_ms = 1,
-    },
-    {
-        // Toyota GT86 / 86 ZN6 (2012-2021, FA20 NA)
-        // Toyota ECU Mode 21 01 response is only 31 bytes, layout differs from Subaru ECU (ZC6 d[33]):
-        // Coolant at d[9], oil temp at d[27] (≈86°C when coolant=91°C, verified stable).
-        .name = "GT86 ZN6",
-        .final_drive_ratio = 4.100f,
-        .tire_rolling_radius_m = 0.314f,   // 215/45R17 (same as BRZ ZC6 OEM)
-        .gear_count = 6,
-        .gear_ratios = {0, 3.626f, 2.188f, 1.541f, 1.213f, 1.000f, 0.767f},
-        .gear_tolerance = 0.15f,
-        .oil_temp_strategy = {
-            .primary = OIL_TEMP_MODE_TOYOTA_21_01,
-            .secondary = OIL_TEMP_MODE_PID_5C,        // Fallback: some adapters (e.g. gt96) may not support Mode 21
-            .tertiary = OIL_TEMP_MODE_NONE,
-        },
     },
     {
         .name = "MX-5 ND",

@@ -218,7 +218,7 @@ static inline int32_t anim_step_i32(int32_t displayed, int32_t target, int32_t t
     int32_t step = (diff > 0) ? 1 : -1;
 
     if (abs_diff > threshold) {
-        int32_t rapid = abs_diff / 3;     // 每拍吃掉 ~33% 差距
+        int32_t rapid = abs_diff / 2;     // 每拍吃掉 ~50% 差距（原 33%，加快收敛）
         if (rapid < 2) rapid = 2;          // 最小 2 步
         if (rapid > abs_diff) rapid = abs_diff;
         step = (diff > 0) ? rapid : -rapid;
@@ -909,16 +909,13 @@ void my_timerMain(lv_timer_t * timer)
             lv_arc_set_value(ui_GearPageArcGearNumBack, (uint16_t)g * 100 / gc);
         }
     }
-    /*转速页面: 同上, 只在页面激活时刷新*/
+    /*转速页面: 直出, 无动画延迟 (CAN 100Hz 数据已干净)*/
     if (lv_scr_act() == ui_ScreenPageRpm) {
-        static int32_t s_disp_rpm = 0;
         static int32_t s_last_rpm = -1;
-        if (IN_SWEEP) { s_disp_rpm = usRpm; }
-        else { s_disp_rpm = anim_step_i32(s_disp_rpm, (int32_t)usRpm, ANIM_THRESH_RPM); }
-        if (s_disp_rpm != s_last_rpm) {
-            s_last_rpm = s_disp_rpm;
-            lv_label_set_text_fmt(ui_RpmPageArcLabelRpmText, "%d", (int)s_disp_rpm);
-            lv_arc_set_value(ui_RpmPageArcRpmBack, (uint32_t)s_disp_rpm*100/SWEEP_RPM_PEAK);
+        if ((int32_t)usRpm != s_last_rpm) {
+            s_last_rpm = (int32_t)usRpm;
+            lv_label_set_text_fmt(ui_RpmPageArcLabelRpmText, "%d", (int)usRpm);
+            lv_arc_set_value(ui_RpmPageArcRpmBack, (uint32_t)usRpm*100/SWEEP_RPM_PEAK);
         }
     }
     /*速度页面: 同上, 只在页面激活时刷新*/
@@ -1660,7 +1657,7 @@ void ui_init(void)
 
     lv_disp_load_scr(ui_ScreenPageLogo);
 
-    lv_timer_create(my_timerMain, 100, NULL);  //100 ms 周期
+    lv_timer_create(my_timerMain, 50, NULL);  //50 ms 周期 (20Hz, 原 100ms/10Hz)
 }
 
 /* OBD 协议页面事件 */

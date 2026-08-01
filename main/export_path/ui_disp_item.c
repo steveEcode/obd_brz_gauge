@@ -143,7 +143,8 @@ void disp_item_update(int32_t *state, lv_obj_t *label, disp_item_t item,
 {
     if (!state || !label) return;
     if (valid) {
-        *state = anim_step_i32(*state, raw, threshold);
+        // RPM 直出, 不走 +1/+1 递进动画: 量程大、变化快, 平滑只会看起来像"卡住不动"
+        *state = (item == DISP_ITEM_RPM) ? raw : anim_step_i32(*state, raw, threshold);
     }
     // invalid: 保持 *state 不变, 避免恢复时从 0 爬升
     disp_item_set_text(label, item, *state, valid);

@@ -18,7 +18,7 @@ typedef struct {
     char    ble_device_name[32]; // 上次连接的 BLE 设备名，空串表示未配置
     uint8_t default_page;   // 默认页面: 0=Temp, 1=Main, 2=Gear, 3=RPM, 4=Speed, 5=Info, 6=Brake, 7=OilP, 8=Needle
     uint8_t brightness_day; // 亮度 10-100, 0=未配置(用 100)
-    uint8_t vehicle_profile_idx; // 车辆配置索引, 0=BRZ ZC6, 1=BRZ ZD8
+    uint8_t vehicle_profile_idx; // 车辆配置索引, 0=ZC/N6, 1=BRZ ZD8
     uint16_t brake_temp_warn_c; // 刹车温度警告阈值 °C
     uint16_t oil_pressure_warn_x10; // 机油压力警告阈值 0.1bar
     uint8_t temp_display_map[3]; // TEMP 页三行显示项映射
