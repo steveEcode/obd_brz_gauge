@@ -22,6 +22,7 @@ static volatile int16_t  s_oil_pressure_x10 = -1; // 油压, 0.1bar, -1=无效
 static volatile int16_t  s_brake_temp_x10 = -1000; // 刹车温度, 0.1°C, -1000=无效
 static volatile int16_t  s_boost_x10 = -32768; // 涡轮表压, 0.1bar(可为负=真空), -32768=无效
 static volatile int8_t   s_gear = 127;          // 直接档位: -1=R, 0=N, 1+=前进挡, 127=无效
+static volatile int16_t  s_afr_x100 = -1;       // 空燃比 AFR, ×100 (1470=14.7:1), -1=无效
 static volatile brake_rs485_status_t s_brake_rs485_status = BRAKE_RS485_IDLE;
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -252,6 +253,24 @@ int8_t obd_data_get_gear(void)
     int8_t val;
     portENTER_CRITICAL(&s_mux);
     val = s_gear;
+    portEXIT_CRITICAL(&s_mux);
+    return val;
+}
+
+void obd_data_set_afr_x100(int16_t afr_x100)
+{
+    // 合理范围: 8.0:1 ~ 22.0:1 (800~2200 ×100)
+    if (afr_x100 < 800 || afr_x100 > 2200) return;
+    portENTER_CRITICAL(&s_mux);
+    s_afr_x100 = afr_x100;
+    portEXIT_CRITICAL(&s_mux);
+}
+
+int16_t obd_data_get_afr_x100(void)
+{
+    int16_t val;
+    portENTER_CRITICAL(&s_mux);
+    val = s_afr_x100;
     portEXIT_CRITICAL(&s_mux);
     return val;
 }

@@ -47,6 +47,9 @@ static uint16_t s_cccd_handle = 0;
 static esp_gatt_write_type_t s_write_type = ESP_GATT_WRITE_TYPE_RSP; // 写类型，根据特征属性自动选择
 static elm327_ble_callbacks_t s_cbs = {0};
 static char s_target_name[32] = "OBDII";
+// 精确 MAC 匹配: 设置后 match_device_target 只认这一个地址, 忽略名字(防止同名设备误连)
+static esp_bd_addr_t s_target_bda = {0};
+static bool s_target_bda_valid = false;
 
 // ---- 扫描模式相关 ----
 static bool s_scan_only_mode = false;  // true=仅扫描不连接
@@ -569,6 +572,14 @@ static void default_on_parsed_manifold_pressure(uint32_t map_kpa) {
     obd_data_set_boost_x10(boost_x10);
 }
 
+// PID 01 44: Commanded Equivalence Ratio (λ), 公式: (A*256+B)/32768, 范围 0~<2
+// λ=1.0 理想空燃比(汽油~14.7:1), λ<1 浓, λ>1 稀
+// 转换: AFR = λ × 14.7, 存储为 ×100 (1470 = 14.70:1)
+static void default_on_parsed_afr(uint32_t afr_x100) {
+    ESP_LOGD(TAG, "AFR: %d.%02d:1 (λ=%.3f)", afr_x100/100, afr_x100%100, (float)afr_x100/1470.0f);
+    obd_data_set_afr_x100((int16_t)afr_x100);
+}
+
 // 保时捷 997.2/987.2：油温油压在 CAN 广播帧 0x441，需用 ELM327 监听模式抓取。
 // 流程：过滤只收 441 → 开帧头 → 监听若干帧 → 停止 → 还原(关帧头/恢复自动收地址)。
 // 帧解析在通知回调里(见 "441 " 分支)；本函数只负责按时序下发监听指令。
@@ -676,53 +687,45 @@ static bool zc6_can_monitor_parse_line(const char *line)
         s_can_line_count++;
     }
 
-    // 收集唯一 CAN ID (从规则表)
-    uint16_t seen_ids[8] = {0};
-    uint8_t seen_count = 0;
+    // 行首解析 CAN ID (ATMA 行固定格式 "<ID> <D0> <D1> ... <Dn>", ID 在最前)。
+    // 注意: 不能像以前那样在整行里 strstr 找 "<id> " 子串——如果某个数据字节的十六进制
+    // 文本恰好等于另一个被监听 ID(比如油温字节=0x40, 车型里还监听着 0x040), 会在数据段里
+    // 误命中, 把这一帧错当成别的 ID、真正的 ID 反而被跳过, 对应通道就一直读不到。
+    uint16_t line_id = 0;
+    if (sscanf(line, "%hx ", &line_id) != 1) return false;
+
+    bool id_watched = false;
     for (uint8_t i = 0; i < ov->can_rule_count; i++) {
-        bool found = false;
-        for (uint8_t j = 0; j < seen_count; j++)
-            if (seen_ids[j] == ov->can_rules[i].can_id) { found = true; break; }
-        if (!found && seen_count < 8) seen_ids[seen_count++] = ov->can_rules[i].can_id;
+        if (ov->can_rules[i].can_id == line_id) { id_watched = true; break; }
     }
+    if (!id_watched) return false;
 
-    // 在行中查找匹配的 CAN ID
-    for (uint8_t si = 0; si < seen_count; si++) {
-        char hex_str[8];
-        snprintf(hex_str, sizeof(hex_str), "%X ", seen_ids[si]);
-        const char *p = strstr(line, hex_str);
-        if (!p) { snprintf(hex_str, sizeof(hex_str), "%x ", seen_ids[si]); p = strstr(line, hex_str); }
-        if (!p) continue;
+    uint8_t data[8] = {0};
+    int vals = sscanf(line, "%*x %hhx %hhx %hhx %hhx %hhx %hhx %hhx %hhx",
+                      &data[0],&data[1],&data[2],&data[3],
+                      &data[4],&data[5],&data[6],&data[7]);
+    if (vals < 1) return false;
 
-        uint8_t data[8] = {0};
-        uint32_t parsed_id = 0;
-        int vals = sscanf(p, "%x %hhx %hhx %hhx %hhx %hhx %hhx %hhx %hhx",
-                          &parsed_id, &data[0],&data[1],&data[2],&data[3],
-                          &data[4],&data[5],&data[6],&data[7]);
-        if (vals < 2 || parsed_id != seen_ids[si]) continue;
+    float channels[CH_COUNT];
+    for (int c = 0; c < CH_COUNT; c++) channels[c] = -32768.0f;
+    can_apply_rules(ov->can_rules, ov->can_rule_count, line_id, data, channels);
 
-        float channels[CH_COUNT];
-        for (int c = 0; c < CH_COUNT; c++) channels[c] = -32768.0f;
-        can_apply_rules(ov->can_rules, ov->can_rule_count, seen_ids[si], data, channels);
+    if (channels[CH_RPM] >= 0 && s_cbs.on_parsed_rpm)
+        s_cbs.on_parsed_rpm((uint16_t)channels[CH_RPM]);
+    if (channels[CH_SPEED] >= 0 && s_cbs.on_parsed_speed_kmh)
+        s_cbs.on_parsed_speed_kmh((uint8_t)channels[CH_SPEED]);
+    if (channels[CH_OIL_TEMP] > -40 && channels[CH_OIL_TEMP] <= 215 && s_cbs.on_parsed_oil_temp)
+        s_cbs.on_parsed_oil_temp((uint32_t)(int16_t)channels[CH_OIL_TEMP]);
+    if (channels[CH_COOLANT] > -40 && channels[CH_COOLANT] <= 215 && s_cbs.on_parsed_coolant_temp)
+        s_cbs.on_parsed_coolant_temp((uint32_t)(int16_t)channels[CH_COOLANT]);
+    if (channels[CH_TPS] >= 0 && s_cbs.on_parsed_throttle_position)
+        s_cbs.on_parsed_throttle_position((uint32_t)channels[CH_TPS]);
+    if (channels[CH_GEAR] > 0 && channels[CH_GEAR] < 127 && s_cbs.on_parsed_gear)
+        s_cbs.on_parsed_gear((int8_t)channels[CH_GEAR]);
 
-        if (channels[CH_RPM] >= 0 && s_cbs.on_parsed_rpm)
-            s_cbs.on_parsed_rpm((uint16_t)channels[CH_RPM]);
-        if (channels[CH_SPEED] >= 0 && s_cbs.on_parsed_speed_kmh)
-            s_cbs.on_parsed_speed_kmh((uint8_t)channels[CH_SPEED]);
-        if (channels[CH_OIL_TEMP] > -40 && channels[CH_OIL_TEMP] <= 215 && s_cbs.on_parsed_oil_temp)
-            s_cbs.on_parsed_oil_temp((uint32_t)(int16_t)channels[CH_OIL_TEMP]);
-        if (channels[CH_COOLANT] > -40 && channels[CH_COOLANT] <= 215 && s_cbs.on_parsed_coolant_temp)
-            s_cbs.on_parsed_coolant_temp((uint32_t)(int16_t)channels[CH_COOLANT]);
-        if (channels[CH_TPS] >= 0 && s_cbs.on_parsed_throttle_position)
-            s_cbs.on_parsed_throttle_position((uint32_t)channels[CH_TPS]);
-        if (channels[CH_GEAR] > 0 && channels[CH_GEAR] < 127 && s_cbs.on_parsed_gear)
-            s_cbs.on_parsed_gear((int8_t)channels[CH_GEAR]);
-
-        s_zc6_can_monitor_last_sample_us = esp_timer_get_time();
-        s_last_obd_valid_us = esp_timer_get_time();
-        return true;
-    }
-    return false;
+    s_zc6_can_monitor_last_sample_us = esp_timer_get_time();
+    s_last_obd_valid_us = esp_timer_get_time();
+    return true;
 }
 
 // 逐字节喂入: 按 \r\n 切行, 每行调 parse_line
@@ -1016,12 +1019,16 @@ static void obd_poll_task(void *arg) {
                     }
                 }
                 break;
+            case 9://空燃比 AFR (01 44, Commanded Equivalence Ratio)
+                elm327_ble_send_ascii_blocking("01 44\r");
+                ESP_LOGD(TAG, "[Slot9] Send 01 44 (AFR/lambda)");
+                break;
             default:
                 break;
         }
 
-        // RPM 提频: 标准 OBD 轮询车型下, 转速不应该被绑定在整轮(9槽)周期上才刷新一次。
-        // slot0 本身已经查过 RPM, 这里给 slot1~8 每槽后面都补插一次 01 0C,
+        // RPM 提频: 标准 OBD 轮询车型下, 转速不应该被绑定在整轮(10槽)周期上才刷新一次。
+        // slot0 本身已经查过 RPM, 这里给 slot1~9 每槽后面都补插一次 01 0C,
         // 转速刷新间隔从"一整轮"降到"一个槽", 其它慢变量(温度/电压等)刷新节奏不变。
         // CAN 广播车型转速走 ATMA 直通, 不需要(也不应该, 会和 ATMA 抢总线)。
         if (!can_broadcast && tick_count != 0) {
@@ -1029,14 +1036,15 @@ static void obd_poll_task(void *arg) {
         }
 
         tick_count++;
-        if(tick_count >= 9)
+        if(tick_count >= 10)
         {
             tick_count = 0;
         }
         } // end standard OBD poll block
 
-        // 槽间空等: 优先用车型配置的 poll_gap_ms(如 MX-5 设 10ms); 未配置则用全局默认 30ms。
-        // 太小会压垮廉价克隆头; CAN 总线快速响应车型可放心调小。
+        // 槽间空等: 优先用车型配置的 poll_gap_ms(如 MX-5 ND 升级了 150ms), 未配置则用全局默认 30ms。
+        // 太小会压垮廉价蓝牙适配器; CAN 总线快速响应车型可放心调小。
+        // 如果用户设置 poll_gap_ms = 0，则不用 vTaskDelay，直接过。
         {
             const vehicle_profile_t *vp_gap = vehicle_profile_get_active();
             uint32_t gap = (vp_gap && vp_gap->poll_gap_ms > 0)
@@ -1253,15 +1261,6 @@ static void start_scan(void) {
     esp_ble_gap_start_scanning(10); // 10s
 }
 
-static bool parse_mac_string(const char *s, esp_bd_addr_t out_bda) {
-    if (!s) return false;
-    unsigned int b[6] = {0};
-    int n = sscanf(s, "%2x:%2x:%2x:%2x:%2x:%2x", &b[0], &b[1], &b[2], &b[3], &b[4], &b[5]);
-    if (n != 6) return false;
-    for (int i = 0; i < 6; i++) out_bda[i] = (uint8_t)b[i];
-    return true;
-}
-
 static void normalize_name(const char *src, char *dst, size_t dst_len) {
     if (!dst || dst_len == 0) return;
     if (!src) {
@@ -1284,12 +1283,12 @@ static bool match_device_target(const esp_ble_gap_cb_param_t *pr, const char *ta
     ble_adv_extract_name(pr->scan_rst.ble_adv, pr->scan_rst.adv_data_len, pr->scan_rst.scan_rsp_len,
                      found_name, found_name_len);
 
-    if (target_name == NULL || target_name[0] == '\0') return true;
-
-    esp_bd_addr_t target_bda = {0};
-    if (parse_mac_string(target_name, target_bda)) {
-        return memcmp(pr->scan_rst.bda, target_bda, sizeof(esp_bd_addr_t)) == 0;
+    // 已绑定精确 MAC: 只认这一个地址, 忽略名字, 防止同名(甚至同型号广播名)设备误连
+    if (s_target_bda_valid) {
+        return memcmp(pr->scan_rst.bda, s_target_bda, sizeof(esp_bd_addr_t)) == 0;
     }
+
+    if (target_name == NULL || target_name[0] == '\0') return true;
 
     if (found_name[0] == '\0') return false;
 
@@ -1462,6 +1461,24 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
     default:
         break;
     }
+}
+
+// 在多行累积缓冲区里定位某个 CAN ID 的帧头 token, 只认"位于行首"的匹配。
+// 不能直接 strstr 整个缓冲区: 如果某帧的数据字节文本恰好等于另一个被监听 ID(比如
+// 油温字节=0x40, 车型还监听着 0x040), 会在数据段里误命中、把这帧错当成别的 ID。
+static const char *find_can_id_token(const char *buf, uint16_t id) {
+    char upper[8], lower[8];
+    snprintf(upper, sizeof(upper), "%X ", id);
+    snprintf(lower, sizeof(lower), "%x ", id);
+    for (int pass = 0; pass < 2; pass++) {
+        const char *needle = (pass == 0) ? upper : lower;
+        const char *scan = buf;
+        while ((scan = strstr(scan, needle)) != NULL) {
+            if (scan == buf || scan[-1] == '\r' || scan[-1] == '\n') return scan;
+            scan += 1; // 数据字节里的巧合命中, 跳过继续找真正的行首
+        }
+    }
+    return NULL;
 }
 
 static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp_ble_gattc_cb_param_t *param) {
@@ -1765,16 +1782,9 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
                 }
                 if (!found && seen_count < 8) seen_ids[seen_count++] = rules[i].can_id;
             }
-            // 对每个唯一 CAN ID, 在 buf 中查找并解析
+            // 对每个唯一 CAN ID, 在 buf 中查找并解析 (只认行首匹配, 避免数据字节巧合误命中)
             for (uint8_t si = 0; si < seen_count; si++) {
-                char hex_str[8];
-                snprintf(hex_str, sizeof(hex_str), "%X ", seen_ids[si]);
-                char *p = strstr(buf, hex_str);
-                if (!p) {
-                    // 试小写
-                    snprintf(hex_str, sizeof(hex_str), "%x ", seen_ids[si]);
-                    p = strstr(buf, hex_str);
-                }
+                const char *p = find_can_id_token(buf, seen_ids[si]);
                 if (!p) continue;
                 // 解析 hex bytes
                 uint8_t data[8] = {0};
@@ -1946,6 +1956,18 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
                     case 0x42: // 电池电压 (mV)
                         if (dc >= 2 && s_cbs.on_parsed_control_module_voltage && s_protocol_detect_idx < 0)
                             s_cbs.on_parsed_control_module_voltage((d[0] << 8) | d[1]);
+                        break;
+                    case 0x44: // 空燃比 AFR - Commanded Equivalence Ratio (λ)
+                        // λ = (A*256+B)/32768, 范围 0~<2
+                        // AFR = λ × 14.7, 存储 ×100: 1470 = 14.70:1
+                        if (dc >= 2 && s_cbs.on_parsed_afr && s_protocol_detect_idx < 0) {
+                            uint32_t raw = (d[0] << 8) | d[1];
+                            // λ = raw / 32768, AFR×100 = λ × 1470
+                            uint32_t afr_x100 = (raw * 1470UL) / 32768UL;
+                            if (afr_x100 >= 800 && afr_x100 <= 2200) {
+                                s_cbs.on_parsed_afr(afr_x100);
+                            }
+                        }
                         break;
                     default:
                         ESP_LOGD(TAG, "Unhandled PID 0x%02X", pid);
@@ -2175,7 +2197,7 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
 }
 
 
-void elm327_ble_start_default(const char *target_name) {
+void elm327_ble_start_default(const char *target_name, const uint8_t mac[6]) {
 
     const elm327_ble_callbacks_t cbs = {
         .on_connected = default_on_connected,
@@ -2191,8 +2213,16 @@ void elm327_ble_start_default(const char *target_name) {
         .on_parsed_throttle_position = default_on_parsed_throttle_position,
         .on_parsed_gear = default_on_parsed_gear,
         .on_parsed_manifold_pressure = default_on_parsed_manifold_pressure,
+        .on_parsed_afr = default_on_parsed_afr,
     };
     s_scan_only_mode = false;
+    bool mac_set = mac && (mac[0]|mac[1]|mac[2]|mac[3]|mac[4]|mac[5]) != 0;
+    if (mac_set) {
+        memcpy(s_target_bda, mac, sizeof(esp_bd_addr_t));
+        s_target_bda_valid = true;
+    } else {
+        s_target_bda_valid = false;
+    }
     elm327_ble_init_and_start(target_name, &cbs);
     if (!s_poll_task_started) {
         xTaskCreate(obd_poll_task, "obd_poll", 4096, NULL, 4, NULL);
@@ -2230,12 +2260,17 @@ void elm327_ble_scan_only_stop(void) {
     ESP_LOGD(TAG, "Scan-only stopped. Found %d devices.", s_scan_count);
 }
 
-void elm327_ble_connect_by_name(const char *name) {
-    if (!name || name[0] == '\0') return;
-    ESP_LOGD(TAG, "Connect by name: %s", name);
+void elm327_ble_connect_by_addr(const uint8_t mac[6], const char *name) {
+    if (!mac) return;
+    ESP_LOGD(TAG, "Connect by addr: %02X:%02X:%02X:%02X:%02X:%02X (%s)",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], name ? name : "");
     s_scan_only_mode = false;
-    strncpy(s_target_name, name, sizeof(s_target_name) - 1);
-    s_target_name[sizeof(s_target_name) - 1] = '\0';
+    if (name && name[0]) {
+        strncpy(s_target_name, name, sizeof(s_target_name) - 1);
+        s_target_name[sizeof(s_target_name) - 1] = '\0';
+    }
+    memcpy(s_target_bda, mac, sizeof(esp_bd_addr_t));
+    s_target_bda_valid = true;
 
     // 设置默认回调（如果还没有）
     if (!s_cbs.on_connected) {
@@ -2251,6 +2286,7 @@ void elm327_ble_connect_by_name(const char *name) {
         s_cbs.on_parsed_control_module_voltage = default_on_parsed_control_module_voltage;
         s_cbs.on_parsed_throttle_position = default_on_parsed_throttle_position;
         s_cbs.on_parsed_manifold_pressure = default_on_parsed_manifold_pressure;
+        s_cbs.on_parsed_afr = default_on_parsed_afr;
     }
     // 开始扫描，找到后自动连接
     esp_ble_gap_start_scanning(15);

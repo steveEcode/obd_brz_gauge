@@ -456,6 +456,7 @@ static void showroom_handle_tap(void) {
 static void showroom_fake_data(void) {
     static float fake_rpm = 2500, fake_spd = 60, fake_clt = 90, fake_oil = 95;
     static float fake_iat = 35, fake_load = 65, fake_tps = 40, fake_boost = 5;
+    static float fake_afr = 14.7;
     fake_rpm  += ((float)(esp_random() % 200) - 100) * 2;  if (fake_rpm < 800) fake_rpm = 800; if (fake_rpm > 7500) fake_rpm = 7500;
     fake_spd  += ((float)(esp_random() % 20) - 10) * 0.5f; if (fake_spd < 0) fake_spd = 0; if (fake_spd > 200) fake_spd = 200;
     fake_clt  += ((float)(esp_random() % 4) - 2) * 0.1f;   if (fake_clt < 80) fake_clt = 80; if (fake_clt > 105) fake_clt = 105;
@@ -464,6 +465,7 @@ static void showroom_fake_data(void) {
     fake_load += ((float)(esp_random() % 20) - 10);         if (fake_load < 10) fake_load = 10; if (fake_load > 100) fake_load = 100;
     fake_tps  += ((float)(esp_random() % 16) - 8);          if (fake_tps < 0) fake_tps = 0; if (fake_tps > 100) fake_tps = 100;
     fake_boost+= ((float)(esp_random() % 10) - 5) * 0.1f;  if (fake_boost < -5) fake_boost = -5; if (fake_boost > 20) fake_boost = 20;
+    fake_afr  += ((float)(esp_random() % 10) - 5) * 0.04f; if (fake_afr < 10.0) fake_afr = 10.0; if (fake_afr > 18.0) fake_afr = 18.0;
     obd_data_set_rpm((uint16_t)fake_rpm);
     obd_data_set_speed((uint8_t)fake_spd);
     obd_data_set_coolant_temp((int16_t)fake_clt);
@@ -474,6 +476,7 @@ static void showroom_fake_data(void) {
     obd_data_set_boost_x10((int16_t)(fake_boost * 10));
     obd_data_set_oil_pressure_x10((int16_t)(30 + (esp_random() % 40)));
     obd_data_set_brake_temp_x10((int16_t)(200 + (esp_random() % 300)));
+    obd_data_set_afr_x100((int16_t)(fake_afr * 100));
 }
 
 // 三连表开机动画同步: 主表按时间线驱动 s_intro_step 并广播; 从表由 espnow recv 写入跟随。
@@ -516,7 +519,8 @@ void ui_needle_apply_source(void)
 void ui_needle_page_update(float sweep_ratio, int16_t clt, int16_t iat, int16_t oil,
                            int16_t load_pct, int16_t tps, int32_t bat_mv,
                            int16_t oilp_x10, int16_t brake_x10,
-                           uint16_t rpm, uint16_t speed, int16_t boost_x10)
+                           uint16_t rpm, uint16_t speed, int16_t boost_x10,
+                           int16_t afr_x100)
 {
     if (!ui_ScreenPageNeedle || !ui_NeedleMeter || !ui_NeedleIndic) return;
     uint8_t src = needle_active_source();
@@ -533,7 +537,7 @@ void ui_needle_page_update(float sweep_ratio, int16_t clt, int16_t iat, int16_t 
 
     int32_t raw = 0;
     bool valid = disp_item_read_value(src, clt, iat, oil, load_pct, tps, bat_mv,
-                                      oilp_x10, brake_x10, rpm, speed, boost_x10, &raw);
+                                      oilp_x10, brake_x10, rpm, speed, boost_x10, afr_x100, &raw);
 
     static int32_t s_disp_needle = 0;
     static uint8_t s_last_needle_src = 0xFF;
@@ -761,6 +765,7 @@ void my_timerMain(lv_timer_t * timer)
     int16_t tps      = obd_data_get_tps();
     int32_t bat_mv   = obd_data_get_bat_mv();
     int16_t boost_x10 = obd_data_get_boost_x10(); // 涡轮表压 0.1bar, -32768=无效
+    int16_t afr_x100 = obd_data_get_afr_x100();   // 空燃比 ×100, -1=无效
     const nvs_user_cfg_t *user_cfg = nvs_cfg_get();
 
     /* ---- 触发刷表 ----
@@ -933,7 +938,7 @@ void my_timerMain(lv_timer_t * timer)
 
  /*指针页 (可配置数据源, 刷表时同步扫表)*/
     ui_needle_page_update(sweep_ratio, clt, iat, oil, load_pct, tps, bat_mv,
-                          oilp_x10, brake_x10, usRpm, ucSpeed, boost_x10);
+                          oilp_x10, brake_x10, usRpm, ucSpeed, boost_x10, afr_x100);
 
  /*温度页面*/
     if(ui_LabelTempValue[0]) {
@@ -969,7 +974,7 @@ void my_timerMain(lv_timer_t * timer)
                 }
 
                 int32_t value = 0;
-                bool valid = disp_item_read_value(item, clt, iat, oil, load_pct, tps, bat_mv, oilp_x10, brake_x10, usRpm, ucSpeed, boost_x10, &value);
+                bool valid = disp_item_read_value(item, clt, iat, oil, load_pct, tps, bat_mv, oilp_x10, brake_x10, usRpm, ucSpeed, boost_x10, afr_x100, &value);
                 disp_item_update(&s_disp_temp[i], ui_LabelTempValue[i], item, value, valid, ANIM_THRESH_TEMP);
             }
         }
@@ -998,7 +1003,7 @@ void my_timerMain(lv_timer_t * timer)
             disp_item_set_value_color(ui_LabelOilPressureText, citem, s_disp_chart, cvalid);
         } else {
             cvalid = disp_item_read_value(citem, clt, iat, oil, load_pct, tps, bat_mv,
-                                          oilp_x10, brake_x10, usRpm, ucSpeed, boost_x10, &cval);
+                                          oilp_x10, brake_x10, usRpm, ucSpeed, boost_x10, afr_x100, &cval);
             disp_item_update(&s_disp_chart, ui_LabelOilPressureText, citem, cval, cvalid, ANIM_THRESH_TEMP);
         }
 
@@ -1052,7 +1057,7 @@ void my_timerMain(lv_timer_t * timer)
                 }
 
                 int32_t value = 0;
-                bool valid = disp_item_read_value(item, clt, iat, oil, load_pct, tps, bat_mv, oilp_x10, brake_x10, usRpm, ucSpeed, boost_x10, &value);
+                bool valid = disp_item_read_value(item, clt, iat, oil, load_pct, tps, bat_mv, oilp_x10, brake_x10, usRpm, ucSpeed, boost_x10, afr_x100, &value);
                 disp_item_update(&s_disp_info[i], ui_LabelInfoValue[i], item, value, valid, ANIM_THRESH_TEMP);
             }
         }

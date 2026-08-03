@@ -12,7 +12,8 @@
 // 指针页可选数据源 (disp_item_t 值)，刻意排除 RPM(5)——RPM 已有独立页面。
 // 顺序: CLT, IAT, OIL, LOAD, TPS, SPEED, BAT, OILP, BKT
 #define NEEDLE_ITEM_BOOST 10   // disp_item_t DISP_ITEM_BOOST 的值
-static const uint8_t k_needle_sources_base[] = {0, 1, 2, 3, 4, 6, 7, 8, 9};
+#define NEEDLE_ITEM_AFR   11   // disp_item_t DISP_ITEM_AFR 的值
+static const uint8_t k_needle_sources_base[] = {0, 1, 2, 3, 4, 6, 7, 8, 9, NEEDLE_ITEM_AFR};
 #define NEEDLE_BASE_COUNT (sizeof(k_needle_sources_base) / sizeof(k_needle_sources_base[0]))
 
 // 运行时根据所选车型是否有涡轮，动态决定可选数据源（有涡轮才追加 BOOST）

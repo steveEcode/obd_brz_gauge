@@ -216,7 +216,8 @@ void ui_event_multi_gauge_background(lv_event_t * e);
 void ui_needle_page_update(float sweep_ratio, int16_t clt, int16_t iat, int16_t oil,
                            int16_t load_pct, int16_t tps, int32_t bat_mv,
                            int16_t oilp_x10, int16_t brake_x10,
-                           uint16_t rpm, uint16_t speed, int16_t boost_x10);
+                           uint16_t rpm, uint16_t speed, int16_t boost_x10,
+                           int16_t afr_x100);
 void ui_needle_apply_source(void);  // 数据源变化后重建量程/名称/单位
 int  ui_sweep_get_step(void);       // 取当前扫表进度(主表广播给从表)
 // 数据项访问器 (ui_disp_item_name/unit/color/range) 见 ui_disp_item.h

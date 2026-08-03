@@ -191,6 +191,13 @@ static const vehicle_override_t s_vehicle_overrides[] = {
         .poll_gap_ms     = 1,
     },
     {
+        // ZD8 标准 OBD 兜底: 不设 can_rules, 转速/水温/油温全走标准 PID
+        .match_name      = "ZD8",
+        .oil_primary     = &oil_std_5c,
+        .forced_protocol = 6,
+        .poll_gap_ms     = 1,
+    },
+    {
         .match_name      = "MX-5 ND",
         .oil_primary     = &oil_mazda_1310,
         .oil_secondary   = &oil_mazda_111f,

@@ -33,6 +33,7 @@ typedef struct {
     void (*on_parsed_gear)(int8_t gear);  // 直接档位 (CAN 广播)
     void (*on_parsed_fuel_level)(uint32_t fuel_level);//燃油液位
     void (*on_parsed_control_module_voltage)(uint32_t control_module_voltage);//控制模块电压
+    void (*on_parsed_afr)(uint32_t afr_x100);    // 空燃比 AFR, ×100 (1470=14.7:1)
 
 } elm327_ble_callbacks_t;
 
@@ -52,7 +53,8 @@ bool elm327_ble_send_command(const uint8_t *data, size_t len);
 size_t elm327_ble_ascii_cmd_to_bytes(const char *ascii, uint8_t *out_buf, size_t out_buf_len);
 
 // 启动带默认日志回调与周期轮询（010C/010D）的便捷接口
-void elm327_ble_start_default(const char *target_name);
+// mac 非 NULL 且非全零时按精确 MAC 匹配连接(忽略同名设备); 否则退回 target_name 模糊匹配(兼容旧配置)
+void elm327_ble_start_default(const char *target_name, const uint8_t mac[6]);
 
 // ---- BLE 扫描模式 API ----
 #define BLE_SCAN_MAX_DEVICES 20
@@ -72,8 +74,9 @@ void elm327_ble_scan_only_start(int duration_s, ble_scan_found_cb_t cb);
 // 停止扫描
 void elm327_ble_scan_only_stop(void);
 
-// 连接到指定名称的设备（停止扫描后调用）
-void elm327_ble_connect_by_name(const char *name);
+// 连接到指定 MAC 地址的设备（停止扫描后调用）：精确匹配，不会被同名设备误连。
+// name 仅用于日志/UI 显示。
+void elm327_ble_connect_by_addr(const uint8_t mac[6], const char *name);
 
 // 查询当前连接状态
 bool elm327_ble_is_connected(void);

@@ -29,6 +29,8 @@ typedef struct {
     uint16_t rpm_warn_threshold; // 转速报警阈值 (rpm), 0=未设置(默认 6000)
     uint8_t rpm_warn_anim_en;    // 转速报警动画开关: 0=关, 1=开
     uint8_t espnow_master_mac[6];// 从表绑定的主表 MAC 地址 (全 0 表示未绑定/自动接收)
+    uint8_t ble_obd_mac[6];      // 已配对 ELM327 精确 MAC 地址 (全 0=未绑定, 仅按 ble_device_name 模糊匹配;
+                                 // 新增字段必须加在结构体末尾, 见 nvs_storage.c 里 load_blob 扩容逻辑的注释)
 } nvs_user_cfg_t;
 
 /*------------------ 运行统计（定期落盘） ------------------*/

@@ -66,6 +66,26 @@ static const vehicle_profile_t s_profiles[] = {
         .poll_gap_ms = 1,
     },
     {
+        // BRZ ZD8 (标准 OBD 兜底, 不走 CAN ATMA 监听)
+        // 部分廉价克隆 ELM327 适配器不支持/该车总线不出 ATMA 监听帧, 导致 "ZD8 CAN" 拿不到
+        // 0x040/0x345 数据(转速尚可靠标准 01 0C 兜底刷新, 但油温水温完全依赖 0x345, 会一直读不到)。
+        // 这个变体转速/水温/油温全部走标准 OBD PID(01 0C / 01 05 / 01 5C), 牺牲 100Hz 转速刷新率
+        // 换稳定性; ATMA 监听没问题的话优先用上面的 "ZD8 CAN"。
+        .name = "ZD8",
+        .final_drive_ratio = 3.700f,
+        .tire_rolling_radius_m = 0.318f,   // 225/40R18
+        .gear_count = 6,
+        .gear_ratios = {0, 3.765f, 2.476f, 1.633f, 1.190f, 0.932f, 0.751f},
+        .gear_tolerance = 0.15f,
+        .oil_temp_strategy = {
+            .primary = OIL_TEMP_MODE_PID_5C,        // ZD8 支持标准 PID 5C
+            .secondary = OIL_TEMP_MODE_NONE,
+            .tertiary = OIL_TEMP_MODE_NONE,
+        },
+        .forced_protocol = 6,
+        .poll_gap_ms = 1,
+    },
+    {
         .name = "MX-5 ND",
         .final_drive_ratio = 2.866f,       // ND 6MT (all manuals identical; auto is 3.583)
         .tire_rolling_radius_m = 0.300f,   // 195/50R16
@@ -80,7 +100,7 @@ static const vehicle_profile_t s_profiles[] = {
         },
         // .has_boost defaults to false (NA)
         .obd_timeout = 0x0A,  // 40ms timeout; Mazda CAN typically responds in 5-15ms, reduces NO DATA waits
-        .poll_gap_ms = 1,     // Min slot interval 1ms (0=skip vTaskDelay, 1ms lets scheduler switch tasks)
+        .poll_gap_ms = 50,    // 50ms slot gap: fast enough for responsive UI, safe for Bluetooth ELM327 adapters
     },
     {
         // BMW G-series (G20/G21/G22, B48/B58 turbo, ZF 8HP)

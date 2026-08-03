@@ -30,6 +30,7 @@ typedef enum {
     DISP_ITEM_OILP,
     DISP_ITEM_BKT,
     DISP_ITEM_BOOST,
+    DISP_ITEM_AFR,
     DISP_ITEM_COUNT
 } disp_item_t;
 
@@ -58,6 +59,7 @@ bool disp_item_read_value(disp_item_t item,
                           int16_t load_pct, int16_t tps, int32_t bat_mv,
                           int16_t oilp_x10, int16_t brake_x10,
                           uint16_t rpm, uint16_t speed, int16_t boost_x10,
+                          int16_t afr_x100,
                           int32_t *out);
 
 // 刷表动画值: r ∈ [0,1] → 该数据项的扫表峰值原始值

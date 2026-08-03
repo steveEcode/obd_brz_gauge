@@ -18,6 +18,7 @@ const disp_item_meta_t s_disp_meta[DISP_ITEM_COUNT] = {
     {"OIP", "bar", 0xFFD166},
     {"BKT", "'C", 0xFF5A5A},
     {"BST", "bar", 0x00DD88},
+    {"AFR", "", 0xFFAA00},
 };
 
 // 每个数据项的指针量程: nmin/nmax 为自然单位 (同时用于刻度数字与指针位置),
@@ -34,6 +35,7 @@ const needle_scale_meta_t s_needle_scale_meta[DISP_ITEM_COUNT] = {
     [DISP_ITEM_OILP]  = {0, 10, 10},
     [DISP_ITEM_BKT]   = {0, 800, 10},
     [DISP_ITEM_BOOST] = {0, 20, 1},   // 量程以 0.1bar 计: 0 ~ +2.0 bar 表压(不显示负压)
+    [DISP_ITEM_AFR]   = {8, 22, 100}, // 量程 8.0~22.0:1, 原始值 ×100
 };
 
 bool disp_item_read_value(disp_item_t item,
@@ -41,6 +43,7 @@ bool disp_item_read_value(disp_item_t item,
                           int16_t load_pct, int16_t tps, int32_t bat_mv,
                           int16_t oilp_x10, int16_t brake_x10,
                           uint16_t rpm, uint16_t speed, int16_t boost_x10,
+                          int16_t afr_x100,
                           int32_t *out)
 {
     if (!out) return false;
@@ -56,6 +59,7 @@ bool disp_item_read_value(disp_item_t item,
         case DISP_ITEM_OILP: if (oilp_x10 >= 0) { *out = oilp_x10; return true; } return false;
         case DISP_ITEM_BKT: if (brake_x10 > -1000) { *out = brake_x10; return true; } return false;
         case DISP_ITEM_BOOST: if (boost_x10 != -32768) { *out = boost_x10; return true; } return false;
+        case DISP_ITEM_AFR: if (afr_x100 >= 800 && afr_x100 <= 2200) { *out = afr_x100; return true; } return false;
         default: return false;
     }
 }
@@ -82,6 +86,8 @@ int32_t disp_item_sweep_value(disp_item_t item, float r)
             return (int32_t)(600.0f * r); // 0.0~60.0'C (x10)
         case DISP_ITEM_BOOST:
             return (int32_t)(20.0f * r); // 0.0~2.0bar 表压 (x10)
+        case DISP_ITEM_AFR:
+            return (int32_t)(800.0f + 1400.0f * r); // 8.0~22.0:1 (x100)
         default:
             return 0;
     }
@@ -108,6 +114,9 @@ void disp_item_set_text(lv_obj_t *label, disp_item_t item, int32_t value, bool v
         // 表压可为负(真空)，带符号显示一位小数, e.g. -0.6 / 1.2
         int32_t a = (value < 0) ? -value : value;
         lv_label_set_text_fmt(label, "%s%d.%d", (value < 0) ? "-" : "", (int)(a / 10), (int)(a % 10));
+    } else if (item == DISP_ITEM_AFR) {
+        // AFR: 原始值 ×100, 显示 14.7 (一位小数, 和 BAT/BOOST 等宽)
+        lv_label_set_text_fmt(label, "%d.%d", (int)(value / 100), (int)((value % 100) / 10));
     } else {
         lv_label_set_text_fmt(label, "%ld", (long)value);
     }

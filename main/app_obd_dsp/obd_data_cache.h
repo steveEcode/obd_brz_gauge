@@ -40,6 +40,7 @@ void obd_data_set_boost_x10(int16_t boost_x10); // 涡轮表压, 0.1bar(可为�
 void obd_data_set_brake_temp_x10(int16_t temp_x10); // 刹车温度, 0.1°C
 void obd_data_set_gear(int8_t gear);               // 直接档位: -1=R, 0=N, 1+=前进挡, 127=无效
 void obd_data_set_brake_rs485_status(brake_rs485_status_t status);
+void obd_data_set_afr_x100(int16_t afr_x100);      // 空燃比 AFR, ×100 (1470=14.7:1), -1=无效
 uint16_t obd_data_get_rpm(void);
 uint8_t  obd_data_get_speed(void);
 int16_t  obd_data_get_coolant_temp(void);
@@ -52,6 +53,7 @@ int16_t  obd_data_get_oil_pressure_x10(void); // -1 = 无效
 int16_t  obd_data_get_boost_x10(void); // -32768 = 无效
 int16_t  obd_data_get_brake_temp_x10(void); // -1000 = 无效
 int8_t   obd_data_get_gear(void);            // 127 = 无效 (用计算档位回退)
+int16_t  obd_data_get_afr_x100(void);        // -1 = 无效
 enGear calculate_gear(float rpm, float speed);
 void vMileageDataStatisticTask(void);
 

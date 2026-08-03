@@ -8,9 +8,10 @@
 #include "bsp_obd_dsp/nvs_storage.h"
 #include "app_obd_dsp/vehicle_profiles.h"
 
-// 曲线可选数据源 (disp_item_t 值)。DISP_ITEM_BOOST=10 仅涡轮车型追加。
+// 曲线可选数据源 (disp_item_t 值)。DISP_ITEM_BOOST=10 仅涡轮车型追加, DISP_ITEM_AFR=11 全车型。
 #define CHART_ITEM_BOOST 10
-static const uint8_t k_chart_sources_base[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}; // CLT,IAT,OIL,LOD,TPS,RPM,SPD,BAT,OIP,BKT
+#define CHART_ITEM_AFR   11
+static const uint8_t k_chart_sources_base[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, CHART_ITEM_AFR}; // CLT,IAT,OIL,LOD,TPS,RPM,SPD,BAT,OIP,BKT,AFR
 #define CHART_BASE_COUNT (sizeof(k_chart_sources_base) / sizeof(k_chart_sources_base[0]))
 
 static uint8_t s_chart_sources[CHART_BASE_COUNT + 1];

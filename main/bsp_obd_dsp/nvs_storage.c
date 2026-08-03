@@ -14,7 +14,7 @@
 #define NS_CFG                "cfg"
 #define KEY_CFG               "settings"
 #define KEY_CHART_ALARM       "chartalarm"
-#define CHART_ALARM_N         11   // = DISP_ITEM_COUNT (需与 ui.c disp_item_t 同步)
+#define CHART_ALARM_N         12   // = DISP_ITEM_COUNT (需与 ui.c disp_item_t 同步)
 #define CHART_ALARM_OFF       32767 // 报警阈值"关闭"哨兵值(超不到, 不误红)
 #define KEY_MG_EXTRA          "mgextra"   // 三连表开机动画设置
 #define KEY_CFG_VERSION       "cfgver"    // 配置版本号 (缺失=v0)
@@ -134,12 +134,12 @@ esp_err_t nvs_storage_init(void)
     // 0=未设置/旧NVS越界 → 默认 6000; 集中在这里夹紧, 调用方(ui.c / ui_ScreenPageRpmWarn.c)不用各自重复判断
     if(s_cfg.rpm_warn_threshold < 1000) s_cfg.rpm_warn_threshold = 6000;
 
-    // TEMP/INFO 自定义显示项映射范围校验: 0~9
+    // TEMP/INFO 自定义显示项映射范围校验: 0~(DISP_ITEM_COUNT-1)
     for (int i = 0; i < 3; ++i) {
-        if (s_cfg.temp_display_map[i] > 9) s_cfg.temp_display_map[i] = (uint8_t)i;
+        if (s_cfg.temp_display_map[i] > 11) s_cfg.temp_display_map[i] = (uint8_t)i;
     }
     for (int i = 0; i < 5; ++i) {
-        if (s_cfg.info_display_map[i] > 9) {
+        if (s_cfg.info_display_map[i] > 11) {
             static const uint8_t def_map[5] = {0, 2, 3, 4, 1};
             s_cfg.info_display_map[i] = def_map[i];
         }

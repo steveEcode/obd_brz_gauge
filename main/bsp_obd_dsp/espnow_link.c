@@ -25,7 +25,7 @@ extern int  ui_intro_get_step(void);
 
 #define ESPNOW_CHANNEL          1       // 主从必须同信道(STA 不连AP时固定在此)
 #define ESPNOW_MAGIC            0x4F42  // 'OB' 包头校验
-#define ESPNOW_VER              4       // v4: 追加 intro_step(开机动画同步)
+#define ESPNOW_VER              5       // v5: 追加 afr_x100(空燃比)
 #define MASTER_NAME_LEN         12
 static const char MASTER_NAME[] = "SkyGauge";   // 主表广播的名字(从表显示用); 后续可做成可配置
 #define BROADCAST_INTERVAL_MS   100     // 主表广播周期(10Hz, 仪表足够)
@@ -75,6 +75,7 @@ typedef struct __attribute__((packed)) {
     int16_t  load_pct;
     int16_t  tps;
     int32_t  bat_mv;
+    int16_t  afr_x100;          // 空燃比 AFR, ×100 (1470=14.7:1), -1=无效
     char     name[MASTER_NAME_LEN];  // 主表名字(从表信息页显示 "SLAVE: <name>")
 } espnow_obd_packet_t;
 
@@ -115,6 +116,7 @@ static void master_pack(espnow_obd_packet_t *p) {
     p->load_pct         = obd_data_get_load_pct();
     p->tps              = obd_data_get_tps();
     p->bat_mv           = obd_data_get_bat_mv();
+    p->afr_x100         = obd_data_get_afr_x100();
     strncpy(p->name, MASTER_NAME, MASTER_NAME_LEN);   // 广播主表名字
 }
 
@@ -164,6 +166,7 @@ static void apply_packet(const espnow_obd_packet_t *p) {
     obd_data_set_load_pct(p->load_pct);
     obd_data_set_tps(p->tps);
     obd_data_set_bat_mv(p->bat_mv);
+    obd_data_set_afr_x100(p->afr_x100);
     // 通过事件队列通知 UI task (消除跨 task 直接调用的竞态)
     app_event_send(APP_EVT_ESPNOW_SYNC_SLOT, p->sweep_step);
     app_event_send(APP_EVT_ESPNOW_INTRO_STEP, p->intro_step);

@@ -314,7 +314,7 @@ void app_main(void)
         const nvs_user_cfg_t *user_cfg = nvs_cfg_get();
         if (user_cfg->ble_device_name[0] != '\0') {
             ESP_LOGI(TAG, "BLE target device: %s", user_cfg->ble_device_name);
-            elm327_ble_start_default(user_cfg->ble_device_name);
+            elm327_ble_start_default(user_cfg->ble_device_name, user_cfg->ble_obd_mac);
         } else if (espnow_on) {
             ESP_LOGI(TAG, "No saved BLE device, but MASTER needs BLE stack for SkyGauge pairing broadcast");
             elm327_ble_ensure_stack_init();

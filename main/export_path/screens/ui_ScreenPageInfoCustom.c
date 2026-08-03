@@ -15,7 +15,8 @@ static const char *k_data_options =
     "BAT\n"
     "OILP\n"
     "BKT\n"
-    "BOOST";
+    "BOOST\n"
+    "AFR";
 
 static void on_info_map_changed(lv_event_t *e)
 {

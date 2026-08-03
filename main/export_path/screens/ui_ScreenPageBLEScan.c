@@ -30,6 +30,10 @@ static bool s_slave_mode = false;           // true=从表配对主表, false=OB
 static uint8_t s_gauge_macs[GAUGE_PAIR_SCAN_MAX_DEVICES][6];
 static int s_gauge_mac_count = 0;
 
+// OBD 设备扫描: 同上, 记录每个列表项的 MAC, 选中后按 MAC 精确连接(不会被同名设备误连)
+static uint8_t s_obd_macs[BLE_SCAN_MAX_DEVICES][6];
+static int s_obd_mac_count = 0;
+
 // 前向声明
 static void start_scan(void);
 static void on_device_selected(lv_event_t *e);
@@ -60,6 +64,10 @@ static void scan_result_cb(const ble_scan_result_t *dev, int total_count) {
                 return; // 已存在
             }
         }
+        if (s_obd_mac_count >= BLE_SCAN_MAX_DEVICES) {
+            lvgl_unlock_ui();
+            return;
+        }
 
         // 添加新设备按钮
         lv_obj_t *btn = lv_list_add_btn(s_list, NULL, dev->name);
@@ -68,6 +76,9 @@ static void scan_result_cb(const ble_scan_result_t *dev, int total_count) {
         lv_obj_set_style_text_color(btn, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
         lv_obj_set_style_text_font(btn, &ui_font_FontTypoderSize20, LV_PART_MAIN);
         lv_obj_add_event_cb(btn, on_device_selected, LV_EVENT_CLICKED, NULL);
+
+        memcpy(s_obd_macs[s_obd_mac_count], dev->addr, 6);
+        s_obd_mac_count++;
 
         lv_label_set_text_fmt(s_label_status, "Found %d devices", total_count);
         lvgl_unlock_ui();
@@ -134,12 +145,18 @@ static void on_device_selected(lv_event_t *e) {
 
     ESP_LOGI(TAG_BLE_UI, "Selected BLE device: %s", name);
 
+    uint32_t idx = lv_obj_get_index(btn);
+    if (idx >= (uint32_t)s_obd_mac_count) return;
+    uint8_t mac[6];
+    memcpy(mac, s_obd_macs[idx], 6);
+
     elm327_ble_scan_only_stop();
     s_scanning = false;
 
     nvs_user_cfg_t cfg = *nvs_cfg_get();
     strncpy(cfg.ble_device_name, name, sizeof(cfg.ble_device_name) - 1);
     cfg.ble_device_name[sizeof(cfg.ble_device_name) - 1] = '\0';
+    memcpy(cfg.ble_obd_mac, mac, 6);
     nvs_cfg_set(&cfg);
 
     // 立即刷新已保存设备面板
@@ -150,7 +167,7 @@ static void on_device_selected(lv_event_t *e) {
     lv_label_set_text_fmt(s_label_status, "Connecting: %s", name);
     if (s_spinner) lv_obj_clear_flag(s_spinner, LV_OBJ_FLAG_HIDDEN);
 
-    elm327_ble_connect_by_name(name);
+    elm327_ble_connect_by_addr(mac, name);
     _ui_screen_change(&ui_ScreenPageTemp, LV_SCR_LOAD_ANIM_FADE_ON, 300, 500, &ui_ScreenPageTemp_screen_init);
 }
 
@@ -200,6 +217,7 @@ static void on_saved_device_delete(lv_event_t *e) {
         }
         nvs_user_cfg_t cfg = *nvs_cfg_get();
         cfg.ble_device_name[0] = '\0';
+        memset(cfg.ble_obd_mac, 0, sizeof(cfg.ble_obd_mac));
         nvs_cfg_set(&cfg);
         ESP_LOGI(TAG_BLE_UI, "Saved BLE device cleared");
     }
@@ -226,6 +244,7 @@ static void start_scan(void) {
         s_gauge_mac_count = 0;
         gauge_pair_ble_scan_start(15, scan_result_cb_gauge);
     } else {
+        s_obd_mac_count = 0;
         elm327_ble_scan_only_start(15, scan_result_cb);
     }
 }
