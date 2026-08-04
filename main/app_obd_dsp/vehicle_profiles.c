@@ -100,7 +100,7 @@ static const vehicle_profile_t s_profiles[] = {
         },
         // .has_boost defaults to false (NA)
         .obd_timeout = 0x0A,  // 40ms timeout; Mazda CAN typically responds in 5-15ms, reduces NO DATA waits
-        .poll_gap_ms = 50,    // 50ms slot gap: fast enough for responsive UI, safe for Bluetooth ELM327 adapters
+        .poll_gap_ms = 1,     // Min slot interval 1ms (0=skip vTaskDelay, 1ms lets scheduler switch tasks)
     },
     {
         // BMW G-series (G20/G21/G22, B48/B58 turbo, ZF 8HP)
