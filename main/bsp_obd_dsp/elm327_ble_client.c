@@ -61,7 +61,16 @@ static bool s_poll_task_started = false; // 轮询任务是否已创建
 static TaskHandle_t s_poll_task_handle = NULL; // poll task 句柄，用于 task notification 唤醒
 static volatile bool s_notify_ready = false;   // CCCD 通知订阅完成才置位; init/轮询据此放行(防握手响应丢失)
 static volatile int64_t s_last_obd_valid_us = 0; // 最近一次收到有效OBD数据的时间; 超时无数据触发自愈重初始化
+static volatile bool s_got_valid_data = false;   // 上一轮轮询以来是否解析到真实有效帧; 只有解析路径置位(do_elm_init 不置), 供轮询任务清零自愈计数
 static uint8_t s_oil_query_mode = 0;     // 当前查询模式索引 (0-2)
+
+// 解析到有效 OBD 数据时调用: 刷新"有效数据"时间戳并置位标志。
+// do_elm_init 只设时间戳、不走这里——刚初始化不等于"数据在流动"。否则每次重初始化后
+// heal_attempts 立刻被清零, "连续自愈3次升级为强制重连"永远到不了。
+static inline void mark_obd_data_valid(void) {
+    s_last_obd_valid_us = esp_timer_get_time();
+    s_got_valid_data = true;
+}
 
 // ---- 数据驱动 override 状态 ----
 static const vehicle_override_t *s_ov = NULL;  // 当前车型的覆盖配置
@@ -724,7 +733,7 @@ static bool zc6_can_monitor_parse_line(const char *line)
         s_cbs.on_parsed_gear((int8_t)channels[CH_GEAR]);
 
     s_zc6_can_monitor_last_sample_us = esp_timer_get_time();
-    s_last_obd_valid_us = esp_timer_get_time();
+    mark_obd_data_valid();
     return true;
 }
 
@@ -839,8 +848,13 @@ static void obd_poll_task(void *arg) {
             tick_count = 0;
             continue;
         }
-        // 数据正常流动 → 清零自愈计数
-        if ((esp_timer_get_time() - s_last_obd_valid_us) < 10000000) heal_attempts = 0;
+        // 真实有效数据在流动(上一轮以来解析到过任意帧) → 清零自愈计数。
+        // 不能按时间戳判断: do_elm_init 也会刷新时间戳, 若那也算"数据流动", 每次重初始化后
+        // heal_attempts 立刻被清零, "连续自愈3次强制重连"的升级分支永远执行不到。
+        if (s_got_valid_data) {
+            s_got_valid_data = false;
+            heal_attempts = 0;
+        }
         // 自愈: 连续 >10s 收不到任何有效数据(没响应/SEARCHING/UNABLE TO CONNECT/NO DATA 全覆盖)。
         if ((esp_timer_get_time() - s_last_obd_valid_us) > 10000000) {
             s_last_obd_valid_us = esp_timer_get_time();
@@ -855,7 +869,7 @@ static void obd_poll_task(void *arg) {
                 vTaskDelay(pdMS_TO_TICKS(300));
                 continue;
             }
-            ESP_LOGW(TAG, "No valid OBD data >5s, re-init ELM (self-heal #%u)...", heal_attempts);
+            ESP_LOGW(TAG, "No valid OBD data >10s, re-init ELM (self-heal #%u)...", heal_attempts);
             inited = false;
             continue;
         }
@@ -1042,7 +1056,7 @@ static void obd_poll_task(void *arg) {
         }
         } // end standard OBD poll block
 
-        // 槽间空等: 优先用车型配置的 poll_gap_ms(如 MX-5 ND 升级了 150ms), 未配置则用全局默认 30ms。
+        // 槽间空等: 优先用车型配置的 poll_gap_ms(如 ZC/N6、MX-5 ND 用 1ms), 未配置则用全局默认 30ms。
         // 太小会压垮廉价蓝牙适配器; CAN 总线快速响应车型可放心调小。
         // 如果用户设置 poll_gap_ms = 0，则不用 vTaskDelay，直接过。
         {
@@ -1769,7 +1783,7 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
                         if (s_cbs.on_parsed_speed_kmh) s_cbs.on_parsed_speed_kmh(speed_kmh);
                     }
                 }
-                s_last_obd_valid_us = esp_timer_get_time();
+                mark_obd_data_valid();
                 goto can_parse_done;
             }
 
@@ -1815,13 +1829,13 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
                 if (channels[CH_LOAD] >= 0 && s_cbs.on_parsed_load_pct)
                     s_cbs.on_parsed_load_pct((int16_t)channels[CH_LOAD]);
 
-                s_last_obd_valid_us = esp_timer_get_time();
+                mark_obd_data_valid();
                 ESP_LOGD(TAG, "[CAN 0x%03X] parsed %d vals", seen_ids[si], vals);
             }
             can_parse_done: ;
         }
-        // 收到任一有效数据帧头 → 刷新"有效数据"时间戳
-        if (p41 || p62 || p61 || p441) s_last_obd_valid_us = esp_timer_get_time();
+        // 收到任一有效数据帧头 → 刷新"有效数据"时间戳并置位标志
+        if (p41 || p62 || p61 || p441) mark_obd_data_valid();
 
         if (p441 != NULL) {
             unsigned id=0,b0,b1,b2,b3,b4,b5,b6,b7;
@@ -2178,6 +2192,7 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
         s_accum_len = 0; s_accum_buf[0] = '\0'; // 清空响应累积缓冲区
         s_zc6_can_monitor_active = false;        // 重置 CAN 持续监听
         s_zc6_can_monitor_len = 0;
+        s_got_valid_data = false;                // 防止断开前的陈旧标志在重连后被误消费
         s_last_mode21_oil = -100;
         s_mode21_hold_cnt = 0;
         s_protocol_detect_idx = -1;  // 清理协议检测状态
