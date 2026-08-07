@@ -309,12 +309,23 @@ void app_main(void)
                  espnow_on ? "MASTER" : "STANDALONE",
                  espnow_on ? " + ESP-NOW broadcast" : ", no WiFi/ESP-NOW");
 
-        /* 8.1 启动 BLE OBD - 仅 NVS 有保存设备名时自动连; 否则等用户在扫描页手动选。
+        /* 8.1 启动 BLE OBD - 仅 NVS 已绑定 MAC 时自动连(只认精确 MAC, 不做名字模糊匹配);
+               只有名字没有 MAC 的旧配置不再自动连, 需用户在扫描页重选绑定 MAC。
                MASTER 即使还没配置 OBD 设备, 也要把蓝牙栈启起来, 以便广播 SkyGauge 配对信号。 */
         const nvs_user_cfg_t *user_cfg = nvs_cfg_get();
-        if (user_cfg->ble_device_name[0] != '\0') {
-            ESP_LOGI(TAG, "BLE target device: %s", user_cfg->ble_device_name);
+        bool has_obd_mac = (user_cfg->ble_obd_mac[0] | user_cfg->ble_obd_mac[1] |
+                            user_cfg->ble_obd_mac[2] | user_cfg->ble_obd_mac[3] |
+                            user_cfg->ble_obd_mac[4] | user_cfg->ble_obd_mac[5]) != 0;
+        if (has_obd_mac) {
+            ESP_LOGI(TAG, "BLE target device: %s (mac=%02x:%02x:%02x:%02x:%02x:%02x, MAC-only match)",
+                     user_cfg->ble_device_name,
+                     user_cfg->ble_obd_mac[0], user_cfg->ble_obd_mac[1], user_cfg->ble_obd_mac[2],
+                     user_cfg->ble_obd_mac[3], user_cfg->ble_obd_mac[4], user_cfg->ble_obd_mac[5]);
             elm327_ble_start_default(user_cfg->ble_device_name, user_cfg->ble_obd_mac);
+        } else if (user_cfg->ble_device_name[0] != '\0') {
+            ESP_LOGI(TAG, "Saved device '%s' has no bound MAC, auto-connect disabled; re-select it on BLE SCAN page to bind MAC",
+                     user_cfg->ble_device_name);
+            elm327_ble_ensure_stack_init();   // 栈仍要启起来, 供 RaceChrono/扫描页使用
         } else if (espnow_on) {
             ESP_LOGI(TAG, "No saved BLE device, but MASTER needs BLE stack for SkyGauge pairing broadcast");
             elm327_ble_ensure_stack_init();

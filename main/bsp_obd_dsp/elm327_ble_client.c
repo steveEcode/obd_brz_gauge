@@ -1275,47 +1275,17 @@ static void start_scan(void) {
     esp_ble_gap_start_scanning(10); // 10s
 }
 
-static void normalize_name(const char *src, char *dst, size_t dst_len) {
-    if (!dst || dst_len == 0) return;
-    if (!src) {
-        dst[0] = '\0';
-        return;
-    }
-
-    size_t out = 0;
-    for (size_t i = 0; src[i] != '\0' && out + 1 < dst_len; i++) {
-        char c = src[i];
-        if (c == ' ' || c == '-' || c == '_' || c == '\t') continue;
-        dst[out++] = (char)tolower((unsigned char)c);
-    }
-    dst[out] = '\0';
-}
-
 static bool match_device_target(const esp_ble_gap_cb_param_t *pr, const char *target_name,
                                 char *found_name, size_t found_name_len) {
     if (!pr) return false;
     ble_adv_extract_name(pr->scan_rst.ble_adv, pr->scan_rst.adv_data_len, pr->scan_rst.scan_rsp_len,
                      found_name, found_name_len);
+    (void)target_name;
 
-    // 已绑定精确 MAC: 只认这一个地址, 忽略名字, 防止同名(甚至同型号广播名)设备误连
-    if (s_target_bda_valid) {
-        return memcmp(pr->scan_rst.bda, s_target_bda, sizeof(esp_bd_addr_t)) == 0;
-    }
-
-    if (target_name == NULL || target_name[0] == '\0') return true;
-
-    if (found_name[0] == '\0') return false;
-
-    char found_norm[40] = {0};
-    char target_norm[40] = {0};
-    normalize_name(found_name, found_norm, sizeof(found_norm));
-    normalize_name(target_name, target_norm, sizeof(target_norm));
-    if (found_norm[0] == '\0' || target_norm[0] == '\0') return false;
-
-    // 兼容短名/截断名: 全等、包含、被包含均视为命中
-    return (strcmp(found_norm, target_norm) == 0) ||
-           (strstr(found_norm, target_norm) != NULL) ||
-           (strstr(target_norm, found_norm) != NULL);
+    // 只认精确 MAC 匹配: 未绑定 MAC 时绝不自动连接(不做名字模糊匹配,
+    // 防止连到附近同名适配器导致读不到数据), 需用户在 BLE SCAN 页手动选中绑定 MAC。
+    if (!s_target_bda_valid) return false;
+    return memcmp(pr->scan_rst.bda, s_target_bda, sizeof(esp_bd_addr_t)) == 0;
 }
 
 static void request_discovery(void) {
