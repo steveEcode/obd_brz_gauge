@@ -1245,7 +1245,7 @@ void my_timerMain(lv_timer_t * timer)
                 s_intro_shown = true;
             }
             if (ui_LabelIntroWord) {
-                static const char *words[] = {"", "RACE", "AS", "ONE"};
+                static const char *words[] = {"", "B", "R", "Z"};
                 uint8_t pos = nvs_device_position_get();
                 if (pos < 1 || pos > 3) pos = 1;
                 lv_label_set_text(ui_LabelIntroWord, (s_intro_step >= pos + 1) ? words[pos] : "");

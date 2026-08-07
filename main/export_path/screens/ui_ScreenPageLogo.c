@@ -28,14 +28,14 @@ void ui_ScreenPageLogo_screen_init(void)
 #else
     // SKY GAUGE text logo using Conthrax font
     lv_obj_t *label_sky = lv_label_create(ui_ScreenPageLogo);
-    lv_label_set_text(label_sky, "SKY");
+    lv_label_set_text(label_sky, "BRZ");
     lv_obj_set_style_text_font(label_sky, &ui_font_FontTypoderSize56, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_color(label_sky, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_letter_space(label_sky, 8, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_align(label_sky, LV_ALIGN_CENTER, 0, -20);
 
     lv_obj_t *label_gauge = lv_label_create(ui_ScreenPageLogo);
-    lv_label_set_text(label_gauge, "GAUGE");
+    lv_label_set_text(label_gauge, "SUBARU");
     lv_obj_set_style_text_font(label_gauge, &ui_font_FontTypoderSize36, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_color(label_gauge, lv_color_hex(0xAAAAAA), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_letter_space(label_gauge, 12, LV_PART_MAIN | LV_STATE_DEFAULT);

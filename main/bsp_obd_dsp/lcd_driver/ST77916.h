@@ -43,8 +43,12 @@
 #define EXAMPLE_LCD_PIN_NUM_RST             (-1)    // EXIO2
 #define EXAMPLE_LCD_PIN_NUM_BK_LIGHT        (5)
 
+#ifndef EXAMPLE_LCD_BK_LIGHT_ON_LEVEL
 #define EXAMPLE_LCD_BK_LIGHT_ON_LEVEL       (1)
+#endif
+#ifndef EXAMPLE_LCD_BK_LIGHT_OFF_LEVEL
 #define EXAMPLE_LCD_BK_LIGHT_OFF_LEVEL !EXAMPLE_LCD_BK_LIGHT_ON_LEVEL
+#endif
 
 // 容下一条 40 行渲染带(28.8KB), 每次刷新单次传输完, 减少事务开销提帧率。
 // (比之前花屏时的整帧/43KB 小; 若仍花屏说明本屏单次传输上限更低, 回退 2048)

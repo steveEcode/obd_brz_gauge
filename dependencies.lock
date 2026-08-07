@@ -1,18 +1,18 @@
 dependencies:
   espressif/button:
-    component_hash: c3ee3ba339a3848977496d0157008ae574a24fc59f54d27c93ab51b14446a2fb
+    component_hash: ad64de1d1b8aa139564810a8519b2f1ac275a560a512479ee94c1b6983469d4b
     dependencies:
     - name: espressif/cmake_utilities
       registry_url: https://components.espressif.com
       require: private
-      version: 0.*
+      version: '*'
     - name: idf
       require: private
       version: '>=4.0'
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 3.3.1
+    version: 4.2.0
   espressif/cmake_utilities:
     component_hash: 351350613ceafba240b761b4ea991e0f231ac7a9f59a9ee901f751bddc0bb18f
     dependencies:
@@ -34,7 +34,7 @@ dependencies:
       type: service
     version: 1.2.1
   espressif/knob:
-    component_hash: 138ed090b4c9090a0a678f695b9d1884b368130c729b7333ed35bd7f4e8da80e
+    component_hash: b56694054cd34a683ac2a6f3661963ba00b1dab741a4f3bb59ed6666cbc9f3fb
     dependencies:
     - name: espressif/cmake_utilities
       registry_url: https://components.espressif.com
@@ -46,11 +46,11 @@ dependencies:
     source:
       registry_url: https://components.espressif.com/
       type: service
-    version: 1.0.2
+    version: 1.1.0
   idf:
     source:
       type: idf
-    version: 5.5.3
+    version: 6.0.2
   lvgl/lvgl:
     component_hash: d7c1ac037ae6e85d94897f807d6e7ba0946a83e720074fc95a4f6241da9f9f53
     dependencies: []
@@ -64,6 +64,6 @@ direct_dependencies:
 - espressif/knob
 - idf
 - lvgl/lvgl
-manifest_hash: 27d05f969bbcf7ce0d5821d77c4dc16dd873465bc1256c91f0bd0c7dcdc8a863
+manifest_hash: b4e60dab863878e3c2981c5aa2c6ecad97ca0cc478536a3a4f547de0cd8cbc2d
 target: esp32s3
-version: 2.0.0
+version: 3.0.0

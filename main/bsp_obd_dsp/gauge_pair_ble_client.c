@@ -7,6 +7,7 @@
 
 #include "gauge_pair_ble_client.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -132,7 +133,7 @@ static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) 
         }
         if (exists) break;
 
-        strncpy(s_scan_list[s_scan_count].name, dev_name, sizeof(s_scan_list[s_scan_count].name) - 1);
+        snprintf(s_scan_list[s_scan_count].name, sizeof(s_scan_list[s_scan_count].name), "%s", dev_name);
         memcpy(s_scan_list[s_scan_count].addr, pr->scan_rst.bda, 6);
         s_scan_list[s_scan_count].rssi = pr->scan_rst.rssi;
         s_scan_count++;
