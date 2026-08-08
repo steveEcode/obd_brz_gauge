@@ -65,6 +65,7 @@ typedef struct {
     uint8_t              obd_timeout;    // ATST 值 (0=默认)
     bool                 has_boost;      // 涡轮车
     uint8_t              poll_gap_ms;    // 轮询间隔 (0=默认)
+    const char          *uds_header_cmd; // 查 UDS 油温前临时切换的 ATSH 头 (如 FCA 扩展寻址 "ATSH18DA10F1\r"), 查完恢复标准头; NULL=默认行为
 } vehicle_override_t;
 
 // ================================================================
@@ -125,6 +126,13 @@ static const oil_formula_t oil_mazda_1310 = {
     OIL_UDS_22, {0x13,0x10}, 2, 0, 2, 0.01f, -40.0f, 0
 };
 
+// Alfa Romeo Giulia 2.0T (汽油) 22 13 02 (响应第2数据字节直接为油温°C, 无偏移)
+// 必须在扩展头 18DA10F1 下查询 (见 override uds_header_cmd); 双源交叉验证:
+// danardi78/Alfaromeo-Giulia-Stelvio-PIDs + ClaudeMarais/Simple_OBD2_for_AlfaRomeoGiulia
+static const oil_formula_t oil_giulia_1302 = {
+    OIL_UDS_22, {0x13,0x02}, 2, 1, 1, 1.0f, 0.0f, 0
+};
+
 // Mazda 22 11 1F (单字节: A - 50)
 static const oil_formula_t oil_mazda_111f = {
     OIL_UDS_22, {0x11,0x1F}, 2, 0, 1, 1.0f, -50.0f, 0
@@ -175,9 +183,17 @@ static const oil_formula_t oil_porsche_9971 = {
 // ================================================================
 static const vehicle_override_t s_vehicle_overrides[] = {
     {
-        .match_name      = "ZC/N6",
+        .match_name      = "ZN/C6 CAN",
         .can_rules       = can_rules_zc6,
         .can_rule_count  = 4,   // 转速/TPS/油温/水温, 车速走 OBD
+        .oil_primary     = &oil_toyota_21,
+        .forced_protocol = 6,
+        .poll_gap_ms     = 1,
+    },
+    {
+        // ZN/C6 标准 PID 兜底: 不设 can_rules, 转速/水温走标准 PID (01 0C / 01 05),
+        // 油温走 Toyota Mode 21 01 (同 CAN 版引入之前的老配置)
+        .match_name      = "ZN/C6 PID",
         .oil_primary     = &oil_toyota_21,
         .forced_protocol = 6,
         .poll_gap_ms     = 1,
@@ -240,6 +256,19 @@ static const vehicle_override_t s_vehicle_overrides[] = {
         .oil_primary     = &oil_porsche_9971,
         .oil_secondary   = &oil_std_5c,
         .forced_protocol = 6,
+    },
+    {
+        // Giulia 2.0T: 油温走 FCA UDS 扩展寻址 18DA10F1 (响应 18DAF110), 标准 01 5C 不支持。
+        // 标准 PID (转速/车速/水温/进气温/负荷/TPS/电压/MAP) 走功能寻址 7DF。
+        // 其余可扩展 DID (同头 18DA10F1): 油压 22 13 0A=A*10/255, 档位 22 19 2D (0=N,0x10=R),
+        // 增压表压 22 19 5A=((A*256+B)-32768)/1000-1 bar, 节气门 22 19 24=(A*256+B)/655.35 %
+        .match_name      = "GIULIA 2.0T",
+        .oil_primary     = &oil_giulia_1302,
+        .functional_addr = true,
+        .obd_timeout     = 0x0F,
+        .has_boost       = true,
+        .poll_gap_ms     = 50,
+        .uds_header_cmd  = "ATSH18DA10F1\r",
     },
     // OBD2 Generic: 不在表里 = 纯标准协议
 };

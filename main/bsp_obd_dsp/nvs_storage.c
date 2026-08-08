@@ -125,7 +125,7 @@ esp_err_t nvs_storage_init(void)
     if(s_cfg.needle_source_idx >= 11) s_cfg.needle_source_idx = 0; // DISP_ITEM_COUNT=11 (CLT..BOOST)
     if(s_cfg.device_role > 2) s_cfg.device_role = ESPNOW_ROLE_STANDALONE; // 角色: 0=主 1=从 2=单机, 越界归单机
     if(s_cfg.chart_source_idx >= 11) s_cfg.chart_source_idx = 8; // 曲线数据项越界→默认 OILP(旧NVS该字节为0=CLT亦可, 这里统一到OILP)
-    // 车型索引按已注册的 profile 数量限界（越界归零到 ZC/N6）
+    // 车型索引按已注册的 profile 数量限界（越界归零到索引 0）
     uint8_t vehicle_count = 0;
     vehicle_profile_get_all(&vehicle_count);
     if(vehicle_count > 0 && s_cfg.vehicle_profile_idx >= vehicle_count) s_cfg.vehicle_profile_idx = 0;

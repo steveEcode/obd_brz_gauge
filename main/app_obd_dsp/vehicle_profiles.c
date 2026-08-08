@@ -30,7 +30,8 @@ static const vehicle_profile_t s_profiles[] = {
         // ATMA monitor: 0x140 (100Hz RPM+TPS), 0x360 (20Hz oil+coolant temp)
         // Remaining channels use standard OBD PID
         // Ref: https://github.com/timurrrr/ft86/blob/main/can_bus/gen1.md
-        .name = "ZC/N6",
+        // 标准 PID 兜底版见紧随其后的 "ZN/C6 PID"
+        .name = "ZN/C6 CAN",
         .final_drive_ratio = 4.100f,
         .tire_rolling_radius_m = 0.314f,   // 215/45R17
         .gear_count = 6,
@@ -43,6 +44,26 @@ static const vehicle_profile_t s_profiles[] = {
         },
         .forced_protocol = 6,
         .can_broadcast_mode = true,
+        .poll_gap_ms = 1,
+    },
+    {
+        // BRZ ZC6 / GT86 ZN6 标准 PID 兜底版 (不走 ATMA CAN 监听)
+        // 部分廉价克隆 ELM327 适配器不支持 ATMA 监听, 或该车总线不出 0x140/0x360 帧,
+        // "ZN/C6 CAN" 会拿不到转速/油温/水温。此版本转速/水温走标准 OBD PID (01 0C / 01 05),
+        // 油温走 Toyota Mode 21 01 (同 CAN 版引入之前的老配置), 牺牲 100Hz 转速刷新率换稳定性。
+        // ATMA 监听没问题的话优先用上面的 "ZN/C6 CAN"。
+        .name = "ZN/C6 PID",
+        .final_drive_ratio = 4.100f,
+        .tire_rolling_radius_m = 0.314f,   // 215/45R17
+        .gear_count = 6,
+        .gear_ratios = {0, 3.626f, 2.188f, 1.541f, 1.213f, 1.000f, 0.767f},
+        .gear_tolerance = 0.15f,
+        .oil_temp_strategy = {
+            .primary = OIL_TEMP_MODE_TOYOTA_21_01,  // FA20 不支持 01 5C, 油温固定 Mode 21 01
+            .secondary = OIL_TEMP_MODE_NONE,
+            .tertiary = OIL_TEMP_MODE_NONE,
+        },
+        .forced_protocol = 6,
         .poll_gap_ms = 1,
     },
     {
@@ -203,6 +224,31 @@ static const vehicle_profile_t s_profiles[] = {
         },
         .has_boost = false,
         .forced_protocol = 6,              // Broadcast 0x441 is 11bit/500k, lock protocol 6 for ATMA monitoring
+    },
+    {
+        // Alfa Romeo Giulia 2.0T (GME 2.0 涡轮 + ZF 8HP50 8AT, RWD)
+        // 标准 OBD (转速/车速/水温/进气温/负荷/TPS/电压/MAP) 走功能寻址 7DF; 油温 01 5C 不支持,
+        // 走 FCA UDS 扩展寻址 ATSH18DA10F1 + 22 13 02 (见 vehicle_custom_config.h override)。
+        // MY2018+ SGW 只拦写操作(清码/匹配), 只读实时数据无需 bypass。
+        // 若 22 13 02 无响应, 把 forced_protocol 改 7 (29bit) 再试。
+        .name = "GIULIA 2.0T",
+        .final_drive_ratio = 2.35f,        // RWD 标准尾牙 (Q4 四驱为 2.65, 按实车调整)
+        .tire_rolling_radius_m = 0.330f,   // 225/45R18, 按实际轮胎调整
+        .gear_count = 8,                   // ZF 8HP50
+        .gear_ratios = {0, 5.000f, 3.200f, 2.143f, 1.720f, 1.313f, 1.000f, 0.823f, 0.640f},
+        .gear_tolerance = 0.09f,
+        .oil_temp_strategy = {
+            // 油温由 override 公式统一处理 (22 13 02 @18DA10F1), 不走 enum 策略
+            .primary = OIL_TEMP_MODE_NONE,
+            .secondary = OIL_TEMP_MODE_NONE,
+            .tertiary = OIL_TEMP_MODE_NONE,
+            .quaternary = OIL_TEMP_MODE_NONE,
+        },
+        .has_boost = true,                 // 增压走标准 01 0B (MAP 绝对压)
+        .forced_protocol = 6,              // CAN 11bit 500k
+        .obd_functional_addr = true,       // 标准 PID 用 7DF 广播 (同手机 APP)
+        .obd_timeout = 0x0F,
+        .poll_gap_ms = 50,                 // 扩展 UDS 响应偏慢, 保守一点
     },
 };
 

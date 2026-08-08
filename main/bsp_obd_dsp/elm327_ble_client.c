@@ -178,11 +178,6 @@ static inline uint8_t oil_mode_to_poll_idx(oil_temp_query_mode_t mode) {
     }
 }
 
-static uint8_t get_active_vehicle_idx_safe(void) {
-    // 越界由 vehicle_profile_get 归零，这里直接返回当前索引。
-    return nvs_cfg_get()->vehicle_profile_idx;
-}
-
 static const char *get_vehicle_fixed_header_cmd(void) {
     const vehicle_profile_t *vp = vehicle_profile_get_active();
     if (vp && vp->obd_functional_addr) {
@@ -940,14 +935,18 @@ static void obd_poll_task(void *arg) {
                     if (oil_f && oil_f->type != OIL_SPECIAL) {
                         // 通用公式: 自动构建命令
                         char cmd_buf[24];
-                        // 功能寻址车型查 UDS 时需临时切物理寻址
-                        bool need_phys = s_ov && s_ov->functional_addr && oil_f->type == OIL_UDS_22;
-                        if (need_phys) elm327_ble_send_ascii_blocking("ATSH7E0\r");
+                        // FCA 扩展寻址(Giulia 等): 油温 DID 在 18DA10F1 后面, 临时切头查询后恢复标准头。
+                        // 否则功能寻址车型查 UDS 时临时切物理寻址 7E0。
+                        const char *uds_hdr = (s_ov && s_ov->uds_header_cmd) ? s_ov->uds_header_cmd : NULL;
+                        bool need_phys = !uds_hdr && s_ov && s_ov->functional_addr && oil_f->type == OIL_UDS_22;
+                        if (uds_hdr) elm327_ble_send_ascii_blocking(uds_hdr);
+                        else if (need_phys) elm327_ble_send_ascii_blocking("ATSH7E0\r");
                         if (oil_formula_build_cmd(oil_f, cmd_buf, sizeof(cmd_buf))) {
                             elm327_ble_send_ascii_blocking(cmd_buf);
                             ESP_LOGI(TAG, "[Slot6] Override oil: %s", cmd_buf);
                         }
-                        if (need_phys) elm327_ble_send_ascii_blocking("ATSH7DF\r");
+                        if (uds_hdr) elm327_ble_send_ascii_blocking(get_vehicle_fixed_header_cmd());
+                        else if (need_phys) elm327_ble_send_ascii_blocking("ATSH7DF\r");
                         s_expect_mode21 = false;
                     } else if (oil_f && oil_f->type == OIL_SPECIAL && oil_f->special_id == 0) {
                         // Toyota Mode 21 01 (特殊多帧)
@@ -1128,7 +1127,9 @@ static bool extract_mode21_oil_temp(const uint32_t *d, int count, int32_t *oil_c
 
     // ---- ZC/N6: 用尾部偏移定位, 适配38/39字节两种响应长度 ----
     // 38字节时油温在d[33]=d[38-5]; 39字节时在d[34]=d[39-5]。固定d[33]在39字节帧会读到错误字节。
-    if (get_active_vehicle_idx_safe() == 1) {
+    // 按车型名识别(不用索引): "ZN/C6 CAN" 和 "ZN/C6 PID" 两个变体都走这条解析路径。
+    const vehicle_profile_t *vp_m21 = vehicle_profile_get_active();
+    if (vp_m21 && strncmp(vp_m21->name, "ZN/C6", 5) == 0) {
         #define ZC_MODE21_OIL_TAIL_OFFSET 5
         int zc_idx = count - ZC_MODE21_OIL_TAIL_OFFSET;
         if (zc_idx < 0 || zc_idx >= count) {
