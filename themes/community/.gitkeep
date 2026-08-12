@@ -1,0 +1,3 @@
+# Drop your custom theme files here / 把你的自定义主题文件放到这个目录
+# Naming / 命名规范: <theme-name>.theme.c   e.g. sunset.theme.c
+# See ../README.md / 详见 ../README.md

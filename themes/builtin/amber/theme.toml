@@ -1,0 +1,21 @@
+# AMBER — classic warm amber instrument look.
+# AMBER —— 经典暖色琥珀仪表风格。
+
+id   = "amber"
+name = "AMBER"
+
+author      = "steveEcode"
+description = "Classic warm amber, dark brown face."
+
+[colors]
+bg             = 0x0A0700
+ring           = 0xFFB000
+arc_track      = 0x3A2E10
+arc_indicator  = 0xFFB000
+text_primary   = 0xFFD27A
+text_secondary = 0x9A7B3A
+needle         = 0xFF5A1F
+panel          = 0x241C08
+
+[bezel]
+style_id = 0

@@ -1,22 +1,22 @@
-// 指针式可配置仪表页 (Needle)
-//  - 经典 270° lv_meter 指针表盘，中心显示数值+单位
-//  - 下滑进入数据源选择页 (ui_ScreenPageNeedleConfig)
-//  - 仅通过设置页的“默认启动页”进入；其他方向手势返回主页面
-//  数据读取/量程/刷新逻辑复用 ui.c 的 disp_item 系统 (ui_needle_* 接口)
+// Configurable needle-style gauge page (Needle)
+//  - Classic 270° lv_meter needle dial, value + unit displayed at the center
+//  - Swipe down to enter the data source selection page (ui_ScreenPageNeedleConfig)
+//  - Entered only via the "default boot page" on the settings page; gestures in other directions return to the main page
+//  Data reading/range/refresh logic reuses the disp_item system in ui.c (ui_needle_* interfaces)
 
 #include "../ui.h"
 #include <string.h>
 #include "bsp_obd_dsp/nvs_storage.h"
 #include "app_obd_dsp/vehicle_profiles.h"
 
-// 指针页可选数据源 (disp_item_t 值)，刻意排除 RPM(5)——RPM 已有独立页面。
-// 顺序: CLT, IAT, OIL, LOAD, TPS, SPEED, BAT, OILP, BKT
-#define NEEDLE_ITEM_BOOST 10   // disp_item_t DISP_ITEM_BOOST 的值
-#define NEEDLE_ITEM_AFR   11   // disp_item_t DISP_ITEM_AFR 的值
+// Selectable data sources for the needle page (disp_item_t values); RPM(5) is deliberately excluded -- RPM already has its own page.
+// Order: CLT, IAT, OIL, LOAD, TPS, SPEED, BAT, OILP, BKT
+#define NEEDLE_ITEM_BOOST 10   // value of disp_item_t DISP_ITEM_BOOST
+#define NEEDLE_ITEM_AFR   11   // value of disp_item_t DISP_ITEM_AFR
 static const uint8_t k_needle_sources_base[] = {0, 1, 2, 3, 4, 6, 7, 8, 9, NEEDLE_ITEM_AFR};
 #define NEEDLE_BASE_COUNT (sizeof(k_needle_sources_base) / sizeof(k_needle_sources_base[0]))
 
-// 运行时根据所选车型是否有涡轮，动态决定可选数据源（有涡轮才追加 BOOST）
+// At runtime, dynamically decide the selectable sources based on whether the selected vehicle profile has a turbo (BOOST is appended only with turbo)
 static uint8_t s_needle_sources[NEEDLE_BASE_COUNT + 1];
 static uint8_t s_needle_source_count = 0;
 
@@ -34,7 +34,7 @@ static void build_needle_sources(void)
     }
 }
 
-// 把当前 NVS 中的数据源映射到 roller 选项序号
+// Map the data source currently stored in NVS to the roller option index
 static uint16_t source_to_roller_pos(uint8_t source_idx)
 {
     for (uint16_t i = 0; i < s_needle_source_count; i++) {
@@ -53,7 +53,7 @@ static void on_needle_source_changed(lv_event_t *e)
     cfg.needle_source_idx = s_needle_sources[pos];
     nvs_cfg_set(&cfg);
 
-    // 立即重建指针页量程/名称/单位（页面对象已存在，下次显示即生效）
+    // Immediately rebuild the needle page range/name/unit (the page object already exists; takes effect on next display)
     ui_needle_apply_source();
 }
 
@@ -62,38 +62,53 @@ void ui_ScreenPageNeedle_screen_init(void)
     ui_ScreenPageNeedle = lv_obj_create(NULL);
     lv_obj_clear_flag(ui_ScreenPageNeedle, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_radius(ui_ScreenPageNeedle, 360, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(ui_ScreenPageNeedle, lv_color_hex(0x000000), LV_PART_MAIN);
+    ui_helpers_style_screen_bg(ui_ScreenPageNeedle);
     lv_obj_set_style_bg_opa(ui_ScreenPageNeedle, 255, LV_PART_MAIN);
-    lv_obj_set_style_border_width(ui_ScreenPageNeedle, 0, LV_PART_MAIN);  // 关默认主题边框，改用白环
+    lv_obj_set_style_border_width(ui_ScreenPageNeedle, 0, LV_PART_MAIN);  // disable the default theme border, use a white ring instead
     lv_obj_set_style_pad_all(ui_ScreenPageNeedle, 0, LV_PART_MAIN);
     lv_obj_set_style_outline_width(ui_ScreenPageNeedle, 0, LV_PART_MAIN);
 
-    // ====== 外圈白环（与其它页面一致）======
-    lv_obj_t *ring = ui_helpers_create_ring(ui_ScreenPageNeedle, 8);   // 白环: 静态圆形 border, 替代旋转 spinner, 消除弧接缝缺口
+    // ====== Outer white ring (consistent with other pages) ======
+    lv_obj_t *ring = ui_helpers_create_ring(ui_ScreenPageNeedle, 8);   // white ring: static circular border, replaces the rotating spinner, removes the arc seam gap
 
-    // ====== 指针表盘 ======
+    // ====== Needle dial ======
     ui_NeedleMeter = lv_meter_create(ui_ScreenPageNeedle);
     lv_obj_set_size(ui_NeedleMeter, 320, 320);
     lv_obj_center(ui_NeedleMeter);
     lv_obj_clear_flag(ui_NeedleMeter, LV_OBJ_FLAG_CLICKABLE);
-    // 表盘背景透明，融入黑色页面
+    // Dial background transparent, blends into the black page
     lv_obj_set_style_bg_opa(ui_NeedleMeter, 0, LV_PART_MAIN);
     lv_obj_set_style_border_width(ui_NeedleMeter, 0, LV_PART_MAIN);
-    // 刻度数字字体
+    // Tick number font
     lv_obj_set_style_text_font(ui_NeedleMeter, &ui_font_FontTypoderSize16, LV_PART_TICKS);
     lv_obj_set_style_text_color(ui_NeedleMeter, lv_color_hex(0x666666), LV_PART_TICKS);
 
     ui_NeedleScale = lv_meter_add_scale(ui_NeedleMeter);
-    // 刻度调暗, 突出指针
-    lv_meter_set_scale_ticks(ui_NeedleMeter, ui_NeedleScale, 21, 1, 6, lv_color_hex(0x333333));
+    // Dim the ticks so the needle stands out
+    lv_meter_set_scale_ticks(ui_NeedleMeter, ui_NeedleScale, 21, 1, 6, ui_theme_color_lv(UI_COLOR_ARC_TRACK));
     lv_meter_set_scale_major_ticks(ui_NeedleMeter, ui_NeedleScale, 5, 2, 10, lv_color_hex(0x555555), 14);
-    lv_meter_set_scale_range(ui_NeedleMeter, ui_NeedleScale, 0, 100, 270, 135); // 占位，apply_source 重设
+    lv_meter_set_scale_range(ui_NeedleMeter, ui_NeedleScale, 0, 100, 270, 135); // placeholder, apply_source resets it
 
-    // 指针: 加粗+加长+亮色, 更醒目
-    ui_NeedleIndic = lv_meter_add_needle_line(ui_NeedleMeter, ui_NeedleScale, 10, lv_color_hex(0xFF1010), -10);
+    // Needle: themed artwork if the active theme ships some, otherwise a drawn
+    // line (thicker + longer + bright color, more eye-catching).
+    // Artwork must point RIGHT at rest: lv_meter maps the value onto the scale
+    // rotation and hands that straight to lv_draw_img, whose angle 0 draws the
+    // bitmap unrotated (see lv_meter.c, LV_METER_INDICATOR_TYPE_NEEDLE_IMG).
+    {
+        const ui_theme_t *th = ui_theme_active();
+        if(th->needle_img) {
+            ui_NeedleIndic = lv_meter_add_needle_img(ui_NeedleMeter, ui_NeedleScale,
+                                                     th->needle_img,
+                                                     th->needle_pivot_x, th->needle_pivot_y);
+        }
+        else {
+            ui_NeedleIndic = lv_meter_add_needle_line(ui_NeedleMeter, ui_NeedleScale, 10,
+                                                      ui_theme_color_lv(UI_COLOR_NEEDLE), -10);
+        }
+    }
 
-    // 三个中心标签居中对齐自身，避免不同文本长度造成左右偏移/重合
-    // ====== 名称标签（上方）======
+    // The three center labels are centered on themselves to avoid horizontal offset/overlap caused by different text lengths
+    // ====== Name label (top) ======
     ui_NeedleNameLabel = lv_label_create(ui_ScreenPageNeedle);
     lv_label_set_text(ui_NeedleNameLabel, "");
     lv_obj_set_style_text_font(ui_NeedleNameLabel, &ui_font_FontTypoderSize24, LV_PART_MAIN);
@@ -101,26 +116,26 @@ void ui_ScreenPageNeedle_screen_init(void)
     lv_obj_set_style_text_align(ui_NeedleNameLabel, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
     lv_obj_align(ui_NeedleNameLabel, LV_ALIGN_CENTER, 0, -52);
 
-    // ====== 数值标签（下方，位于 270° 表盘底部开口处，指针扫不到此处，不与指针重叠）======
+    // ====== Value label (bottom, in the opening at the bottom of the 270° dial; the needle never sweeps here, so no overlap) ======
     ui_NeedleValueLabel = lv_label_create(ui_ScreenPageNeedle);
     lv_label_set_text(ui_NeedleValueLabel, "--");
     lv_obj_set_style_text_font(ui_NeedleValueLabel, &ui_font_FontTypoderSize40, LV_PART_MAIN);
-    lv_obj_set_style_text_color(ui_NeedleValueLabel, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_style_text_color(ui_NeedleValueLabel, ui_theme_color_lv(UI_COLOR_TEXT_PRIMARY), LV_PART_MAIN);
     lv_obj_set_style_text_align(ui_NeedleValueLabel, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
     lv_obj_align(ui_NeedleValueLabel, LV_ALIGN_CENTER, 0, 54);
 
-    // ====== 单位标签（数值下方）======
+    // ====== Unit label (below the value) ======
     ui_NeedleUnitLabel = lv_label_create(ui_ScreenPageNeedle);
     lv_label_set_text(ui_NeedleUnitLabel, "");
     lv_obj_set_style_text_font(ui_NeedleUnitLabel, &ui_font_FontTypoderSize20, LV_PART_MAIN);
-    lv_obj_set_style_text_color(ui_NeedleUnitLabel, lv_color_hex(0x888888), LV_PART_MAIN);
+    lv_obj_set_style_text_color(ui_NeedleUnitLabel, ui_theme_color_lv(UI_COLOR_TEXT_SECONDARY), LV_PART_MAIN);
     lv_obj_set_style_text_align(ui_NeedleUnitLabel, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
     lv_obj_align(ui_NeedleUnitLabel, LV_ALIGN_CENTER, 0, 94);
 
-    // 应用当前数据源（设置量程/名称/单位）
+    // Apply the current data source (set range/name/unit)
     ui_needle_apply_source();
 
-    lv_obj_move_foreground(ring);   // 圆环置顶
+    lv_obj_move_foreground(ring);   // bring the ring to the front
     lv_obj_add_event_cb(ui_ScreenPageNeedle, ui_event_needle_background, LV_EVENT_GESTURE, NULL);
 }
 
@@ -129,20 +144,20 @@ void ui_ScreenPageNeedleConfig_screen_init(void)
     ui_ScreenPageNeedleConfig = lv_obj_create(NULL);
     lv_obj_clear_flag(ui_ScreenPageNeedleConfig, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_radius(ui_ScreenPageNeedleConfig, 360, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(ui_ScreenPageNeedleConfig, lv_color_hex(0x000000), LV_PART_MAIN);
+    ui_helpers_style_screen_bg(ui_ScreenPageNeedleConfig);
     lv_obj_set_style_bg_opa(ui_ScreenPageNeedleConfig, 255, LV_PART_MAIN);
-    lv_obj_set_style_border_width(ui_ScreenPageNeedleConfig, 0, LV_PART_MAIN);  // 去掉默认主题白边
+    lv_obj_set_style_border_width(ui_ScreenPageNeedleConfig, 0, LV_PART_MAIN);  // remove the default theme white border
     lv_obj_set_style_pad_all(ui_ScreenPageNeedleConfig, 0, LV_PART_MAIN);
     lv_obj_set_style_outline_width(ui_ScreenPageNeedleConfig, 0, LV_PART_MAIN);
 
-    // 标题
+    // Title
     lv_obj_t *title = lv_label_create(ui_ScreenPageNeedleConfig);
     lv_label_set_text(title, "DATA SOURCE");
     lv_obj_set_style_text_font(title, &ui_font_FontTypoderSize24, LV_PART_MAIN);
     lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
     lv_obj_align(title, LV_ALIGN_CENTER, 0, -110);
 
-    // 按当前车型构建可选数据源(有涡轮才含 BOOST)，再生成选项字符串
+    // Build the selectable sources for the current vehicle profile (includes BOOST only with turbo), then generate the options string
     build_needle_sources();
     char options[176] = {0};
     for (uint16_t i = 0; i < s_needle_source_count; i++) {
@@ -153,7 +168,7 @@ void ui_ScreenPageNeedleConfig_screen_init(void)
     const nvs_user_cfg_t *cfg = nvs_cfg_get();
 
     s_roller_source = lv_roller_create(ui_ScreenPageNeedleConfig);
-    lv_obj_clear_flag(s_roller_source, LV_OBJ_FLAG_GESTURE_BUBBLE); // 滚动选值时不触发页面手势(返回)
+    lv_obj_clear_flag(s_roller_source, LV_OBJ_FLAG_GESTURE_BUBBLE); // scrolling the selection must not trigger the page gesture (back)
     lv_roller_set_options(s_roller_source, options, LV_ROLLER_MODE_NORMAL);
     lv_roller_set_visible_row_count(s_roller_source, 3);
     lv_roller_set_selected(s_roller_source, source_to_roller_pos(cfg->needle_source_idx), LV_ANIM_OFF);
@@ -162,7 +177,7 @@ void ui_ScreenPageNeedleConfig_screen_init(void)
     lv_obj_align(s_roller_source, LV_ALIGN_CENTER, 0, 8);
     lv_obj_add_event_cb(s_roller_source, on_needle_source_changed, LV_EVENT_VALUE_CHANGED, NULL);
 
-    // 提示
+    // Hint
     lv_obj_t *hint = lv_label_create(ui_ScreenPageNeedleConfig);
     lv_label_set_text(hint, "Swipe to go back");
     lv_obj_set_style_text_font(hint, &lv_font_montserrat_12, LV_PART_MAIN);

@@ -4,6 +4,7 @@
 // Project name: OBD_PRJ
 
 #include "ui_helpers.h"
+#include "ui_theme.h"
 
 void _ui_bar_set_property(lv_obj_t * target, int id, int val)
 {
@@ -336,14 +337,27 @@ void _ui_switch_theme(int val)
 #endif
 }
 
-// ==================== 项目自定义 helper(非 SquareLine 生成) ====================
-// 多个 screen 手写重复的样式代码, 抽到这里共用。
+// ==================== Project-custom helpers (not SquareLine generated) ====================
+// Hand-written style code repeated across multiple screens, extracted here for sharing.
 
-// 白色圆环边框(360x360, 居中, 静态圆形 border, 替代旋转 spinner 消除弧接缝缺口)。
-// border_width 大多数页面是 10, 少数(Info/Needle/OilPressure)是 8, 由调用方传入, 不写死。
-// 各 screen 原样调用后自行 lv_obj_move_foreground(), 这里不做前置/置顶处理。
+// Outer bezel ring (360x360, centered, static circular border; replaces the
+// rotating spinner to avoid an arc seam gap). Ring COLOR comes from the active
+// UI theme; border_width stays caller-supplied (most pages use 10, a few use 8).
+// Callers keep their own lv_obj_move_foreground() after this.
 lv_obj_t * ui_helpers_create_ring(lv_obj_t * parent, uint8_t border_width)
 {
+    const ui_theme_t *th = ui_theme_active();
+
+    // Themed bezel artwork: any shape (notches, tick marks, gradients) instead
+    // of the plain circle border. Colors are baked into the artwork.
+    if(th->ring_img) {
+        lv_obj_t *ring = lv_img_create(parent);
+        lv_img_set_src(ring, th->ring_img);
+        lv_obj_set_align(ring, LV_ALIGN_CENTER);
+        lv_obj_clear_flag(ring, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
+        return ring;
+    }
+
     lv_obj_t *ring = lv_obj_create(parent);
     lv_obj_set_size(ring, 360, 360);
     lv_obj_set_align(ring, LV_ALIGN_CENTER);
@@ -351,14 +365,24 @@ lv_obj_t * ui_helpers_create_ring(lv_obj_t * parent, uint8_t border_width)
     lv_obj_set_style_radius(ring, LV_RADIUS_CIRCLE, LV_PART_MAIN);
     lv_obj_set_style_bg_opa(ring, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(ring, 0, LV_PART_MAIN);
-    lv_obj_set_style_border_color(ring, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    lv_obj_set_style_border_color(ring, ui_theme_color_lv(UI_COLOR_RING), LV_PART_MAIN);
     lv_obj_set_style_border_width(ring, border_width, LV_PART_MAIN);
     lv_obj_set_style_border_opa(ring, 255, LV_PART_MAIN);
     return ring;
 }
 
-// 深色滚轮共用配色/边框/圆角(白底黑字选中态), 只需传字体; 宽度/可见行数/手势屏蔽等
-// 结构性设置因页面而异, 仍由调用方自己设置。
+void ui_helpers_style_screen_bg(lv_obj_t * scr)
+{
+    const ui_theme_t *th = ui_theme_active();
+    lv_obj_set_style_bg_color(scr, ui_theme_color_lv(UI_COLOR_BG),
+                              LV_PART_MAIN | LV_STATE_DEFAULT);
+    // Always assign, NULL included: screens are reused and the RPM warning
+    // swaps the background image out, so it must be able to swap back.
+    lv_obj_set_style_bg_img_src(scr, th->dial_face, LV_PART_MAIN | LV_STATE_DEFAULT);
+}
+
+// Dark roller shared colors/border/rounded corners (selected state: black text on white); caller only passes the font.
+// Structural settings (width/visible rows/gesture blocking, etc.) vary per page and stay with the caller.
 void ui_helpers_style_dark_roller(lv_obj_t * r, const lv_font_t * font)
 {
     lv_obj_set_style_text_font(r, font, LV_PART_MAIN);

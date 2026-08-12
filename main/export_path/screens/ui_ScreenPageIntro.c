@@ -1,7 +1,7 @@
-// 三连表开机动画屏 (RACE / AS / ONE)
-//  - 每台设备只显示"本机位置"对应的那个词; 三台按 1→2→3 顺序点亮, 全亮保持后一起进页面。
-//  - 词由 my_timerMain 按 s_intro_step + 本机 device_position 实时设置到 ui_LabelIntroWord。
-//  - 本屏本身只负责布局(黑底 + 一个大号居中标签)。
+// Triple-gauge boot animation screen (RACE / AS / ONE)
+//  - Each device shows only the word for its own position; the three units light up in order 1→2→3, stay fully lit, then enter the page together.
+//  - The word is set in real time by my_timerMain into ui_LabelIntroWord, based on s_intro_step + this unit's device_position.
+//  - This screen itself only handles the layout (black background + one large centered label).
 
 #include "../ui.h"
 
@@ -12,13 +12,13 @@ void ui_ScreenPageIntro_screen_init(void)
     ui_ScreenPageIntro = lv_obj_create(NULL);
     lv_obj_clear_flag(ui_ScreenPageIntro, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_radius(ui_ScreenPageIntro, 360, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(ui_ScreenPageIntro, lv_color_hex(0x000000), LV_PART_MAIN);
+    ui_helpers_style_screen_bg(ui_ScreenPageIntro);
     lv_obj_set_style_bg_opa(ui_ScreenPageIntro, 255, LV_PART_MAIN);
     lv_obj_set_style_border_width(ui_ScreenPageIntro, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(ui_ScreenPageIntro, 0, LV_PART_MAIN);
     lv_obj_set_style_outline_width(ui_ScreenPageIntro, 0, LV_PART_MAIN);
 
-    // White border ring (与其它页面一致)
+    // White border ring (consistent with the other pages)
     lv_obj_t *ring = ui_helpers_create_ring(ui_ScreenPageIntro, 10);
 
     ui_LabelIntroWord = lv_label_create(ui_ScreenPageIntro);
@@ -28,5 +28,5 @@ void ui_ScreenPageIntro_screen_init(void)
     lv_obj_set_style_text_letter_space(ui_LabelIntroWord, 4, LV_PART_MAIN);
     lv_obj_center(ui_LabelIntroWord);
 
-    lv_obj_move_foreground(ring);   // 圆环置顶(与其它页一致)
+    lv_obj_move_foreground(ring);   // bring the ring to the front (consistent with the other pages)
 }

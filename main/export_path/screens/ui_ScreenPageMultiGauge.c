@@ -1,15 +1,15 @@
-// Multi-Gauge (三连表) Settings Page  (设置页下滑进入)
-//  - MODE: MASTER(连 ELM327+广播) / SLAVE(收主表数据) / STANDALONE(单机，不启 WiFi) → NVS device_role
-//  - POSITION: 本机在开机动画中的位置 1/2/3(RACE/AS/ONE)     → NVS device_position
-//  - INTRO: 开机动画开/关(仅多表时播放)                        → NVS intro_enable
-//  改动重启(下次点火)生效。上滑/左右滑返回设置页。
+// Multi-Gauge (triple-gauge) Settings Page  (entered by swiping down from the settings page)
+//  - MODE: MASTER (connects to ELM327 + broadcasts) / SLAVE (receives the master's data) / STANDALONE (standalone, WiFi not started) → NVS device_role
+//  - POSITION: this unit's position 1/2/3 (RACE/AS/ONE) in the boot animation     → NVS device_position
+//  - INTRO: boot animation on/off (played only in multi-gauge mode)                        → NVS intro_enable
+//  Changes take effect after reboot (next ignition). Swipe up/left/right to return to the settings page.
 
 #include "../ui.h"
 #include "bsp_obd_dsp/nvs_storage.h"
 #include "bsp_obd_dsp/espnow_link.h"   // ESPNOW_ROLE_STANDALONE
 
-static const char *mode_names = "MASTER\nSLAVE\nSTANDALONE";   // 索引=device_role: 0=MASTER,1=SLAVE,2=STANDALONE
-static const char *pos_names  = "1\n2\n3";          // 索引 0/1/2 → 位置 1/2/3
+static const char *mode_names = "MASTER\nSLAVE\nSTANDALONE";   // index=device_role: 0=MASTER,1=SLAVE,2=STANDALONE
+static const char *pos_names  = "1\n2\n3";          // index 0/1/2 → position 1/2/3
 static const char *intro_names = "OFF\nRACE\nREI\nSHINJI\nASUKA";  // 0=OFF, 1=RACE, 2/3/4=VIDEO A/B/C
 
 static lv_obj_t *s_roller_mode = NULL;
@@ -18,7 +18,7 @@ static lv_obj_t *s_roller_intro = NULL;
 static lv_obj_t *s_lbl_pos  = NULL;
 static lv_obj_t *s_lbl_intro = NULL;
 
-// 单机隐藏 POS, 多表显示全部
+// Standalone hides POS, multi-gauge shows all
 static void mg_update_visibility(uint8_t role)
 {
     bool is_standalone = (role == ESPNOW_ROLE_STANDALONE);
@@ -35,14 +35,14 @@ static void on_mode_roller_change(lv_event_t *e)
 }
 static void on_pos_roller_change(lv_event_t *e)
 {
-    nvs_device_position_set((uint8_t)lv_roller_get_selected(s_roller_pos) + 1); // 索引→1/2/3
+    nvs_device_position_set((uint8_t)lv_roller_get_selected(s_roller_pos) + 1); // index→1/2/3
 }
 static void on_intro_roller_change(lv_event_t *e)
 {
     nvs_intro_enable_set((uint8_t)lv_roller_get_selected(s_roller_intro));
 }
 
-// 统一 roller 样式
+// Shared roller style
 static void style_mg_roller(lv_obj_t *r)
 {
     lv_obj_clear_flag(r, LV_OBJ_FLAG_GESTURE_BUBBLE);
@@ -67,7 +67,7 @@ void ui_ScreenPageMultiGauge_screen_init(void)
     ui_ScreenPageMultiGauge = lv_obj_create(NULL);
     lv_obj_clear_flag(ui_ScreenPageMultiGauge, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_radius(ui_ScreenPageMultiGauge, 360, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(ui_ScreenPageMultiGauge, lv_color_hex(0x000000), LV_PART_MAIN);
+    ui_helpers_style_screen_bg(ui_ScreenPageMultiGauge);
     lv_obj_set_style_bg_opa(ui_ScreenPageMultiGauge, 255, LV_PART_MAIN);
 
     // White border ring
@@ -88,7 +88,7 @@ void ui_ScreenPageMultiGauge_screen_init(void)
     lv_obj_align(s_roller_mode, LV_ALIGN_CENTER, 0, -85);
     lv_obj_add_event_cb(s_roller_mode, on_mode_roller_change, LV_EVENT_VALUE_CHANGED, NULL);
 
-    // Row 2: POS (RACE/AS/ONE 位置)
+    // Row 2: POS (RACE/AS/ONE position)
     s_lbl_pos = lv_label_create(ui_ScreenPageMultiGauge);
     lv_label_set_text(s_lbl_pos, "POS");
     lv_obj_set_style_text_font(s_lbl_pos, &ui_font_FontTypoderSize16, LV_PART_MAIN);
@@ -105,7 +105,7 @@ void ui_ScreenPageMultiGauge_screen_init(void)
     lv_obj_align(s_roller_pos, LV_ALIGN_CENTER, 0, -35);
     lv_obj_add_event_cb(s_roller_pos, on_pos_roller_change, LV_EVENT_VALUE_CHANGED, NULL);
 
-    // Row 3: INTRO (多表：OFF/RACE/VIDEO)
+    // Row 3: INTRO (multi-gauge: OFF/RACE/VIDEO)
     s_lbl_intro = lv_label_create(ui_ScreenPageMultiGauge);
     lv_label_set_text(s_lbl_intro, "INTRO");
     lv_obj_set_style_text_font(s_lbl_intro, &ui_font_FontTypoderSize16, LV_PART_MAIN);
@@ -122,7 +122,7 @@ void ui_ScreenPageMultiGauge_screen_init(void)
     lv_obj_align(s_roller_intro, LV_ALIGN_CENTER, 0, 15);
     lv_obj_add_event_cb(s_roller_intro, on_intro_roller_change, LV_EVENT_VALUE_CHANGED, NULL);
 
-    // 根据角色隐藏无关行
+    // Hide irrelevant rows based on role
     mg_update_visibility(cfg->device_role);
 
     // Hint

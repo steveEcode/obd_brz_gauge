@@ -37,7 +37,7 @@ static void create_row(lv_obj_t *parent, int idx, const char *title, lv_coord_t 
     lv_obj_align(lbl, LV_ALIGN_CENTER, -92, y);
 
     s_temp_rollers[idx] = lv_roller_create(parent);
-    lv_obj_clear_flag(s_temp_rollers[idx], LV_OBJ_FLAG_GESTURE_BUBBLE); // 滚动选值时不触发页面手势
+    lv_obj_clear_flag(s_temp_rollers[idx], LV_OBJ_FLAG_GESTURE_BUBBLE); // scrolling the selection must not trigger the page gesture
     lv_roller_set_options(s_temp_rollers[idx], k_data_options, LV_ROLLER_MODE_NORMAL);
     lv_roller_set_visible_row_count(s_temp_rollers[idx], 1);
     lv_obj_set_width(s_temp_rollers[idx], 170);
@@ -60,10 +60,10 @@ void ui_ScreenPageTempCustom_screen_init(void)
     ui_ScreenPageTempCustom = lv_obj_create(NULL);
     lv_obj_clear_flag(ui_ScreenPageTempCustom, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_radius(ui_ScreenPageTempCustom, 360, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(ui_ScreenPageTempCustom, lv_color_hex(0x000000), LV_PART_MAIN);
+    ui_helpers_style_screen_bg(ui_ScreenPageTempCustom);
     lv_obj_set_style_bg_opa(ui_ScreenPageTempCustom, 255, LV_PART_MAIN);
 
-    lv_obj_t *ring = ui_helpers_create_ring(ui_ScreenPageTempCustom, 10);   // 白环: 静态圆形 border, 替代旋转 spinner, 消除弧接缝缺口
+    lv_obj_t *ring = ui_helpers_create_ring(ui_ScreenPageTempCustom, 10);   // white ring: static circular border, replaces the rotating spinner, removes the arc seam gap
 
     lv_obj_t *title = lv_label_create(ui_ScreenPageTempCustom);
     lv_label_set_text(title, "TEMP CUSTOM");
@@ -89,6 +89,6 @@ void ui_ScreenPageTempCustom_screen_init(void)
     lv_img_set_src(ear, &ui_img_pngblackear_png);
     lv_obj_align(ear, LV_ALIGN_CENTER, 0, -142);
 
-    lv_obj_move_foreground(ring);   // 圆环置顶
+    lv_obj_move_foreground(ring);   // bring the ring to the front
     lv_obj_add_event_cb(ui_ScreenPageTempCustom, ui_event_temp_custom_background, LV_EVENT_GESTURE, NULL);
 }

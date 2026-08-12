@@ -16,7 +16,7 @@ void ui_ScreenPageEasterEgg_screen_init(void)
     ui_ScreenPageEasterEgg = lv_obj_create(NULL);
     lv_obj_clear_flag(ui_ScreenPageEasterEgg, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
     lv_obj_set_style_radius(ui_ScreenPageEasterEgg, 360, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(ui_ScreenPageEasterEgg, lv_color_hex(0x000000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_helpers_style_screen_bg(ui_ScreenPageEasterEgg);
     lv_obj_set_style_bg_opa(ui_ScreenPageEasterEgg, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     // White border ring
@@ -30,7 +30,7 @@ void ui_ScreenPageEasterEgg_screen_init(void)
     lv_obj_set_style_text_color(label_title, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_align(label_title, LV_ALIGN_CENTER, 0, -70);
 
-    // Device & firmware info — 按角色: 主表显示 BLE(ELM327), 从表显示 SLAVE(主表名字)
+    // Device & firmware info — per role: master shows BLE (ELM327), slave shows SLAVE (the master's name)
     bool is_slave = (nvs_cfg_get()->device_role == ESPNOW_ROLE_SLAVE);
     const char *mode_str = is_slave ? "SLAVE" : "MASTER";
     const char *conn_label, *conn_name, *conn_status;

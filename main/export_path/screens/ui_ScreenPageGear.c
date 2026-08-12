@@ -10,21 +10,13 @@ void ui_ScreenPageGear_screen_init(void)
     ui_ScreenPageGear = lv_obj_create(NULL);
     lv_obj_clear_flag(ui_ScreenPageGear, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
     lv_obj_set_style_radius(ui_ScreenPageGear, 360, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(ui_ScreenPageGear, lv_color_hex(0x000000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_helpers_style_screen_bg(ui_ScreenPageGear);
     lv_obj_set_style_bg_opa(ui_ScreenPageGear, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    ui_SpinnerGearPage = lv_obj_create(ui_ScreenPageGear);   // 白环: 静态圆形 border, 替代旋转 spinner, 消除弧接缝缺口
-    lv_obj_set_size(ui_SpinnerGearPage, 360, 360);
-    lv_obj_set_align(ui_SpinnerGearPage, LV_ALIGN_CENTER);
-    lv_obj_clear_flag(ui_SpinnerGearPage, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_radius(ui_SpinnerGearPage, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(ui_SpinnerGearPage, 0, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(ui_SpinnerGearPage, 0, LV_PART_MAIN);
-    lv_obj_set_style_border_color(ui_SpinnerGearPage, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-    lv_obj_set_style_border_width(ui_SpinnerGearPage, 10, LV_PART_MAIN);
-    lv_obj_set_style_border_opa(ui_SpinnerGearPage, 255, LV_PART_MAIN);
+    // Bezel ring (color from the active theme)
+    ui_SpinnerGearPage = ui_helpers_create_ring(ui_ScreenPageGear, 10);
 
-    lv_obj_set_style_arc_color(ui_SpinnerGearPage, lv_color_hex(0xFFFFFF), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_color(ui_SpinnerGearPage, ui_theme_color_lv(UI_COLOR_RING), LV_PART_INDICATOR | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_opa(ui_SpinnerGearPage, 0, LV_PART_INDICATOR | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_width(ui_SpinnerGearPage, 10, LV_PART_INDICATOR | LV_STATE_DEFAULT);
 
@@ -33,7 +25,7 @@ void ui_ScreenPageGear_screen_init(void)
     lv_obj_set_height(ui_GearPageArcLabelGearNumText, LV_SIZE_CONTENT);    /// 1
     lv_obj_set_align(ui_GearPageArcLabelGearNumText, LV_ALIGN_CENTER);
     lv_label_set_text(ui_GearPageArcLabelGearNumText, "N");
-    lv_obj_set_style_text_color(ui_GearPageArcLabelGearNumText, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(ui_GearPageArcLabelGearNumText, ui_theme_color_lv(UI_COLOR_TEXT_PRIMARY), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_opa(ui_GearPageArcLabelGearNumText, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(ui_GearPageArcLabelGearNumText, &ui_font_FontTypoderSize140, LV_PART_MAIN | LV_STATE_DEFAULT);
 
@@ -44,17 +36,17 @@ void ui_ScreenPageGear_screen_init(void)
     lv_obj_clear_flag(ui_GearPageArcGearNumBack, LV_OBJ_FLAG_CLICKABLE);      /// Flags
     lv_arc_set_value(ui_GearPageArcGearNumBack, 0);
     lv_arc_set_bg_angles(ui_GearPageArcGearNumBack, 0, 360);
-    lv_obj_set_style_arc_color(ui_GearPageArcGearNumBack, lv_color_hex(0x333333), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_color(ui_GearPageArcGearNumBack, ui_theme_color_lv(UI_COLOR_ARC_TRACK), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_opa(ui_GearPageArcGearNumBack, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_width(ui_GearPageArcGearNumBack, 20, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_rounded(ui_GearPageArcGearNumBack, false, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    lv_obj_set_style_arc_color(ui_GearPageArcGearNumBack, lv_color_hex(0xFFFFFF), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_color(ui_GearPageArcGearNumBack, ui_theme_color_lv(UI_COLOR_ARC_INDICATOR), LV_PART_INDICATOR | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_opa(ui_GearPageArcGearNumBack, 255, LV_PART_INDICATOR | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_width(ui_GearPageArcGearNumBack, 20, LV_PART_INDICATOR | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_rounded(ui_GearPageArcGearNumBack, false, LV_PART_INDICATOR | LV_STATE_DEFAULT);
 
-    lv_obj_set_style_bg_color(ui_GearPageArcGearNumBack, lv_color_hex(0xFFFFFF), LV_PART_KNOB | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(ui_GearPageArcGearNumBack, ui_theme_color_lv(UI_COLOR_ARC_INDICATOR), LV_PART_KNOB | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(ui_GearPageArcGearNumBack, 0, LV_PART_KNOB | LV_STATE_DEFAULT);
 
     ui_ImageGearBlackEar = lv_img_create(ui_ScreenPageGear);
@@ -68,7 +60,7 @@ void ui_ScreenPageGear_screen_init(void)
     lv_obj_clear_flag(ui_ImageGearBlackEar, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
 
     lv_obj_add_event_cb(ui_GearPageArcGearNumBack, ui_event_gear_background, LV_EVENT_ALL, NULL);
-    lv_obj_move_foreground(ui_SpinnerGearPage);   // 圆环置顶
+    lv_obj_move_foreground(ui_SpinnerGearPage);   // bring the ring to the front
     lv_obj_add_event_cb(ui_ScreenPageGear, ui_event_gear_background, LV_EVENT_GESTURE, NULL);
 
 }

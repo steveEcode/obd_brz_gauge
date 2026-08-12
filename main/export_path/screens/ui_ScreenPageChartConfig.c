@@ -1,14 +1,14 @@
-// 曲线数据源选择页 (曲线页下滑进入)
-//  - roller 列出全部可显示数据项(涡轮压力仅涡轮车型出现)
-//  - 选中即写入 NVS chart_source_idx 并立即应用到曲线页
-//  - 任意方向手势返回曲线页 (见 ui_event_chart_config_background)
+// Chart data source selection page (entered by swiping down from the chart page)
+//  - The roller lists all displayable data items (boost appears only for turbo vehicle profiles)
+//  - Selecting writes NVS chart_source_idx and applies to the chart page immediately
+//  - A gesture in any direction returns to the chart page (see ui_event_chart_config_background)
 
 #include "../ui.h"
 #include <string.h>
 #include "bsp_obd_dsp/nvs_storage.h"
 #include "app_obd_dsp/vehicle_profiles.h"
 
-// 曲线可选数据源 (disp_item_t 值)。DISP_ITEM_BOOST=10 仅涡轮车型追加, DISP_ITEM_AFR=11 全车型。
+// Selectable chart data sources (disp_item_t values). DISP_ITEM_BOOST=10 is appended only for turbo profiles, DISP_ITEM_AFR=11 for all profiles.
 #define CHART_ITEM_BOOST 10
 #define CHART_ITEM_AFR   11
 static const uint8_t k_chart_sources_base[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, CHART_ITEM_AFR}; // CLT,IAT,OIL,LOD,TPS,RPM,SPD,BAT,OIP,BKT,AFR
@@ -48,7 +48,7 @@ static void on_chart_source_changed(lv_event_t *e)
     cfg.chart_source_idx = s_chart_sources[pos];
     nvs_cfg_set(&cfg);
 
-    ui_chart_apply_source();   // 立即应用到曲线页(标题/颜色/单位/量程)
+    ui_chart_apply_source();   // apply to the chart page immediately (title/color/unit/range)
 }
 
 void ui_ScreenPageChartConfig_screen_init(void)
@@ -56,7 +56,7 @@ void ui_ScreenPageChartConfig_screen_init(void)
     ui_ScreenPageChartConfig = lv_obj_create(NULL);
     lv_obj_clear_flag(ui_ScreenPageChartConfig, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_radius(ui_ScreenPageChartConfig, 360, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(ui_ScreenPageChartConfig, lv_color_hex(0x000000), LV_PART_MAIN);
+    ui_helpers_style_screen_bg(ui_ScreenPageChartConfig);
     lv_obj_set_style_bg_opa(ui_ScreenPageChartConfig, 255, LV_PART_MAIN);
     lv_obj_set_style_border_width(ui_ScreenPageChartConfig, 0, LV_PART_MAIN);
     lv_obj_set_style_pad_all(ui_ScreenPageChartConfig, 0, LV_PART_MAIN);

@@ -1,0 +1,122 @@
+# ============================================================================
+#  Theme manifest template / 主题清单模板
+#
+#  This folder is NOT built — `_TEMPLATE` is skipped by the generator.
+#  本文件夹不参与构建 —— 生成器会跳过 `_TEMPLATE`。
+#
+#  TO CREATE A THEME / 新建主题:
+#    1. cp -r themes/_TEMPLATE themes/community/<your-id>
+#    2. Edit this file: set `id` to the folder name, pick your colors.
+#       编辑本文件：把 id 改成文件夹名，填上你的配色。
+#    3. Append a line to themes/registry.txt.
+#       在 themes/registry.txt 末尾追加一行。
+#    4. idf.py build — done. No C code to edit.
+#       编译即可，不用改任何 C 代码。
+#
+#  Full guide: themes/README.md / 完整说明见 themes/README.md
+# ============================================================================
+
+# Stable identifier. MUST match the folder name and the id in registry.txt.
+# Allowed: lowercase letters, digits, '-' and '_'.
+# 稳定标识。必须和文件夹名、registry.txt 里的 id 一致。
+# 允许：小写字母、数字、'-'、'_'。
+id = "sunset"
+
+# Shown in Settings > THEME. Uppercase ASCII/digits, 1-10 chars, must be unique.
+# 显示在 设置 > THEME 里。大写 ASCII/数字，1~10 个字符，不能重名。
+name = "SUNSET"
+
+# Metadata — free text, not compiled into the firmware.
+# 元信息 —— 自由填写，不会编译进固件。
+author      = "your-github-handle"
+description = "Warm orange face with a deep purple ring."
+
+# ---- Decorative colors / 装饰色 ----
+# All eight are REQUIRED. Format 0xRRGGBB.
+# 八个全部必填。格式 0xRRGGBB。
+#
+# Do NOT try to set alarm red / toggle green here — those are semantic colors
+# (UI_SEM_* in ui_theme.h) and are deliberately global so a warning always
+# reads as a warning, whatever skin is active.
+# 不要在这里改报警红/开关绿 —— 那些是语义色（ui_theme.h 里的 UI_SEM_*），
+# 故意做成全局固定的，保证无论什么皮肤，警告都一眼认得出来。
+[colors]
+
+# Screen / page background. Usually very dark.
+# 屏幕/页面背景。一般用很深的颜色。
+bg             = 0x140800
+
+# Outer bezel ring around every page.
+# 每个页面边缘的外圈表框。
+ring           = 0x6A2C8A
+
+# Gauge arc track, slider groove, minor ticks — the "not reached yet" part.
+# 仪表弧线底轨、滑块凹槽、小刻度 —— "还没走到"的那部分。
+arc_track      = 0x3A1810
+
+# Gauge arc progress, slider fill and knob — the "reached" part.
+# 仪表弧线进度、滑块填充和滑块头 —— "已走到"的那部分。
+# Keep this clearly brighter than arc_track or progress becomes unreadable.
+# 要明显比 arc_track 亮，否则看不出走了多少。
+arc_indicator  = 0xFF7A18
+
+# Values and main text (the big numbers).
+# 数值和主文字（大号数字）。
+text_primary   = 0xFFE0C0
+
+# Hints, units, small labels. Dimmer than text_primary, but still legible
+# at a glance while driving.
+# 提示文字、单位、小标签。比 text_primary 暗，但开车时瞄一眼还得看得清。
+text_secondary = 0x9A6440
+
+# Meter needle on the needle page.
+# 指针页的指针。
+needle         = 0xFF3020
+
+# Panel / list / roller background on settings-style pages.
+# 设置类页面的面板/列表/滚轮背景。
+panel          = 0x2A1408
+
+# ---- Bezel style / 表框样式 ----
+# Only style_id = 0 (plain solid ring) exists today. Reserved for future
+# variants (double ring, tick decoration).
+# 目前只有 style_id = 0（纯色实心圆环）。为将来的变体预留（双圈、刻度装饰）。
+[bezel]
+style_id = 0
+
+# ---- Artwork / 美术素材 (optional / 可选) ----
+# Uncomment to replace the drawn shapes with your own PNGs. Every key is
+# independent — declare only what you have; anything omitted keeps the drawn
+# version and its color role above.
+# 取消注释即可用自己的 PNG 替换代码画出来的形状。每一项都是独立的 ——
+# 有什么写什么，没写的就继续用代码绘制 + 上面对应的颜色。
+#
+# Working reference artwork ships in this folder's assets/ — copy it, open it
+# to see the expected size and orientation, then replace it with your own.
+# 本文件夹的 assets/ 里就是可直接用的参考素材 —— 复制过去、打开看清尺寸和
+# 朝向，再换成你自己的。
+#
+# REQUIREMENTS / 要求
+#   ring    exactly 360x360, PNG with alpha (transparent centre).
+#           必须正好 360x360，带透明通道（中间镂空）。
+#   needle  any size up to 360x360, PNG with alpha.
+#           MUST POINT RIGHT (east). LVGL rotates it around the pivot, and
+#           angle 0 draws the bitmap unrotated — art pointing up will be 90° off.
+#           任意尺寸（不超过 360x360），带透明通道。
+#           必须画成朝右（东）。LVGL 绕 pivot 旋转，角度 0 是原样绘制 ——
+#           画成朝上的话会整体偏 90°。
+#   dial    exactly 360x360. Alpha is ignored (it is the bottom layer).
+#           必须正好 360x360。透明通道会被忽略（它是最底层）。
+#
+# COST / 开销: artwork is compiled into the firmware, and EVERY registered
+# theme's artwork is linked in — not just the active one. A full set is about
+# 645 KB (ring 380 + dial 253 + needle 12). The build fails past the budget.
+# 素材会编译进固件，而且**所有已注册主题**的素材都会被链接进去，不只是当前
+# 激活的那个。一整套约 645 KB（表框 380 + 表盘 253 + 指针 12）。超预算会构建失败。
+#
+# [assets]
+# ring   = "assets/ring.png"
+# needle = "assets/needle.png"
+# needle_pivot_x = 24          # rotation center in the needle art, from top-left
+# needle_pivot_y = 12          # 指针图的旋转中心，从左上角算起
+# dial   = "assets/dial.png"

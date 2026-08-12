@@ -10,17 +10,17 @@ void ui_ScreenPageLogo_screen_init(void)
     ui_ScreenPageLogo = lv_obj_create(NULL);
     lv_obj_clear_flag(ui_ScreenPageLogo, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
     lv_obj_set_style_radius(ui_ScreenPageLogo, 360, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(ui_ScreenPageLogo, lv_color_hex(0x0000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_helpers_style_screen_bg(ui_ScreenPageLogo);
     lv_obj_set_style_bg_opa(ui_ScreenPageLogo, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
 #if USE_CUSTOM_BOOT_LOGO == 1
     LV_IMG_DECLARE(imgBootLogoCustom);
-    // 客户自定义开机图(静态图片，居中)
+    // Customer-defined boot image (static picture, centered)
     imageLogo = lv_img_create(ui_ScreenPageLogo);
     lv_img_set_src(imageLogo, &imgBootLogoCustom);
     lv_obj_align(imageLogo, LV_ALIGN_CENTER, 0, 0);
 
-    // White border ring (与其它页面一致)
-    lv_obj_t *spinnerLogo = ui_helpers_create_ring(ui_ScreenPageLogo, 10);   // 白环: 静态圆形 border
+    // White border ring (consistent with the other pages)
+    lv_obj_t *spinnerLogo = ui_helpers_create_ring(ui_ScreenPageLogo, 10);   // white ring: static circular border
 #elif USE_GIF_LOGO == 1
     imageLogo = lv_gif_create(ui_ScreenPageLogo);
     lv_gif_set_src(imageLogo, &gifSnake400);
@@ -44,7 +44,7 @@ void ui_ScreenPageLogo_screen_init(void)
     imageLogo = NULL; // No image logo anymore
 
     // White border ring (same as Gear page style)
-    lv_obj_t *spinnerLogo = ui_helpers_create_ring(ui_ScreenPageLogo, 10);   // 白环: 静态圆形 border, 替代旋转 spinner, 消除弧接缝缺口
+    lv_obj_t *spinnerLogo = ui_helpers_create_ring(ui_ScreenPageLogo, 10);   // white ring: static circular border, replaces the rotating spinner, removes the arc seam gap
 #endif
     lv_obj_add_event_cb(ui_ScreenPageLogo, ui_event_logo_background, LV_EVENT_ALL, NULL);
 }

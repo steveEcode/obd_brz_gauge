@@ -1,5 +1,5 @@
-// 通用曲线页 (原机油压力页改造): 数据项由 NVS chart_source_idx 决定
-//  - 下滑 → 数据源选择页; 标题/圆点/单位/颜色/量程由 ui_chart_apply_source() 按数据项设置
+// Generic chart page (reworked from the original oil pressure page): the data item is determined by NVS chart_source_idx
+//  - Swipe down → data source selection page; title/dot/unit/color/range are set per data item by ui_chart_apply_source()
 
 #include "../ui.h"
 
@@ -15,14 +15,14 @@ void ui_ScreenPageOilPressure_screen_init(void)
     ui_ScreenPageOilPressure = lv_obj_create(NULL);
     lv_obj_clear_flag(ui_ScreenPageOilPressure, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_radius(ui_ScreenPageOilPressure, 360, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(ui_ScreenPageOilPressure, lv_color_hex(0x000000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_helpers_style_screen_bg(ui_ScreenPageOilPressure);
     lv_obj_set_style_bg_opa(ui_ScreenPageOilPressure, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_pad_all(ui_ScreenPageOilPressure, 0, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    lv_obj_t *ring = ui_helpers_create_ring(ui_ScreenPageOilPressure, 8);   // 白环: 静态圆形 border, 替代旋转 spinner, 消除弧接缝缺口
+    lv_obj_t *ring = ui_helpers_create_ring(ui_ScreenPageOilPressure, 8);   // white ring: static circular border, replaces the rotating spinner, removes the arc seam gap
 
     ui_LabelChartTitle = lv_label_create(ui_ScreenPageOilPressure);
-    lv_label_set_text(ui_LabelChartTitle, "");        // 文本/颜色由 ui_chart_apply_source() 设置
+    lv_label_set_text(ui_LabelChartTitle, "");        // text/color set by ui_chart_apply_source()
     lv_obj_set_style_text_font(ui_LabelChartTitle, &ui_font_FontTypoderSize20, LV_PART_MAIN);
     lv_obj_align(ui_LabelChartTitle, LV_ALIGN_CENTER, 0, -122);
 
@@ -30,10 +30,10 @@ void ui_ScreenPageOilPressure_screen_init(void)
     lv_obj_remove_style_all(ui_ChartDot);
     lv_obj_set_size(ui_ChartDot, 10, 10);
     lv_obj_set_style_radius(ui_ChartDot, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(ui_ChartDot, 255, LV_PART_MAIN);   // 颜色由 apply 设置
+    lv_obj_set_style_bg_opa(ui_ChartDot, 255, LV_PART_MAIN);   // color set by apply
     lv_obj_align(ui_ChartDot, LV_ALIGN_CENTER, -106, -22);
 
-    // 与刹车温页统一布局: 数值 Size28 + 单位同行, 曲线上移到 +62
+    // Layout unified with the brake temp page: value Size28 + unit on the same row, chart moved up to +62
     ui_LabelOilPressureText = lv_label_create(ui_ScreenPageOilPressure);
     lv_label_set_text(ui_LabelOilPressureText, "--.-");
     lv_obj_set_style_text_font(ui_LabelOilPressureText, &ui_font_FontTypoderSize36, LV_PART_MAIN);
@@ -43,7 +43,7 @@ void ui_ScreenPageOilPressure_screen_init(void)
     lv_obj_align(ui_LabelOilPressureText, LV_ALIGN_CENTER, -10, -24);
 
     ui_LabelChartUnit = lv_label_create(ui_ScreenPageOilPressure);
-    lv_label_set_text(ui_LabelChartUnit, "");         // 文本由 ui_chart_apply_source() 设置
+    lv_label_set_text(ui_LabelChartUnit, "");         // text set by ui_chart_apply_source()
     lv_obj_set_style_text_font(ui_LabelChartUnit, &ui_font_FontTypoderSize24, LV_PART_MAIN);
     lv_obj_set_style_text_color(ui_LabelChartUnit, lv_color_hex(0x999999), LV_PART_MAIN);
     lv_obj_align(ui_LabelChartUnit, LV_ALIGN_CENTER, 88, -26);
@@ -94,8 +94,8 @@ void ui_ScreenPageOilPressure_screen_init(void)
     lv_obj_add_flag(ear, LV_OBJ_FLAG_ADV_HITTEST);
     lv_obj_clear_flag(ear, LV_OBJ_FLAG_SCROLLABLE);
 
-    ui_chart_apply_source();   // 按当前数据项设置标题/圆点/单位/颜色/Y量程
+    ui_chart_apply_source();   // sets title/dot/unit/color/Y range per the current data item
 
-    lv_obj_move_foreground(ring);   // 圆环置顶
+    lv_obj_move_foreground(ring);   // bring the ring to the front
     lv_obj_add_event_cb(ui_ScreenPageOilPressure, ui_event_oil_pressure_background, LV_EVENT_GESTURE, NULL);
 }

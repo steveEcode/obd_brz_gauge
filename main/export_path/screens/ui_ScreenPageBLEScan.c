@@ -1,9 +1,9 @@
 // BLE Scan & Select Page
 // Shows saved device (with delete) + a list of discovered BLE devices
 //
-// 按 device_role 分两种用途:
-//  - MASTER/STANDALONE: 扫描并连接 OBD ELM327 适配器(原有逻辑不变)
-//  - SLAVE: 扫描并配对三连表主表("SkyGauge-XXYY" 广播), 见 gauge_pair_ble_client.c
+// Two use cases depending on device_role:
+//  - MASTER/STANDALONE: scan and connect to an OBD ELM327 adapter (original logic unchanged)
+//  - SLAVE: scan and pair with the triple-gauge master ("SkyGauge-XXYY" broadcast), see gauge_pair_ble_client.c
 
 #include "../ui.h"
 #include "bsp_obd_dsp/elm327_ble_client.h"
@@ -17,24 +17,24 @@
 static const char *TAG_BLE_UI = "ble_scan_ui";
 
 // UI elements (local)
-static lv_obj_t *s_list = NULL;             // 扫描设备列表
-static lv_obj_t *s_label_status = NULL;     // 状态标签
-static lv_obj_t *s_spinner = NULL;          // 扫描 spinner
-static lv_obj_t *s_saved_panel = NULL;      // 已保存设备面板
-static lv_obj_t *s_label_saved_hdr = NULL;  // "SAVED" 小标题
-static lv_obj_t *s_saved_name_lbl = NULL;   // 已保存设备名称标签
+static lv_obj_t *s_list = NULL;             // scanned device list
+static lv_obj_t *s_label_status = NULL;     // status label
+static lv_obj_t *s_spinner = NULL;          // scan spinner
+static lv_obj_t *s_saved_panel = NULL;      // saved device panel
+static lv_obj_t *s_label_saved_hdr = NULL;  // "SAVED" sub-header
+static lv_obj_t *s_saved_name_lbl = NULL;   // saved device name label
 static bool s_scanning = false;
-static bool s_slave_mode = false;           // true=从表配对主表, false=OBD 设备扫描(原有逻辑)
+static bool s_slave_mode = false;           // true=slave pairing with a master, false=OBD device scan (original logic)
 
-// 从表模式: 扫描列表按钮 index → 对应设备 MAC 的并行表(与 s_list 子控件顺序一一对应)
+// Slave mode: parallel table mapping scan list button index -> corresponding device MAC (one-to-one with the s_list child order)
 static uint8_t s_gauge_macs[GAUGE_PAIR_SCAN_MAX_DEVICES][6];
 static int s_gauge_mac_count = 0;
 
-// OBD 设备扫描: 同上, 记录每个列表项的 MAC, 选中后按 MAC 精确连接(不会被同名设备误连)
+// OBD device scan: same as above, records the MAC of each list item; after selection connects by exact MAC (avoids misconnecting to a same-name device)
 static uint8_t s_obd_macs[BLE_SCAN_MAX_DEVICES][6];
 static int s_obd_mac_count = 0;
 
-// 前向声明
+// Forward declarations
 static void start_scan(void);
 static void on_device_selected(lv_event_t *e);
 static void on_saved_device_delete(lv_event_t *e);
@@ -49,19 +49,19 @@ static inline void lvgl_unlock_ui(void) {
     xSemaphoreGive(lvgl_mux);
 }
 
-// BLE 扫描回调（在 BT 线程中调用，需要线程安全地更新 LVGL）—— OBD 设备扫描(MASTER/STANDALONE)
+// BLE scan callback (called in the BT thread, LVGL must be updated thread-safely) -- OBD device scan (MASTER/STANDALONE)
 static void scan_result_cb(const ble_scan_result_t *dev, int total_count) {
     if (!s_list) return;
 
     if (lvgl_lock_ui(100)) {
-        // 检查列表中是否已有同名设备
+        // Check whether a device with the same name is already in the list
         uint32_t child_cnt = lv_obj_get_child_cnt(s_list);
         for (uint32_t i = 0; i < child_cnt; i++) {
             lv_obj_t *btn = lv_obj_get_child(s_list, i);
             lv_obj_t *lbl = lv_obj_get_child(btn, 0);
             if (lbl && strcmp(lv_label_get_text(lbl), dev->name) == 0) {
                 lvgl_unlock_ui();
-                return; // 已存在
+                return; // already exists
             }
         }
         if (s_obd_mac_count >= BLE_SCAN_MAX_DEVICES) {
@@ -69,7 +69,7 @@ static void scan_result_cb(const ble_scan_result_t *dev, int total_count) {
             return;
         }
 
-        // 添加新设备按钮
+        // Add new device button
         lv_obj_t *btn = lv_list_add_btn(s_list, NULL, dev->name);
         lv_obj_set_style_bg_color(btn, lv_color_hex(0x222222), LV_PART_MAIN);
         lv_obj_set_style_bg_opa(btn, 255, LV_PART_MAIN);
@@ -85,7 +85,7 @@ static void scan_result_cb(const ble_scan_result_t *dev, int total_count) {
     }
 }
 
-// BLE 扫描回调 —— 从表配对主表(SLAVE), 只收到 "SkyGauge" 前缀的设备(见 gauge_pair_ble_client.c 过滤)
+// BLE scan callback -- slave pairing with a master (SLAVE); only devices with the "SkyGauge" prefix are received (see the filter in gauge_pair_ble_client.c)
 static void scan_result_cb_gauge(const gauge_pair_scan_result_t *dev, int total_count) {
     if (!s_list) return;
 
@@ -96,7 +96,7 @@ static void scan_result_cb_gauge(const gauge_pair_scan_result_t *dev, int total_
             lv_obj_t *lbl = lv_obj_get_child(btn, 0);
             if (lbl && strcmp(lv_label_get_text(lbl), dev->name) == 0) {
                 lvgl_unlock_ui();
-                return; // 已存在
+                return; // already exists
             }
         }
         if (s_gauge_mac_count >= GAUGE_PAIR_SCAN_MAX_DEVICES) {
@@ -119,7 +119,7 @@ static void scan_result_cb_gauge(const gauge_pair_scan_result_t *dev, int total_
     }
 }
 
-// 设备被点击选中
+// A device was tapped/selected
 static void on_device_selected(lv_event_t *e) {
     lv_obj_t *btn = lv_event_get_target(e);
     lv_obj_t *lbl = lv_obj_get_child(btn, 0);
@@ -159,7 +159,7 @@ static void on_device_selected(lv_event_t *e) {
     memcpy(cfg.ble_obd_mac, mac, 6);
     nvs_cfg_set(&cfg);
 
-    // 立即刷新已保存设备面板
+    // Refresh the saved device panel immediately
     if (s_saved_name_lbl) lv_label_set_text(s_saved_name_lbl, name);
     if (s_saved_panel)    lv_obj_clear_flag(s_saved_panel,    LV_OBJ_FLAG_HIDDEN);
     if (s_label_saved_hdr) lv_obj_clear_flag(s_label_saved_hdr, LV_OBJ_FLAG_HIDDEN);
@@ -171,7 +171,7 @@ static void on_device_selected(lv_event_t *e) {
     _ui_screen_change(&ui_ScreenPageTemp, LV_SCR_LOAD_ANIM_FADE_ON, 300, 500, &ui_ScreenPageTemp_screen_init);
 }
 
-// 蓝牙配对结果回调(BT 任务上下文调用, 需要 lvgl_lock)
+// BLE pairing result callback (called in the BT task context, lvgl_lock required)
 static void on_pair_result(bool ok, const char *name, const uint8_t mac[6]) {
     if (!lvgl_lock_ui(200)) return;
 
@@ -193,8 +193,8 @@ static void on_pair_result(bool ok, const char *name, const uint8_t mac[6]) {
     } else {
         ESP_LOGW(TAG_BLE_UI, "Pairing failed, rescanning");
         lv_label_set_text(s_label_status, "Pair failed, retrying...");
-        // 原生 BLE 扫描窗口(15s)到期后并不会回调通知这里, s_scanning 会一直停留在 true,
-        // 这里是明确要强制重新扫描的地方, 先复位再调用, 避免被 start_scan() 的去重判断挡住。
+        // When the native BLE scan window (15s) expires, no callback notifies here, so s_scanning stays true.
+        // This is a place where a forced rescan is intended, so reset it before calling to avoid being blocked by the dedup check in start_scan().
         s_scanning = false;
         start_scan();
     }
@@ -202,7 +202,7 @@ static void on_pair_result(bool ok, const char *name, const uint8_t mac[6]) {
     lvgl_unlock_ui();
 }
 
-// 删除已保存设备
+// Delete the saved device
 static void on_saved_device_delete(lv_event_t *e) {
     if (s_slave_mode) {
         espnow_link_unbind_master();
@@ -211,7 +211,7 @@ static void on_saved_device_delete(lv_event_t *e) {
         nvs_cfg_set(&cfg);
         ESP_LOGI(TAG_BLE_UI, "Unbound saved master");
     } else {
-        // 若当前已连接，先断开BLE
+        // If currently connected, disconnect BLE first
         if (elm327_ble_is_connected()) {
             elm327_ble_disconnect();
         }
@@ -227,8 +227,8 @@ static void on_saved_device_delete(lv_event_t *e) {
     if (s_label_status)   lv_label_set_text(s_label_status, "Saved device removed");
 
     if (s_slave_mode) {
-        s_scanning = false;   // 原生扫描窗口到期不会回调复位, 强制重扫前先复位(理由同 on_pair_result)
-        start_scan();         // 从表: 删除绑定后立即重新扫描, 方便配对新主表
+        s_scanning = false;   // the native scan window expiry does not reset via callback; reset before forcing a rescan (same reason as on_pair_result)
+        start_scan();         // Slave: rescan immediately after deleting the binding, so a new master can be paired
     }
 }
 
@@ -256,7 +256,7 @@ void ui_ScreenPageBLEScan_screen_init(void)
     ui_ScreenPageBLEScan = lv_obj_create(NULL);
     lv_obj_clear_flag(ui_ScreenPageBLEScan, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_radius(ui_ScreenPageBLEScan, 360, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(ui_ScreenPageBLEScan, lv_color_hex(0x000000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_helpers_style_screen_bg(ui_ScreenPageBLEScan);
     lv_obj_set_style_bg_opa(ui_ScreenPageBLEScan, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_pad_all(ui_ScreenPageBLEScan, 0, LV_PART_MAIN);
 
@@ -372,7 +372,7 @@ void ui_ScreenPageBLEScan_screen_init(void)
     lv_obj_align(label_hint, LV_ALIGN_BOTTOM_MID, 0, -15);
 
     // Gesture event for navigation
-    lv_obj_move_foreground(spinner_ring);   // 圆环置顶
+    lv_obj_move_foreground(spinner_ring);   // bring the ring to the front
     lv_obj_add_event_cb(ui_ScreenPageBLEScan, ui_event_ble_scan_background, LV_EVENT_GESTURE, NULL);
 
     // Start scanning

@@ -2,11 +2,12 @@
 // SquareLine Studio version: SquareLine Studio 1.5.0
 // LVGL version: 8.3.11
 // Project name: OBD_PRJ
-// UI主题命名为 PINK_CAT(粉色猫咪)，主色调为粉色，副色调为紫色
+// The UI theme is named PINK_CAT (pink cat): main color pink, secondary color purple
 #include "ui.h"
 #include "ui_helpers.h"
 #include "ui_ext.h"
 #include "ui_disp_item.h"
+#include "ui_theme.h"
 #include "app_obd_dsp/app_event.h"
 #include <driver/gpio.h>
 #include "bsp_obd_dsp/bsp_board.h"
@@ -131,7 +132,7 @@ void ui_ScreenPageRpmWarn_screen_init(void);
 lv_obj_t * ui_ScreenPageRpmWarn;
 // CUSTOM VARIABLES
 
-// SCREEN: ui_ScreenPageNeedle (指针式可配置仪表)
+// SCREEN: ui_ScreenPageNeedle (needle-style configurable gauge)
 void ui_ScreenPageNeedle_screen_init(void);
 lv_obj_t * ui_ScreenPageNeedle;
 lv_meter_scale_t * ui_NeedleScale;
@@ -144,19 +145,19 @@ lv_obj_t * ui_NeedleUnitLabel;
 void ui_ScreenPageNeedleConfig_screen_init(void);
 lv_obj_t * ui_ScreenPageNeedleConfig;
 
-// SCREEN: ui_ScreenPageMultiGauge (三连表设置: 主/从 + 选主表)
+// SCREEN: ui_ScreenPageMultiGauge (triple-gauge settings: master/slave + master selection)
 void ui_ScreenPageMultiGauge_screen_init(void);
 lv_obj_t * ui_ScreenPageMultiGauge;
 
-// SCREEN: ui_ScreenPageChartConfig (曲线数据源选择)
+// SCREEN: ui_ScreenPageChartConfig (chart data-source selection)
 void ui_ScreenPageChartConfig_screen_init(void);
 lv_obj_t * ui_ScreenPageChartConfig;
 
-// SCREEN: ui_ScreenPageChartAlarm (曲线报警阈值设置)
+// SCREEN: ui_ScreenPageChartAlarm (chart alarm threshold settings)
 void ui_ScreenPageChartAlarm_screen_init(void);
 lv_obj_t * ui_ScreenPageChartAlarm;
 
-// SCREEN: ui_ScreenPageIntro (三连表开机动画 RACE/AS/ONE)
+// SCREEN: ui_ScreenPageIntro (triple-gauge boot animation RACE/AS/ONE)
 void ui_ScreenPageIntro_screen_init(void);
 lv_obj_t * ui_ScreenPageIntro;
 
@@ -174,42 +175,42 @@ lv_obj_t * ui_LabelSureTipText;
 lv_obj_t * ui____initial_actions0;
 
 
-static uint16_t usSaveProtTimeCnt = 0; //OBD协议保存计时
+static uint16_t usSaveProtTimeCnt = 0; //OBD protocol save timer
 
 // IMAGES AND IMAGE SETS
-#define SAVE_PROTOCOL_TIME 2000 //保存协议长按时间ms
+#define SAVE_PROTOCOL_TIME 2000 //long-press duration to save the protocol, ms
  
 ///////////////////// TEST LVGL SETTINGS ////////////////////
-/* ---- Gauge sweep (刷表) animation ----
-   数字从最小递增到最大(约1s) → 顶点保持(0.5s) → 背光闪一下(最高0.2s→最低0.2s),
-   闪完的同一拍恢复设定亮度并切回真实数值。扫表全程背光维持最低(SWEEP_BL_MIN)。
-   背光由 sweep_step 导出, 主从表据同一 step 得到同一亮度 → 三连表闪光同步。 */
-#define SWEEP_RPM_PEAK   8000   // 刷表最高转速
-#define SWEEP_SPEED_PEAK 999    // 刷表最高车速
-#define SWEEP_TICK_MS    40     // 扫表期间刷新周期(高刷让数字平滑递增)
-#define SWEEP_STEPS_UP   25     // 25×40ms ≈ 1s 从最小递增到最大
-#define SWEEP_STEPS_HOLD 13     // 13×40ms ≈ 0.5s 在最大值保持
-#define SWEEP_STEPS_FLASH 5     // 5×40ms ≈ 0.2s 每段闪光时长(高段/低段各一段)
-#define SWEEP_BL_MIN     3      // 扫表期间 & 闪光低段的背光(%), 可调
-#define SWEEP_BL_MAX     100    // 闪光高段背光(%)
+/* ---- Gauge sweep animation ----
+   Values ramp from min to max (~1s) → hold at max (0.5s) → backlight flashes once (max 0.2s → min 0.2s);
+   on the same tick after the flash, the configured brightness is restored and real values are switched back in. Backlight stays at minimum (SWEEP_BL_MIN) for the whole sweep.
+   Backlight is exported via sweep_step; master and slaves derive the same brightness from the same step → the triple-gauge flash stays in sync. */
+#define SWEEP_RPM_PEAK   8000   // sweep peak RPM
+#define SWEEP_SPEED_PEAK 999    // sweep peak speed
+#define SWEEP_TICK_MS    40     // refresh period during sweep (high rate keeps digits ramping smoothly)
+#define SWEEP_STEPS_UP   25     // 25×40ms ≈ 1s to ramp from min to max
+#define SWEEP_STEPS_HOLD 13     // 13×40ms ≈ 0.5s hold at max
+#define SWEEP_STEPS_FLASH 5     // 5×40ms ≈ 0.2s per flash segment (one high and one low segment)
+#define SWEEP_BL_MIN     3      // backlight during sweep & the low flash segment (%), tunable
+#define SWEEP_BL_MAX     100    // backlight for the high flash segment (%)
 #define SWEEP_TOTAL      (SWEEP_STEPS_UP + SWEEP_STEPS_HOLD + 2*SWEEP_STEPS_FLASH)
 #define OIL_PRESS_TREND_POINTS 30
 #define OIL_PRESS_TREND_SAMPLE_MS 1000
-// 扫表进度仅在 LVGL 任务内推进; 主表 espnow TX 任务通过 ui_sweep_get_step() 只读广播。
-// 取值: 0=关闭, 1~SWEEP_TOTAL=刷表动画中(从表原样镜像, 见 ui_showroom_set_page_from_sync),
-// 200~209=展厅模式当前 slot(展厅模式同样复用这个变量来编码广播值, 而不是另开一个)。
+// Sweep progress only advances inside the LVGL task; the master's espnow TX task broadcasts it read-only via ui_sweep_get_step().
+// Values: 0=off, 1~SWEEP_TOTAL=sweep animation running (slaves mirror it as-is, see ui_showroom_set_page_from_sync),
+// 200~209=current showroom-mode slot (showroom mode reuses this variable to encode the broadcast value instead of a separate one).
 static volatile int  s_sweep_step = 0;
-static int  s_sweep_bl_last = -1;       // 扫表期间已下发的背光(%), -1=非扫表态; 用于变化时才写LEDC及结束时恢复设定亮度
-static bool s_sweep_pending = false;    // BLE 在 Logo 期间连上，Logo 消失后再触发
+static int  s_sweep_bl_last = -1;       // backlight (%) already applied during sweep, -1=not sweeping; write LEDC only on change, restore configured brightness at the end
+static bool s_sweep_pending = false;    // BLE connected while the Logo was showing; trigger after the Logo goes away
 static bool s_prev_ble_connected = false;
 
-/* ---- 数字递增动画阈值 (供 disp_item_update 使用) ---- */
-#define ANIM_THRESH_RPM   50   // 转速差值 ≤50 逐 ±1
-#define ANIM_THRESH_SPD   10   // 车速差值 ≤10 逐 ±1
-#define ANIM_THRESH_TEMP   5   // 温度差值 ≤5 逐 ±1
+/* ---- Digit-ramp animation thresholds (used by disp_item_update) ---- */
+#define ANIM_THRESH_RPM   50   // RPM diff ≤50 steps by ±1
+#define ANIM_THRESH_SPD   10   // speed diff ≤10 steps by ±1
+#define ANIM_THRESH_TEMP   5   // temperature diff ≤5 steps by ±1
 
-// 自适应步进: 差值 ≤ threshold 逐 ±1, 差值 > threshold 按比例快速逼近
-// RPM/Speed 页面需要同时更新 label + arc，逻辑与 disp_item_update 不同，故保留局部副本
+// Adaptive step: diff ≤ threshold steps by ±1, diff > threshold approaches proportionally
+// The RPM/Speed pages must update label + arc together, which differs from disp_item_update, so a local copy is kept
 static inline int32_t anim_step_i32(int32_t displayed, int32_t target, int32_t threshold)
 {
     int32_t diff = target - displayed;
@@ -218,37 +219,43 @@ static inline int32_t anim_step_i32(int32_t displayed, int32_t target, int32_t t
     int32_t step = (diff > 0) ? 1 : -1;
 
     if (abs_diff > threshold) {
-        int32_t rapid = abs_diff / 2;     // 每拍吃掉 ~50% 差距（原 33%，加快收敛）
-        if (rapid < 2) rapid = 2;          // 最小 2 步
+        int32_t rapid = abs_diff / 2;     // eat ~50% of the gap per tick (was 33%, faster convergence)
+        if (rapid < 2) rapid = 2;          // minimum 2 steps
         if (rapid > abs_diff) rapid = abs_diff;
         step = (diff > 0) ? rapid : -rapid;
     }
     return displayed + step;
 }
 
-// 转速报警测试模式
+// RPM warning test mode
 volatile int s_rpm_flash_test_ticks = 0;
-void ui_rpm_flash_test_start(void) { s_rpm_flash_test_ticks = 60; }  // ~2s 测试闪烁
+void ui_rpm_flash_test_start(void) { s_rpm_flash_test_ticks = 60; }  // ~2s test flash
+// Note: the RPM ramp for the multi-gauge linked test is driven centrally by the master (espnow_link.c writes the RPM override layer and broadcasts it);
+//     this unit only renders per its own position, no local simulation, keeping all three gauges in sync.
 
-// LVGL 任务句柄(由 app_main 设置), 闪烁期间临时提优先级独占 CPU
+// Flash period (ms per phase): red and black each last this long; toggle frequency = 1000/(2×period). 25ms → 20Hz fast flash.
+// Lower it if not fast enough (e.g. 15→33Hz), raise it if too dazzling.
+#define RPM_FLASH_PERIOD_MS 25
+
+// LVGL task handle (set by app_main); priority is temporarily raised to own the CPU while flashing
 TaskHandle_t g_lvgl_task_handle = NULL;
 
-// ===== Showroom 模式 =====
-// 极简设计: 每表独立跑固定时序循环, 不依赖 ESP-NOW 逐页同步
-// 进入 showroom 时各表用 esp_random() 选 4 个随机数据页, 之后本地定时切页
+// ===== Showroom mode =====
+// Minimal design: each gauge runs a fixed-timing loop independently, no per-page ESP-NOW sync needed
+// On entering showroom each gauge picks 4 random data pages with esp_random(), then switches pages on a local timer
 static volatile bool s_showroom_active = false;
 static uint8_t s_showroom_tap_cnt = 0;
 static uint32_t s_showroom_last_tap_ms = 0;
 #define SHOWROOM_TAP_TIMEOUT_MS  1500
 #define SHOWROOM_TAP_NEED        10
 #define SHOWROOM_SLOT_COUNT      8
-#define SHOWROOM_DATA_PAGES      4   // 随机数据页数量
+#define SHOWROOM_DATA_PAGES      4   // number of random data pages
 
-// 固定循环: Logo → 动画 → rand0 → Needle → rand1 → Chart → rand2 → rand3
-// 每 slot 的 tick 数 (1 tick = 100ms), 0 = 等动画播完
+// Fixed loop: Logo → animation → rand0 → Needle → rand1 → Chart → rand2 → rand3
+// Ticks per slot (1 tick = 100ms), 0 = wait for the animation to finish
 static const uint8_t s_showroom_slot_ticks[SHOWROOM_SLOT_COUNT] = {
     20,  // 0: Logo 2s
-    0,   // 1: 动画 (等播完)
+    0,   // 1: animation (wait until played)
     30,  // 2: random[0] 3s
     30,  // 3: Needle 3s
     30,  // 4: random[1] 3s
@@ -258,10 +265,10 @@ static const uint8_t s_showroom_slot_ticks[SHOWROOM_SLOT_COUNT] = {
 };
 static uint8_t  s_showroom_slot = 0;
 static uint16_t s_showroom_tick = 0;
-static uint8_t  s_showroom_rand_pages[SHOWROOM_DATA_PAGES];  // 启动时随机选好
+static uint8_t  s_showroom_rand_pages[SHOWROOM_DATA_PAGES];  // randomly chosen at startup
 static lv_obj_t *s_showroom_video_scr = NULL;
 
-// 开机/视频状态 (前移, showroom_load_slot 需要)
+// Boot/video state (moved up; needed by showroom_load_slot)
 static volatile int s_intro_step = 0;
 static int64_t s_boot_start_us = 0;
 static int64_t s_intro_start_us = 0;
@@ -273,18 +280,18 @@ static int64_t s_boot_video_start_us = 0;
 static lv_obj_t *s_boot_video_screen = NULL;
 static lv_timer_t *s_boot_video_timer = NULL;
 
-// slot → 页面索引
+// slot → page index
 static uint8_t showroom_slot_to_page(uint8_t slot)
 {
     switch (slot) {
         case 0: return 1;  // Logo
-        case 1: {          // 动画: 根据设置
+        case 1: {          // animation: depends on settings
             uint8_t ie = nvs_intro_enable_get();
             return (ie >= 2) ? 0 : (ie == 1) ? 2 : 3;
         }
         case 3: return 8;  // Needle
         case 5: return 9;  // Chart
-        default: {         // 随机数据页
+        default: {         // random data page
             uint8_t ri = (slot == 2) ? 0 : (slot == 4) ? 1 : (slot == 6) ? 2 : 3;
             return s_showroom_rand_pages[ri];
         }
@@ -295,8 +302,8 @@ static void showroom_load_slot(uint8_t slot)
 {
     uint8_t page = showroom_slot_to_page(slot);
     if (page == 0) {
-        // Video 页
-        if (s_boot_video_ready || s_boot_video_active) return;  // 已加载
+        // Video page
+        if (s_boot_video_ready || s_boot_video_active) return;  // already loaded
         uint8_t iv = nvs_intro_enable_get();
         const char *pfx = (iv == 3) ? "b" : (iv == 4) ? "c" : "a";
         char mp[64], dp[64];
@@ -320,14 +327,14 @@ static void showroom_load_slot(uint8_t slot)
             }
         }
     } else if (page == 2) {
-        // RACE/AS/ONE: 直接启动动画
+        // RACE/AS/ONE: start the animation directly
         s_intro_step = 1;
         s_intro_shown = false;
         s_intro_start_us = esp_timer_get_time();
         if (ui_ScreenPageIntro == NULL) ui_ScreenPageIntro_screen_init();
         lv_scr_load_anim(ui_ScreenPageIntro, LV_SCR_LOAD_ANIM_FADE_ON, 300, 0, false);
     } else {
-        // 普通页面
+        // Regular pages
         static const struct { lv_obj_t **scr; void (*init)(void); } pages[] = {
             { NULL, NULL },  // 0 unused
             { &ui_ScreenPageLogo,       ui_ScreenPageLogo_screen_init },
@@ -347,14 +354,14 @@ static void showroom_load_slot(uint8_t slot)
     }
 }
 
-// 视频同步信号 (复用 intro_step, 值 >5 不触发 RACE/AS/ONE 渲染)
+// Video sync signals (reuses intro_step; values >5 never trigger RACE/AS/ONE rendering)
 #define VIDEO_SYNC_READY  250
 #define VIDEO_SYNC_PLAY   251
 
-// 前向声明
+// Forward declaration
 static void boot_enter_default_page(void);
 
-// 视频专用高频 timer (33ms ≈ 30fps)
+// Dedicated high-rate timer for video (33ms ≈ 30fps)
 static void boot_video_timer_cb(lv_timer_t *t)
 {
     if (!s_boot_video_active) return;
@@ -369,25 +376,25 @@ static void boot_video_timer_cb(lv_timer_t *t)
         if (s_boot_video_timer) { lv_timer_del(s_boot_video_timer); s_boot_video_timer = NULL; }
 
         if (s_showroom_active) {
-            // showroom 模式: 不跳页, 保持最后一帧, 等轮播自动切走
+            // showroom mode: don't switch pages, keep the last frame, let the carousel move on
             boot_media_unmount();
         } else {
-            // 正常开机: 直接进默认页
+            // normal boot: go straight to the default page
             s_boot_video_done = true;
             boot_enter_default_page();
             boot_media_unmount();
-            // boot_enter_default_page 内 lv_scr_load_anim(..., true) 已设 auto_del,
-            // LVGL 会在过渡动画结束后自动释放旧屏幕, 此处不能手动 lv_obj_del,
-            // 否则动画期间访问已释放对象导致 crash (LoadProhibited).
+            // lv_scr_load_anim(..., true) in boot_enter_default_page already sets auto_del;
+            // LVGL frees the old screen automatically once the transition ends. Do NOT lv_obj_del
+            // manually here — touching the freed object mid-animation crashes (LoadProhibited).
             s_boot_video_screen = NULL;
         }
     }
 }
 
-// 前向声明(ui_showroom_set_active/ui_showroom_set_page_from_sync 已在 ui.h 声明, 这里不用重复)
+// Forward declaration (ui_showroom_set_active/ui_showroom_set_page_from_sync are already declared in ui.h, no need to repeat)
 static void showroom_handle_tap(void);
 
-// 主表 espnow TX 任务只读广播扫表进度; 从表不再回写(扫表由 OBD 缓存值自然跟随)。
+// The master's espnow TX task broadcasts sweep progress read-only; slaves no longer write back (the sweep naturally follows the OBD cache values).
 int  ui_sweep_get_step(void) { return s_sweep_step; }
 
 bool ui_showroom_is_active(void) { return s_showroom_active; }
@@ -398,13 +405,13 @@ void ui_showroom_set_active(bool en) {
     if (en) {
         ESP_LOGI("showroom", "ENTER role=%d", nvs_cfg_get()->device_role);
         s_sweep_step = 0;
-        // 随机选 4 个数据页, 用 position 偏移保证三表各不同
+        // pick 4 random data pages; the position offset guarantees the three gauges differ
         static const uint8_t pool[] = { 3, 4, 5, 6, 7 };
         uint8_t pos = nvs_device_position_get();
         if (pos < 1 || pos > 3) pos = 1;
         for (int i = 0; i < SHOWROOM_DATA_PAGES; i++)
             s_showroom_rand_pages[i] = pool[(i * 3 + pos - 1) % 5];
-        // 从 slot 0 开始
+        // start from slot 0
         s_showroom_slot = 0;
         s_showroom_tick = 0;
         showroom_load_slot(0);
@@ -413,18 +420,18 @@ void ui_showroom_set_active(bool en) {
     }
 }
 
-// 从表: 收到主表信号后进入 showroom 或跟随 slot。
-// 仅 LVGL 任务读写 (espnow recv 经 app_event 队列, 在 my_timerMain 内调用), 无需 volatile。
-static int s_showroom_pending_slot = -1;  // -1=无, 0-7=跟随slot
+// Slave: enter showroom or follow the slot after receiving the master's signal.
+// Only the LVGL task reads/writes these (espnow recv goes through the app_event queue and is handled inside my_timerMain), so volatile is not needed.
+static int s_showroom_pending_slot = -1;  // -1=none, 0-7=slot to follow
 static bool s_showroom_pending_enter = false;
 
 void ui_showroom_set_page_from_sync(int sweep_step) {
     if (sweep_step >= 200 && sweep_step < 210) {
-        // 跟随主表 slot
+        // follow the master's slot
         s_showroom_pending_slot = sweep_step - 200;
         if (!s_showroom_active) {
-            // 中途加入展厅模式: 先按 slot 0(Logo) 进入, 下一次主表广播的真实 slot 会
-            // 在很短时间内(~100ms)把它纠正过来, 这一下切换是预期内的短暂过渡, 不是 bug。
+            // Joining showroom mode mid-way: enter via slot 0 (Logo) first; the next real slot
+            // broadcast by the master corrects it shortly (~100ms). That one switch is an expected brief transition, not a bug.
             s_showroom_pending_slot = -1;
             s_showroom_pending_enter = true;
             s_sweep_step = 0;
@@ -433,26 +440,26 @@ void ui_showroom_set_page_from_sync(int sweep_step) {
         s_showroom_pending_enter = true;
         s_sweep_step = 0;
     } else if (!s_showroom_active) {
-        // 0~SWEEP_TOTAL: 主表真实刷表进度(连 OBD 那一刻触发)。从表原样镜像(不自增,
-        // 由主表逐帧广播驱动), 使背光闪烁("同车三表一起闪")与主表保持同步。
+        // 0~SWEEP_TOTAL: the master's real sweep progress (triggered the moment OBD connects). Slaves mirror it as-is
+        // (no self-increment; driven by the master's per-frame broadcast), keeping the backlight flash ("three gauges in one car flashing together") in sync with the master.
         s_sweep_step = (sweep_step > 0 && sweep_step <= SWEEP_TOTAL) ? sweep_step : 0;
     }
 }
 
-// 点击计数(版本页/任意页共用)
+// Tap counting (shared by the version page / any page)
 static void showroom_handle_tap(void) {
-    if (s_showroom_active) return;  // 已进入, 不再响应
+    if (s_showroom_active) return;  // already inside, ignore taps
     uint32_t now = lv_tick_get();
     if (now - s_showroom_last_tap_ms > SHOWROOM_TAP_TIMEOUT_MS) s_showroom_tap_cnt = 0;
     s_showroom_last_tap_ms = now;
     s_showroom_tap_cnt++;
     if (s_showroom_tap_cnt >= SHOWROOM_TAP_NEED) {
         s_showroom_tap_cnt = 0;
-        ui_showroom_set_active(true);  // 只进不退, 断电重启退出
+        ui_showroom_set_active(true);  // enter only, never exit; leave via power cycle
     }
 }
 
-// 假数据生成(随机游走)
+// Fake data generation (random walk)
 static void showroom_fake_data(void) {
     static float fake_rpm = 2500, fake_spd = 60, fake_clt = 90, fake_oil = 95;
     static float fake_iat = 35, fake_load = 65, fake_tps = 40, fake_boost = 5;
@@ -479,23 +486,23 @@ static void showroom_fake_data(void) {
     obd_data_set_afr_x100((int16_t)(fake_afr * 100));
 }
 
-// 三连表开机动画同步: 主表按时间线驱动 s_intro_step 并广播; 从表由 espnow recv 写入跟随。
-//   0=未开始/仍在logo, 1=TC, 2=+-, 3=+OFF, 4=全显示(保持), 255=完成→进页面
+// Triple-gauge boot animation sync: the master drives s_intro_step along the timeline and broadcasts it; slaves follow via espnow recv writes.
+//   0=not started/still on logo, 1=TC, 2=+-, 3=+OFF, 4=all shown (hold), 255=done→enter page
 int  ui_intro_get_step(void) { return s_intro_step; }
 void ui_intro_set_step(int step) {
-    // Showroom 模式下各表自驱动 intro 动画, 不接受主表覆盖
+    // In showroom mode each gauge self-drives its intro animation and ignores master overrides
     if (s_showroom_active) return;
     s_intro_step = step;
 }
 static int16_t s_oil_pressure_trend[OIL_PRESS_TREND_POINTS];
 static bool s_oil_pressure_trend_ready = false;
 static uint32_t s_oil_pressure_trend_tick = 0;
-// 通用曲线页: 无效样本哨兵(区别于合法负值如水温-10) + 当前数据项的原始值量程(刷新时钳位/设Y轴)
-// CHART_INVALID 已迁移到 ui_disp_item.h
+// Generic chart page: invalid-sample sentinel (distinct from legit negative values like coolant temp -10) + raw-value range of the current data item (clamping/Y-axis on refresh)
+// CHART_INVALID has moved to ui_disp_item.h
 static int32_t s_chart_ymin = 0;
 static int32_t s_chart_ymax = 100;
 
-// disp_item 系统已迁移到 ui_disp_item.c/h
+// The disp_item system has moved to ui_disp_item.c/h
 
 static uint8_t needle_active_source(void)
 {
@@ -509,7 +516,7 @@ void ui_needle_apply_source(void)
     if (!ui_NeedleMeter || !ui_NeedleScale) return;
     uint8_t src = needle_active_source();
     const needle_scale_meta_t *ns = &s_needle_scale_meta[src];
-    // 270° 扫角，起始角 135°（开口朝下居中），与经典机械仪表一致
+    // 270° sweep, start angle 135° (gap centered at the bottom), matching classic mechanical gauges
     lv_meter_set_scale_range(ui_NeedleMeter, ui_NeedleScale, ns->nmin, ns->nmax, 270, 135);
     lv_meter_set_indicator_value(ui_NeedleMeter, ui_NeedleIndic, ns->nmin);
     if (ui_NeedleNameLabel) lv_label_set_text(ui_NeedleNameLabel, s_disp_meta[src].name);
@@ -526,7 +533,7 @@ void ui_needle_page_update(float sweep_ratio, int16_t clt, int16_t iat, int16_t 
     uint8_t src = needle_active_source();
     const needle_scale_meta_t *ns = &s_needle_scale_meta[src];
 
-    // 连接成功后的刷表自检：指针 nmin→nmax→nmin 全程扫动
+    // Sweep self-test after connecting: the needle sweeps the full range nmin→nmax→nmin
     if (sweep_ratio >= 0.0f) {
         if (sweep_ratio > 1.0f) sweep_ratio = 1.0f;
         int32_t nval = ns->nmin + (int32_t)((float)(ns->nmax - ns->nmin) * sweep_ratio);
@@ -543,15 +550,15 @@ void ui_needle_page_update(float sweep_ratio, int16_t clt, int16_t iat, int16_t 
     static uint8_t s_last_needle_src = 0xFF;
     if (s_last_needle_src != src) {
         s_last_needle_src = src;
-        s_disp_needle = 0;  // 切源时清零, 避免从旧源值爬升
+        s_disp_needle = 0;  // reset on source switch, avoiding a ramp from the old source's value
     }
-    /* 阈值按量程 3%: 小量程(温度)逐±1平滑, 大量程(RPM)按比例快速逼近 */
+    /* Threshold = 3% of range: small ranges (temps) smooth by ±1, large ranges (RPM) approach proportionally */
     int32_t needle_thresh = (ns->nmax - ns->nmin) / 30;
     if (needle_thresh < 2) needle_thresh = 2;
 
     disp_item_update(&s_disp_needle, ui_NeedleValueLabel, src, raw, valid, needle_thresh);
 
-    // 指针位置: 用平滑后的值
+    // Needle position: use the smoothed value
     int32_t nval = (s_disp_needle / ns->div);
     if (nval < ns->nmin) nval = ns->nmin;
     if (nval > ns->nmax) nval = ns->nmax;
@@ -579,8 +586,8 @@ static void oil_pressure_trend_push(int16_t sample_x10)
     s_oil_pressure_trend[OIL_PRESS_TREND_POINTS - 1] = sample_x10;
 }
 
-// 通用曲线刷新: Y 量程 = s_chart_ymin..s_chart_ymax(由 ui_chart_apply_source 按数据项设),
-// 无效样本(CHART_INVALID)保持上一个有效值; 支持合法负值(如水温)。
+// Generic chart refresh: Y range = s_chart_ymin..s_chart_ymax (set per data item by ui_chart_apply_source);
+// invalid samples (CHART_INVALID) keep the last valid value; legit negative values (e.g. coolant temp) are supported.
 static void oil_pressure_chart_refresh(void)
 {
     if (!ui_ChartOilPressure || !ui_OilPressureChartSeries) return;
@@ -609,14 +616,14 @@ static void oil_pressure_chart_refresh(void)
     lv_chart_refresh(ui_ChartOilPressure);
 }
 
-// 按 chart_source_idx 应用曲线页的标题/圆点/单位/颜色/Y量程(数据源变化后调用)
+// Apply the chart page title/dot/unit/color/Y-range per chart_source_idx (call after the data source changes)
 void ui_chart_apply_source(void)
 {
     uint8_t src = nvs_cfg_get()->chart_source_idx;
     if (src >= DISP_ITEM_COUNT) src = DISP_ITEM_OILP;
     const disp_item_meta_t *m = &s_disp_meta[src];
     const needle_scale_meta_t *ns = &s_needle_scale_meta[src];
-    s_chart_ymin = ns->nmin * ns->div;   // 原始值量程(与喂入曲线的原始值一致)
+    s_chart_ymin = ns->nmin * ns->div;   // raw-value range (matches the raw values fed to the chart)
     s_chart_ymax = ns->nmax * ns->div;
     if (ui_LabelChartTitle) {
         lv_label_set_text(ui_LabelChartTitle, m->name);
@@ -626,20 +633,20 @@ void ui_chart_apply_source(void)
     if (ui_LabelChartUnit) lv_label_set_text(ui_LabelChartUnit, m->unit);
     if (ui_ChartOilPressure) {
         lv_obj_set_style_line_color(ui_ChartOilPressure, lv_color_hex(m->color), LV_PART_ITEMS);
-        // 折线实际用 series 自己的颜色(会覆盖 ITEMS 样式), 必须直接改 series 颜色才会变色
+        // the line actually uses the series' own color (overrides the ITEMS style); the series color must be changed directly for it to take effect
         if (ui_OilPressureChartSeries) ui_OilPressureChartSeries->color = lv_color_hex(m->color);
         lv_chart_set_range(ui_ChartOilPressure, LV_CHART_AXIS_PRIMARY_Y, s_chart_ymin, s_chart_ymax);
         lv_chart_refresh(ui_ChartOilPressure);
     }
-    // 重置趋势缓冲, 避免切换数据源后残留旧曲线
+    // reset the trend buffer so no stale curve remains after switching data source
     s_oil_pressure_trend_ready = false;
     s_oil_pressure_trend_tick = 0;
 }
 
-// ===== 开机流程状态 =====
+// ===== Boot flow state =====
 static bool    s_boot_done = false;
 
-// 跳转到蓝牙扫描页并标记开机流程结束(未绑定主表的从表 / 未配置 OBD 设备的主表&单机, 共用这一段)
+// Jump to the BLE scan page and mark the boot flow done (shared by slaves not bound to a master, and masters/standalone units with no OBD device configured)
 static void boot_goto_ble_scan(void)
 {
     if (ui_ScreenPageBLEScan == NULL) ui_ScreenPageBLEScan_screen_init();
@@ -649,14 +656,14 @@ static void boot_goto_ble_scan(void)
     s_boot_done = true;
 }
 
-// 开机结束进入默认页(Logo 超时 或 开机动画完成后调用)
+// Enter the default page when boot finishes (called on Logo timeout or after the boot animation completes)
 static void boot_enter_default_page(void)
 {
     const nvs_user_cfg_t *pg_cfg = nvs_cfg_get();
 
     if (pg_cfg->device_role == ESPNOW_ROLE_SLAVE) {
-        // 从表: 尚未绑定主表 → 进蓝牙页配对(ui_ScreenPageBLEScan 会按角色自动进入 "FIND MASTER" 模式);
-        // 已绑定则什么都不做, 往下走跟主表一样的 default_page 分支, 直接显示仪表数据。
+        // Slave: not yet bound to a master → go to the BLE page to pair (ui_ScreenPageBLEScan enters "FIND MASTER" mode automatically per role);
+        // if already bound, do nothing and fall through to the same default_page branch as the master, showing gauge data directly.
         const uint8_t *bound_mac = espnow_link_get_bound_master_mac();
         bool bound = (bound_mac[0] | bound_mac[1] | bound_mac[2] | bound_mac[3] | bound_mac[4] | bound_mac[5]) != 0;
         if (!bound) {
@@ -664,14 +671,14 @@ static void boot_enter_default_page(void)
             return;
         }
     } else if (pg_cfg->ble_device_name[0] == '\0') {
-        // 首次刷机无保存设备: 直接进 BLE 扫描页让用户手动选
+        // First flash with no saved device: go straight to the BLE scan page and let the user pick manually
         boot_goto_ble_scan();
         return;
     }
 
     lv_obj_t **target_scr = NULL;
     void (*target_init)(void) = NULL;
-    // 默认页: 0=Temp,1=Info,2=Chart,3=Needle,4=Gear,5=Rpm,6=Speed
+    // Default page: 0=Temp,1=Info,2=Chart,3=Needle,4=Gear,5=Rpm,6=Speed
     switch(pg_cfg->default_page) {
         case 0: target_scr = &ui_ScreenPageTemp;  target_init = ui_ScreenPageTemp_screen_init;  break;
         case 1: target_scr = &ui_ScreenPageInfo;  target_init = ui_ScreenPageInfo_screen_init;  break;
@@ -687,16 +694,16 @@ static void boot_enter_default_page(void)
     ui_ScreenPageLogo = NULL;
     imageLogo = NULL;
     s_boot_done = true;
-    if(s_sweep_pending) { s_sweep_pending = false; s_sweep_step = 1; }  // 开机动画期间连上的刷表挂起, 全部播完进默认页此刻触发
+    if(s_sweep_pending) { s_sweep_pending = false; s_sweep_step = 1; }  // a sweep deferred while the boot animation played fires now, as the default page loads
 }
 
-// ---- "NO SIGNAL" 覆盖提示: 主表 OBD 蓝牙断开 / 从表收不到主表数据时, 盖在仪表页上方 ----
-// 断开是瞬时反映(ble_now 本身已经是"已连接"/"最近~2s内有数据"这个信号), 不需要额外计时。
+// ---- "NO SIGNAL" overlay: shown on top of gauge pages when the master's OBD BLE disconnects / a slave receives no master data ----
+// Disconnection is reflected instantly (ble_now already means "connected"/"data within the last ~2s"), no extra timing needed.
 static lv_obj_t *s_no_signal_lbl = NULL;
 static void update_no_signal_overlay(bool signal_ok)
 {
     lv_obj_t *act = lv_scr_act();
-    // 只在真正显示仪表数据的几个页面提示, 设置/扫描/开机动画等页面不需要
+    // only warn on the pages that actually display gauge data; settings/scan/boot-animation pages don't need it
     bool on_gauge_page = (act == ui_ScreenPageTemp || act == ui_ScreenPageInfo ||
                            act == ui_ScreenPageOilPressure || act == ui_ScreenPageNeedle ||
                            act == ui_ScreenPageGear || act == ui_ScreenPageRpm ||
@@ -726,7 +733,7 @@ static void update_no_signal_overlay(bool signal_ok)
 
 void my_timerMain(lv_timer_t * timer)
 {
-    // ---- 处理事件队列 (ESP-NOW / BLE 跨 task 事件) ----
+    // ---- Process the event queue (ESP-NOW / BLE cross-task events) ----
     {
         app_event_t evt;
         while (app_event_recv(&evt)) {
@@ -740,6 +747,11 @@ void my_timerMain(lv_timer_t * timer)
                 case APP_EVT_ESPNOW_ENTER_SHOWROOM:
                     ui_showroom_set_active(true);
                     break;
+                case APP_EVT_ESPNOW_THRESH_SYNC:
+                    // RPM threshold synced from another gauge: write local NVS (the master forwards it to the other slaves) + refresh this page
+                    espnow_link_apply_synced_threshold((uint16_t)evt.data.u16);
+                    ui_rpm_warn_refresh_from_nvs();
+                    break;
                 default:
                     break;
             }
@@ -747,58 +759,61 @@ void my_timerMain(lv_timer_t * timer)
     }
 
     static uint16_t usRpm = 0;
-    static uint16_t ucSpeed = 0;  // uint16_t 以支持刷表时的999
+    static uint16_t ucSpeed = 0;  // uint16_t so sweep can reach 999
     static enGear eGear = GEAR_NEUTRAL;
-    static bool s_rpm_flash_red = false;  // 转速报警闪烁状态(函数级, 供自适应刷新读取)
-    // 刷表动画判定(排除 showroom 同步值 200+)
+    static bool s_rpm_flash_red = false;  // RPM warning flash state (red/black toggle, drives the background color)
+    static bool s_rpm_flashing = false;   // whether strobing right now (stable flag, drives the timer's fast flash; does not toggle with red/black)
+    static bool s_rpm_link_ramp = false;  // multi-gauge linked flash: this unit is inside its ramp segment (function scope, lets adaptive refresh speed up)
+    static bool s_rpm_link_bg = false;    // multi-gauge linked flash: background is taken by the linked red (must restore black when leaving)
+    // Sweep animation detection (excludes showroom sync values 200+)
     #define IN_SWEEP (s_sweep_step > 0 && s_sweep_step <= SWEEP_TOTAL)
     static uint8_t ucOnlyOnce = 0;
     static uint32_t ulOpenLightTimeCnt = 0;
 
-    /* ---- 一次性读取 OBD 数据，供温度页和 Info 页共用 ---- */
+    /* ---- Read OBD data once, shared by the Temp and Info pages ---- */
     int16_t clt      = obd_data_get_coolant_temp();
     int16_t iat      = obd_data_get_intake_temp();
-    int16_t oil      = obd_data_get_oil_temp();      // 真实机油温度 °C (SSM 22 10 17), -100=无效
-    int16_t oilp_x10 = obd_data_get_oil_pressure_x10(); // 机油压力 0.1bar, -1=无效
-    int16_t brake_x10 = obd_data_get_brake_temp_x10(); // 刹车温度 0.1°C
-    int16_t load_pct = obd_data_get_load_pct();      // 发动机负荷 0~100%, -1=无效
+    int16_t oil      = obd_data_get_oil_temp();      // real oil temperature °C (SSM 22 10 17), -100=invalid
+    int16_t oilp_x10 = obd_data_get_oil_pressure_x10(); // oil pressure 0.1bar, -1=invalid
+    int16_t brake_x10 = obd_data_get_brake_temp_x10(); // brake temperature 0.1°C
+    int16_t load_pct = obd_data_get_load_pct();      // engine load 0~100%, -1=invalid
     int16_t tps      = obd_data_get_tps();
     int32_t bat_mv   = obd_data_get_bat_mv();
-    int16_t boost_x10 = obd_data_get_boost_x10(); // 涡轮表压 0.1bar, -32768=无效
-    int16_t afr_x100 = obd_data_get_afr_x100();   // 空燃比 ×100, -1=无效
+    int16_t boost_x10 = obd_data_get_boost_x10(); // boost gauge pressure 0.1bar, -32768=invalid
+    int16_t afr_x100 = obd_data_get_afr_x100();   // air-fuel ratio ×100, -1=invalid
     const nvs_user_cfg_t *user_cfg = nvs_cfg_get();
 
-    /* ---- 触发刷表 ----
-       主表: ELM327 蓝牙连上瞬间触发并自行推进动画;
-       从表: 不自触发, 由主表广播的 sweep_step 同步驱动(espnow recv → app_event 队列)。 */
+    /* ---- Sweep trigger ----
+       Master: triggered the instant the ELM327 BLE connects and advances the animation itself;
+       Slave: never self-triggers, driven by the master's broadcast sweep_step (espnow recv → app_event queue). */
     bool is_slave = (nvs_cfg_get()->device_role == ESPNOW_ROLE_SLAVE);
-    // "已连接"信号: 从表=收到主表数据, 主表=ELM327蓝牙已连(供状态显示与主表扫表触发共用)
+    // "connected" signal: slave=master data being received, master=ELM327 BLE connected (shared by status display and the master's sweep trigger)
     bool ble_now = is_slave ? espnow_link_slave_has_data() : elm327_ble_is_connected();
     if(!is_slave) {
         if(ble_now && !s_prev_ble_connected) {
             if(s_boot_done) {
-                s_sweep_step = 1;       // 开机动画(Logo/SKY GAUGE/RACE AS ONE)已全部播完，立即刷表
+                s_sweep_step = 1;       // boot animations (Logo/SKY GAUGE/RACE AS ONE) all finished, sweep immediately
             } else {
-                s_sweep_pending = true; // 开机动画还在播，先挂起，进默认页那刻再触发
+                s_sweep_pending = true; // boot animation still playing; defer and fire when the default page loads
             }
         }
         s_prev_ble_connected = ble_now;
     }
-    if (!s_showroom_active) update_no_signal_overlay(ble_now);   // 展厅模式是假数据演示, 不提示无信号
+    if (!s_showroom_active) update_no_signal_overlay(ble_now);   // showroom mode is a fake-data demo, no NO SIGNAL hint
 
-    /* ---- Showroom 模式: 主表驱动 slot, 从表跟随 ---- */
-    // 从表: 进入 showroom
+    /* ---- Showroom mode: master drives slots, slaves follow ---- */
+    // Slave: enter showroom
     if (!s_showroom_active && s_showroom_pending_enter) {
         s_showroom_pending_enter = false;
         s_boot_done = true;
         ui_showroom_set_active(true);
     }
-    // 从表: 跟随主表 slot
+    // Slave: follow the master's slot
     if (s_showroom_active && is_slave && s_showroom_pending_slot >= 0) {
         uint8_t new_slot = (uint8_t)s_showroom_pending_slot;
         s_showroom_pending_slot = -1;
         if (new_slot != s_showroom_slot) {
-            // 清理当前 slot
+            // clean up the current slot
             uint8_t old_page = showroom_slot_to_page(s_showroom_slot);
             if (old_page == 0 && s_boot_video_active) {
                 s_boot_video_active = false; s_boot_video_ready = false;
@@ -806,7 +821,7 @@ void my_timerMain(lv_timer_t * timer)
                 if (s_boot_video_timer) { lv_timer_del(s_boot_video_timer); s_boot_video_timer = NULL; }
             }
             if (old_page == 2) { s_intro_step = 0; s_intro_shown = false; }
-            // 跳到主表的 slot
+            // jump to the master's slot
             s_showroom_slot = new_slot;
             s_showroom_tick = 0;
             showroom_load_slot(s_showroom_slot);
@@ -815,7 +830,7 @@ void my_timerMain(lv_timer_t * timer)
     if (s_showroom_active && !IN_SWEEP) {
         if (!is_slave) showroom_fake_data();
 
-        // 动画 slot: 视频准备好后自动开始播放 (主从都执行)
+        // animation slot: start playing automatically once the video is ready (runs on both master and slave)
         uint8_t cur_page = showroom_slot_to_page(s_showroom_slot);
         if (s_showroom_slot == 1 && cur_page == 0 && s_boot_video_ready && !s_boot_video_active) {
             lv_scr_load(s_showroom_video_scr);
@@ -825,10 +840,10 @@ void my_timerMain(lv_timer_t * timer)
                 s_boot_video_timer = lv_timer_create(boot_video_timer_cb, 33, NULL);
         }
 
-        // 本地 tick 切页:
-        //   主表: 所有 slot 都跑
-        //   从表: 仅 Logo(0) 和动画(1) 跑本地 tick (保证同步切动画)
-        //         其余 slot 纯跟主表广播 (避免闪现)
+        // Local tick page switching:
+        //   master: runs for all slots
+        //   slave: only Logo(0) and animation(1) run local ticks (keeps animation switching in sync);
+        //          other slots purely follow the master's broadcast (avoids flash-through)
         bool should_tick = !is_slave || s_showroom_slot <= 1;
         if (should_tick) {
             bool anim_playing = (cur_page == 0 && s_boot_video_active) ||
@@ -841,7 +856,7 @@ void my_timerMain(lv_timer_t * timer)
                 max_t = anim_playing ? 255 : 1;
             }
             if (s_showroom_tick >= max_t) {
-                // 离开当前 slot 时清理
+                // clean up when leaving the current slot
                 if (cur_page == 0 && s_boot_video_active) {
                     s_boot_video_active = false;
                     s_boot_video_ready = false;
@@ -855,53 +870,53 @@ void my_timerMain(lv_timer_t * timer)
                 showroom_load_slot(s_showroom_slot);
             }
         }
-        // 主表广播当前 slot (从表用于纠偏)
+        // master broadcasts the current slot (slaves use it to correct drift)
         if (!is_slave) s_sweep_step = 200 + s_showroom_slot;
     }
 
-    /* ---- 数据来源：刷表 or 真实 OBD ---- */
-    float sweep_ratio = -1.0f;   // <0 = 非刷表(实时数据)
+    /* ---- Data source: sweep or real OBD ---- */
+    float sweep_ratio = -1.0f;   // <0 = not sweeping (real-time data)
     if(IN_SWEEP) {
         int step = s_sweep_step;
         float ratio;
         if(step <= SWEEP_STEPS_UP) {
-            ratio = (float)step / (float)SWEEP_STEPS_UP;    // 0→1 递增
+            ratio = (float)step / (float)SWEEP_STEPS_UP;    // 0→1 ramp
         } else {
-            ratio = 1.0f;   // 保持最大值(hold 阶段)
+            ratio = 1.0f;   // hold at max (hold phase)
         }
         sweep_ratio = ratio;
         usRpm   = (uint16_t)(SWEEP_RPM_PEAK * ratio);
-        ucSpeed = (uint16_t)(SWEEP_SPEED_PEAK * ratio); // uint16_t 以支持999
-        eGear   = (enGear)((int)(6.0f * ratio + 0.5f)); // 最高6档
+        ucSpeed = (uint16_t)(SWEEP_SPEED_PEAK * ratio); // uint16_t so it can hold 999
+        eGear   = (enGear)((int)(6.0f * ratio + 0.5f)); // up to 6th gear
 
-        /* 背光: 扫表+顶点保持=最低; 到顶后闪一下(高0.2s→低0.2s)。仅在亮度变化那一拍写LEDC。 */
+        /* Backlight: sweep+peak hold = minimum; after the peak, one flash (high 0.2s → low 0.2s). Write LEDC only on the tick where brightness changes. */
         int bl;
-        if      (step <= SWEEP_STEPS_UP + SWEEP_STEPS_HOLD)                     bl = SWEEP_BL_MIN; // 递增+保持
-        else if (step <= SWEEP_STEPS_UP + SWEEP_STEPS_HOLD + SWEEP_STEPS_FLASH) bl = SWEEP_BL_MAX; // 闪光高段
-        else                                                                   bl = SWEEP_BL_MIN; // 闪光低段
+        if      (step <= SWEEP_STEPS_UP + SWEEP_STEPS_HOLD)                     bl = SWEEP_BL_MIN; // ramp+hold
+        else if (step <= SWEEP_STEPS_UP + SWEEP_STEPS_HOLD + SWEEP_STEPS_FLASH) bl = SWEEP_BL_MAX; // high flash segment
+        else                                                                   bl = SWEEP_BL_MIN; // low flash segment
         if(bl != s_sweep_bl_last) { Set_Backlight(bl); s_sweep_bl_last = bl; }
 
-        if(!is_slave) {   // 主表自行推进; 从表的 step 由主表广播设置, 不自增(保持同步)
+        if(!is_slave) {   // master advances itself; the slave's step is set by the master's broadcast, no self-increment (stays in sync)
             s_sweep_step++;
-            if(s_sweep_step > SWEEP_TOTAL) s_sweep_step = 0; // 动画结束
+            if(s_sweep_step > SWEEP_TOTAL) s_sweep_step = 0; // animation done
         }
     } else {
-        /* 扫表刚结束(主/从表皆在 step→0 这一拍): 恢复设定亮度, 与"切回真实数值"同时发生, 只做一次 */
+        /* Sweep just ended (both master/slaves on the step→0 tick): restore configured brightness; happens together with switching back to real values, done once */
         if(s_sweep_bl_last >= 0) {
             uint8_t d = nvs_cfg_get()->brightness_day;
-            if(d < 10) d = 100;   // 0/未配置 → 100, 与开机置背光一致
+            if(d < 10) d = 100;   // 0/not configured → 100, same as the boot backlight
             Set_Backlight(d);
             s_sweep_bl_last = -1;
         }
         usRpm   = obd_data_get_rpm();
         ucSpeed = obd_data_get_speed();
-        // 优先用 CAN 直接解码的精确档位(部分车型支持, 127=无效); 无效或倒挡(-1, 当前
-        // 档位页没有 "R" 显示位, 和原来一样回退)时才用转速/车速估算的档位兜底。
+        // Prefer the exact gear decoded directly from CAN (supported by some cars, 127=invalid); only fall back
+        // to the RPM/speed-estimated gear when invalid or reverse (-1; the gear page has no "R" slot, same fallback as before).
         int8_t decoded_gear = obd_data_get_gear();
         eGear = (decoded_gear >= 0 && decoded_gear <= GEAR_8) ? (enGear)decoded_gear
                                                                : calculate_gear(usRpm, ucSpeed);
     }
-    /*档位页面: 只在这页真正显示时才刷新, 不在后台空跑*/
+    /*Gear page: refresh only while this page is actually shown, no idle background updates*/
     if (lv_scr_act() == ui_ScreenPageGear) {
         static const char *pGearNum[] = {"N","1","2","3","4","5","6","7","8"};
         static enGear s_last_gear_disp = GEAR_NEUTRAL;
@@ -914,7 +929,7 @@ void my_timerMain(lv_timer_t * timer)
             lv_arc_set_value(ui_GearPageArcGearNumBack, (uint16_t)g * 100 / gc);
         }
     }
-    /*转速页面: 直出, 无动画延迟 (CAN 100Hz 数据已干净)*/
+    /*RPM page: direct output, no animation delay (CAN 100Hz data is already clean)*/
     if (lv_scr_act() == ui_ScreenPageRpm) {
         static int32_t s_last_rpm = -1;
         if ((int32_t)usRpm != s_last_rpm) {
@@ -923,7 +938,7 @@ void my_timerMain(lv_timer_t * timer)
             lv_arc_set_value(ui_RpmPageArcRpmBack, (uint32_t)usRpm*100/SWEEP_RPM_PEAK);
         }
     }
-    /*速度页面: 同上, 只在页面激活时刷新*/
+    /*Speed page: same as above, refresh only while the page is active*/
     if (lv_scr_act() == ui_ScreenPageSpeed) {
         static int32_t s_disp_spd = 0;
         static int32_t s_last_spd = -1;
@@ -936,17 +951,17 @@ void my_timerMain(lv_timer_t * timer)
         }
     }
 
- /*指针页 (可配置数据源, 刷表时同步扫表)*/
+ /*Needle page (configurable data source, sweeps along during gauge sweep)*/
     ui_needle_page_update(sweep_ratio, clt, iat, oil, load_pct, tps, bat_mv,
                           oilp_x10, brake_x10, usRpm, ucSpeed, boost_x10, afr_x100);
 
- /*温度页面*/
+ /*Temp page*/
     if(ui_LabelTempValue[0]) {
         if(IN_SWEEP) {
             int step = s_sweep_step - 1; // already incremented
             float r;
             if(step <= SWEEP_STEPS_UP) r = (float)step / (float)SWEEP_STEPS_UP;
-            else r = 1.0f;   // 保持最大值(hold 阶段)
+            else r = 1.0f;   // hold at max (hold phase)
 
             for (int i = 0; i < 3; ++i) {
                 disp_item_t item = (disp_item_t)(user_cfg->temp_display_map[i] % DISP_ITEM_COUNT);
@@ -966,7 +981,7 @@ void my_timerMain(lv_timer_t * timer)
                 disp_item_t item = (disp_item_t)(user_cfg->temp_display_map[i] % DISP_ITEM_COUNT);
                 if (s_last_temp_map[i] != user_cfg->temp_display_map[i]) {
                     s_last_temp_map[i] = user_cfg->temp_display_map[i];
-                    s_disp_temp[i] = 0;  // 切源时清零, 避免从旧源值爬升
+                    s_disp_temp[i] = 0;  // reset on source switch, avoiding a ramp from the old source's value
                     lv_label_set_text(ui_LabelTempName[i], s_disp_meta[item].name);
                     lv_label_set_text(ui_LabelTempUnit[i], s_disp_meta[item].unit);
                     lv_obj_set_style_text_color(ui_LabelTempName[i], lv_color_hex(s_disp_meta[item].color), LV_PART_MAIN);
@@ -980,14 +995,14 @@ void my_timerMain(lv_timer_t * timer)
         }
     }
 
-    /* 通用曲线页更新: 显示的数据项由 chart_source_idx 决定(合并了原油压/刹车温两页) */
+    /* Generic chart page update: the displayed data item is chosen by chart_source_idx (merges the former oil-pressure/brake-temp pages) */
     if (ui_LabelOilPressureText) {
         static int32_t s_disp_chart = 0;
         static uint8_t s_last_chart_src = 0xFF;
         disp_item_t citem = (disp_item_t)(user_cfg->chart_source_idx % DISP_ITEM_COUNT);
         if (s_last_chart_src != user_cfg->chart_source_idx) {
             s_last_chart_src = user_cfg->chart_source_idx;
-            s_disp_chart = 0;  // 切源时清零, 避免从旧源值爬升
+            s_disp_chart = 0;  // reset on source switch, avoiding a ramp from the old source's value
         }
         int32_t cval = 0;
         bool cvalid;
@@ -995,7 +1010,7 @@ void my_timerMain(lv_timer_t * timer)
             int step = s_sweep_step - 1;
             float r;
             if (step <= SWEEP_STEPS_UP) r = (float)step / (float)SWEEP_STEPS_UP;
-            else r = 1.0f;   // 保持最大值(hold 阶段)
+            else r = 1.0f;   // hold at max (hold phase)
             cval = disp_item_sweep_value(citem, r);
             cvalid = true;
             s_disp_chart = cval;
@@ -1007,7 +1022,7 @@ void my_timerMain(lv_timer_t * timer)
             disp_item_update(&s_disp_chart, ui_LabelOilPressureText, citem, cval, cvalid, ANIM_THRESH_TEMP);
         }
 
-        // 仅非扫表时喂曲线并刷新: 开机扫表动画那一下曲线保持不动(扫表是给指针/数字用的, 趋势图不参与)
+        // Feed the chart and refresh only when not sweeping: during the boot sweep the chart stays put (the sweep is for needles/digits; the trend chart does not take part)
         if (!IN_SWEEP) {
             uint32_t now = lv_tick_get();
             if (s_oil_pressure_trend_tick == 0) {
@@ -1020,18 +1035,18 @@ void my_timerMain(lv_timer_t * timer)
                 s_oil_pressure_trend_tick += OIL_PRESS_TREND_SAMPLE_MS;
                 trend_updated = true;
             }
-            // 趋势缓冲区只有真正采样一次(约每秒)才变化, 不必每个 timer tick 都整条曲线重绘
+            // the trend buffer only changes on an actual sample (~once per second), so no need to redraw the whole chart every timer tick
             if (trend_updated) oil_pressure_chart_refresh();
         }
     }
 
-    /* Info 页更新 */
+    /* Info page update */
     if (ui_LabelInfoValue[0]) {
         if (IN_SWEEP) {
             int step = s_sweep_step - 1; // already incremented above
             float r;
             if (step <= SWEEP_STEPS_UP) r = (float)step / (float)SWEEP_STEPS_UP;
-            else r = 1.0f;   // 保持最大值(hold 阶段)
+            else r = 1.0f;   // hold at max (hold phase)
 
             for (int i = 0; i < 5; ++i) {
                 disp_item_t item = (disp_item_t)(user_cfg->info_display_map[i] % DISP_ITEM_COUNT);
@@ -1050,7 +1065,7 @@ void my_timerMain(lv_timer_t * timer)
                 disp_item_t item = (disp_item_t)(user_cfg->info_display_map[i] % DISP_ITEM_COUNT);
                 if (s_last_info_map[i] != user_cfg->info_display_map[i]) {
                     s_last_info_map[i] = user_cfg->info_display_map[i];
-                    s_disp_info[i] = 0;  // 切源时清零, 避免从旧源值爬升
+                    s_disp_info[i] = 0;  // reset on source switch, avoiding a ramp from the old source's value
                     lv_label_set_text(ui_LabelInfoName[i], s_disp_meta[item].name);
                     lv_label_set_text(ui_LabelInfoUnit[i], s_disp_meta[item].unit);
                     lv_obj_set_style_text_color(ui_LabelInfoName[i], lv_color_hex(s_disp_meta[item].color), LV_PART_MAIN);
@@ -1063,7 +1078,7 @@ void my_timerMain(lv_timer_t * timer)
         }
     }
 
-    /* 动态更新 EasterEgg(版本页)信息: 加 MODE 行, 并按主/从显示 BLE 或 主表链路 */
+    /* Dynamically update the EasterEgg (version page) info: add a MODE line and show BLE or the master link depending on master/slave */
     if(ui_LabelEasterEggInfo) {
         const char *mode_str = is_slave ? "SLAVE" : "MASTER";
         const char *conn_label, *conn_name;
@@ -1091,7 +1106,7 @@ void my_timerMain(lv_timer_t * timer)
     }
  
 #if EXAMPLE_PIN_NUM_BK_LIGHT >= 0
-        //等待500ms后开背光，避免没有初始化完成就开背光，只执行一次
+        //wait 500ms before turning on the backlight, so it isn't enabled before init completes; runs once
         if(ucOnlyOnce == 0)
         {
             ulOpenLightTimeCnt++;
@@ -1103,28 +1118,28 @@ void my_timerMain(lv_timer_t * timer)
                 Set_Backlight(bright);
                 ESP_LOGI(TAG, "Set LCD backlight to %d%%", bright);
                 ulOpenLightTimeCnt = 0;
-                ucOnlyOnce = 1;//只执行一次
+                ucOnlyOnce = 1;//run once only
             }
         }
 #endif
 
-    /* 底部信息栏(TRIP/ODO/MAX/AVG/TIME)原属已删除的 Main 页面，随之移除。
-       里程统计仍由后台任务持续累计，可在其它页面或后续重新接入展示。 */
+    /* The bottom info bar (TRIP/ODO/MAX/AVG/TIME) belonged to the removed Main page and was removed with it.
+       Mileage statistics are still accumulated by a background task and can be shown on other pages or re-attached later. */
 
-    /* ===== 视频开机模式 (INTRO >= 2: REI/SHINJI/ASUKA) ===== */
+    /* ===== Video boot mode (INTRO >= 2: REI/SHINJI/ASUKA) ===== */
     {
         uint8_t intro_val = nvs_intro_enable_get();
         bool want_video = (intro_val >= 2 && intro_val <= 4);
         if (!s_boot_done && !s_showroom_active && !s_boot_video_done && want_video) {
             const nvs_user_cfg_t *cfg_vm = nvs_cfg_get();
-            // Logo 先显示 1 秒, 再进入视频
+            // show the Logo for 1 second first, then enter the video
             static int64_t s_video_logo_start_us = 0;
             if (s_video_logo_start_us == 0) s_video_logo_start_us = esp_timer_get_time();
             int64_t logo_el_ms = (esp_timer_get_time() - s_video_logo_start_us) / 1000;
-            if (logo_el_ms < 1000) return;  // Logo 展示中, 跳过
-            // 阶段1: 准备视频 (根据 intro_val 选文件)
+            if (logo_el_ms < 1000) return;  // Logo still showing, skip
+            // Phase 1: prepare the video (pick files per intro_val)
             if (!s_boot_video_ready && !s_boot_video_active && s_boot_video_screen == NULL) {
-                // 设置文件路径: 2=a, 3=b, 4=c
+                // set file paths: 2=a, 3=b, 4=c
                 const char *prefix = (intro_val == 3) ? "b" : (intro_val == 4) ? "c" : "a";
                 char manifest_path[64], data_path[64];
                 snprintf(manifest_path, sizeof(manifest_path), "/bootmedia/%s_block.txt", prefix);
@@ -1140,7 +1155,7 @@ void my_timerMain(lv_timer_t * timer)
                     lv_obj_clear_flag(s_boot_video_screen, LV_OBJ_FLAG_SCROLLABLE);
                     lv_obj_t *canvas = NULL;
                     if (boot_block_player_create(s_boot_video_screen, &canvas)) {
-                        // 不 lv_scr_load, 保持 Logo 屏, 等开播时再切
+                        // no lv_scr_load yet: keep the Logo screen, switch only when playback starts
                         s_boot_video_ready = true;
                         ESP_LOGI(TAG, "Boot video ready (logo kept)");
                     } else {
@@ -1152,16 +1167,16 @@ void my_timerMain(lv_timer_t * timer)
                     s_boot_video_done = true;
                 }
             }
-            // 阶段2: 等待同步信号后播放
+            // Phase 2: wait for the sync signal before playing
             if (s_boot_video_ready && !s_boot_video_active) {
                 bool should_start = false;
                 uint8_t role = cfg_vm->device_role;
                 if (role == ESPNOW_ROLE_STANDALONE) {
-                    // 单机: 直接播
+                    // standalone: play directly
                     should_start = true;
                 } else if (role == ESPNOW_ROLE_MASTER) {
-                    // 主表: 广播 READY → 等从表上线 → 等 800ms 准备 → 广播 PLAY + 自己播
-                    // 超时 5s 无从表也直接播
+                    // master: broadcast READY → wait for slaves to come online → wait 800ms prep → broadcast PLAY + play itself
+                    // with no slave after a 5s timeout, play anyway
                     static int64_t s_master_ready_us = 0;
                     static bool s_master_slaves_seen = false;
                     if (s_master_ready_us == 0) {
@@ -1170,7 +1185,7 @@ void my_timerMain(lv_timer_t * timer)
                     }
                     if (!s_master_slaves_seen && espnow_master_online_slaves() > 0) {
                         s_master_slaves_seen = true;
-                        s_master_ready_us = esp_timer_get_time();  // 重置计时, 从此刻等 800ms
+                        s_master_ready_us = esp_timer_get_time();  // restart timing, wait 800ms from now
                     }
                     int64_t wait_ms = (esp_timer_get_time() - s_master_ready_us) / 1000;
                     if ((s_master_slaves_seen && wait_ms >= 800) || wait_ms > 5000) {
@@ -1180,7 +1195,7 @@ void my_timerMain(lv_timer_t * timer)
                         s_master_slaves_seen = false;
                     }
                 } else {
-                    // 从表: 等收到 PLAY 信号, 超时 5s 兜底
+                    // slave: wait for the PLAY signal, 5s timeout as fallback
                     static int64_t s_slave_wait_us = 0;
                     if (s_slave_wait_us == 0) s_slave_wait_us = esp_timer_get_time();
                     int64_t wait_ms = (esp_timer_get_time() - s_slave_wait_us) / 1000;
@@ -1191,7 +1206,7 @@ void my_timerMain(lv_timer_t * timer)
                     }
                 }
                 if (should_start) {
-                    lv_scr_load(s_boot_video_screen);  // 此刻才切屏, Logo 保持到最后一刻
+                    lv_scr_load(s_boot_video_screen);  // switch screens only now, keeping the Logo until the last moment
                     s_boot_video_active = true;
                     s_boot_video_start_us = esp_timer_get_time();
                     s_boot_video_timer = lv_timer_create(boot_video_timer_cb, 33, NULL);
@@ -1202,7 +1217,7 @@ void my_timerMain(lv_timer_t * timer)
         }
     } // end video mode scope
 
-    /* ===== 开机流程 / Showroom Intro 回放 ===== */
+    /* ===== Boot flow / Showroom Intro playback ===== */
     bool run_intro = (!s_boot_done && !s_showroom_active) ||
                      (s_showroom_active && showroom_slot_to_page(s_showroom_slot) == 2);
     if (run_intro)
@@ -1228,13 +1243,13 @@ void my_timerMain(lv_timer_t * timer)
                              : (el < 2000000) ? 4 : (el < 3000000) ? 5 : 255;
             }
         } else {
-            // 从表: 等主表同步信号, 5s 超时才跳默认页
+            // slave: wait for the master's sync signal; only jump to the default page after a 5s timeout
             if (s_intro_step == 0) {
                 if (boot_el > 5000000) s_intro_step = 255;
             }
         }
 
-        // 渲染 + 屏幕切换
+        // Rendering + screen switch
         if (s_intro_step >= 1 && s_intro_step <= 5) {
             if (!s_intro_shown) {
                 if (ui_ScreenPageIntro == NULL) ui_ScreenPageIntro_screen_init();
@@ -1251,19 +1266,28 @@ void my_timerMain(lv_timer_t * timer)
                 lv_label_set_text(ui_LabelIntroWord, (s_intro_step >= pos + 1) ? words[pos] : "");
             }
         } else if (s_intro_step == 255 && !in_showroom_intro) {
-            boot_enter_default_page();   // 仅开机时进默认页; showroom 不跳走
+            boot_enter_default_page();   // enter the default page only at boot; showroom doesn't jump away
         }
-        // s_intro_step==0: 仍在 Logo 等待
+        // s_intro_step==0: still waiting on the Logo
     }
 
-    /* ---- 转速超限闪烁报警 ---- */
+    /* ---- RPM over-limit flash warning ---- */
     {
-        uint16_t warn_thresh = user_cfg->rpm_warn_threshold; // 已在 nvs_storage_init() 里夹紧到 [1000,...]/默认6000
-        bool over = (!IN_SWEEP && user_cfg->rpm_warn_anim_en && usRpm >= warn_thresh);
-        // 测试模式: 强制触发
+        uint16_t warn_thresh = user_cfg->rpm_warn_threshold; // already clamped to [1000,...]/default 6000 in nvs_storage_init()
+        // Linked flash and FLASH ANIM are mutually exclusive (the settings page ensures at most one is on); with linked on, the at-threshold strobe does not depend on anim_en.
+        // While a link test is running (linktest_active), this unit renders even if LINKED FLASH is off locally, so the all-gauge sync test works.
+        bool linked_on = (user_cfg->rpm_warn_linked_en || espnow_link_linktest_active()) &&
+                         (user_cfg->device_role != ESPNOW_ROLE_STANDALONE);
+
+        // The linked-test RPM ramp is written by the master into the RPM override layer and broadcast via ESP-NOW; usRpm is the synced value, identical on all three gauges
+        bool over = (!IN_SWEEP && (user_cfg->rpm_warn_anim_en || linked_on) && usRpm >= warn_thresh);
+        // Test mode: force trigger
         if (s_rpm_flash_test_ticks > 0) { over = true; s_rpm_flash_test_ticks--; }
 
-        // 背景图闪烁: img1→黑→img2→黑→img3→黑 循环, UI控件在图片上方正常显示
+        // Stable flag: stays true while strobing, driving the timer to flash at RPM_FLASH_PERIOD_MS (independent of the red/black toggle)
+        s_rpm_flashing = over;
+
+        // Background image flash: img1→black→img2→black→img3→black loop; UI widgets keep showing above the image
 #if USE_CUSTOM_RPM_FLASH == 1
         static int8_t s_flash_step = -1;
         static const lv_img_dsc_t *s_flash_imgs[3] = { &imgRpmFlash1, &imgRpmFlash2, &imgRpmFlash3 };
@@ -1286,8 +1310,9 @@ void my_timerMain(lv_timer_t * timer)
         } else {
             if (s_flash_step >= 0) {
                 lv_obj_t *scr = lv_scr_act();
-                lv_obj_set_style_bg_img_src(scr, NULL, LV_PART_MAIN);
-                lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), LV_PART_MAIN);
+                // Restore the theme background (and its dial-face artwork, if any).
+                // Hardcoding black here would blank a themed dial face for good.
+                ui_helpers_style_screen_bg(scr);
                 lv_obj_set_style_bg_opa(scr, 255, LV_PART_MAIN);
                 s_flash_step = -1;
             }
@@ -1297,28 +1322,79 @@ void my_timerMain(lv_timer_t * timer)
         if (over) {
             s_rpm_flash_red = !s_rpm_flash_red;
             lv_obj_t *scr = lv_scr_act();
-            lv_obj_set_style_bg_color(scr, s_rpm_flash_red ? lv_color_hex(0xFF0000) : lv_color_hex(0x000000), LV_PART_MAIN);
+            // Drop the dial-face artwork while strobing — a background image
+            // covers bg_color, so the flash would otherwise be invisible.
+            lv_obj_set_style_bg_img_src(scr, NULL, LV_PART_MAIN);
+            lv_obj_set_style_bg_color(scr, s_rpm_flash_red ? lv_color_hex(UI_SEM_FLASH) : lv_color_hex(0x000000), LV_PART_MAIN);
             lv_obj_set_style_bg_opa(scr, 255, LV_PART_MAIN);
         } else {
             if (s_rpm_flash_red) {
-                lv_obj_set_style_bg_color(lv_scr_act(), lv_color_hex(0x000000), LV_PART_MAIN);
-                lv_obj_set_style_bg_opa(lv_scr_act(), 255, LV_PART_MAIN);
+                lv_obj_t *scr = lv_scr_act();
+                ui_helpers_style_screen_bg(scr);   // restore theme bg + dial face
+                lv_obj_set_style_bg_opa(scr, 255, LV_PART_MAIN);
                 s_rpm_flash_red = false;
             }
         }
 #endif
+
+        // ---- Multi-gauge linked strobe (triple-gauge mode): the band [threshold-1000, threshold] is split into thirds;
+        //      gauges 1/2/3, per their positions, ramp black→red in turn → solid red; at the threshold all three strobe together (the over branch above).
+        //      Each gauge computes locally from its own position + the same ESP-NOW-synced RPM, so no extra inter-gauge communication is needed and they stay in sync naturally.
+        {
+            bool linked_drawn = false;
+            if (linked_on && !over && !IN_SWEEP && warn_thresh > 1000 && usRpm < warn_thresh) {
+                uint32_t base = (uint32_t)warn_thresh - 1000;   // start RPM = threshold minus 1000 rpm
+                uint8_t pos = nvs_device_position_get();        // this unit's position 1/2/3
+                if (pos >= 1 && pos <= 3) {
+                    uint32_t seg_start = base + 1000u * (pos - 1) / 3;
+                    uint32_t seg_end   = base + 1000u * pos / 3;
+                    lv_obj_t *scr = lv_scr_act();
+                    if (usRpm >= seg_end) {
+                        // this unit's segment completed: solid red
+                        lv_obj_set_style_bg_img_src(scr, NULL, LV_PART_MAIN);
+                        lv_obj_set_style_bg_color(scr, lv_color_hex(0xFF0000), LV_PART_MAIN);
+                        lv_obj_set_style_bg_opa(scr, 255, LV_PART_MAIN);
+                        s_rpm_link_ramp = false;
+                        linked_drawn = true;
+                    } else if (usRpm > seg_start && seg_end > seg_start) {
+                        // inside this unit's segment: full-screen black→red ramp, alpha rising linearly with RPM
+                        uint8_t alpha = (uint8_t)(((uint32_t)usRpm - seg_start) * 255 / (seg_end - seg_start));
+                        lv_obj_set_style_bg_img_src(scr, NULL, LV_PART_MAIN);
+                        lv_obj_set_style_bg_color(scr,
+                            lv_color_mix(lv_color_hex(0xFF0000), lv_color_hex(0x000000), alpha), LV_PART_MAIN);
+                        lv_obj_set_style_bg_opa(scr, 255, LV_PART_MAIN);
+                        s_rpm_link_ramp = true;
+                        linked_drawn = true;
+                    }
+                }
+            }
+            if (linked_drawn) {
+                s_rpm_link_bg = true;
+            } else if (!over) {
+                // during over (strobe) the flash logic owns the background, don't touch it here; otherwise, leaving the linked red must restore black
+                s_rpm_link_ramp = false;
+                if (s_rpm_link_bg) {
+                    lv_obj_t *scr = lv_scr_act();
+                    ui_helpers_style_screen_bg(scr);   // restore theme bg + dial face
+                    lv_obj_set_style_bg_opa(scr, 255, LV_PART_MAIN);
+                    s_rpm_link_bg = false;
+                }
+            }
+        }
     }
 
-    /* ---- 自适应刷新频率: 配置/静态页降频省重绘, 其余保持 200ms ----
-       仅调整本 UI 定时器周期(纯重绘节奏), 不影响任何 OBD/RS485/ESP-NOW 查询与广播。
-       数据是 OBD 限速的, 数据页刷更快无收益; 只对静态页降频, 纯赚 CPU/功耗。 */
+    /* ---- Adaptive refresh rate: slow config/static pages down to save redraws, everything else stays at 200ms ----
+       Only this UI timer's period changes (pure redraw pacing); no OBD/RS485/ESP-NOW query or broadcast is affected.
+       Data is OBD-rate-limited, so faster redraws on data pages gain nothing; slowing only static pages is pure CPU/power savings. */
     if (timer) {
         static uint32_t s_refresh_ms = 200;
         uint32_t want_ms;
         if (IN_SWEEP) {
-            want_ms = SWEEP_TICK_MS;   // 扫表动画期间高刷, 让数字平滑递增
-        } else if (s_rpm_flash_red) {
-            want_ms = 1;    // 闪烁极限频率, LVGL自限到渲染+SPI极限
+            want_ms = SWEEP_TICK_MS;   // high rate during the sweep animation so digits ramp smoothly
+        } else if (s_rpm_flashing) {
+            want_ms = RPM_FLASH_PERIOD_MS;   // strobe: fixed fast period, symmetric red/black alternation (25ms→20Hz)
+        } else if (s_rpm_link_ramp) {
+            want_ms = 20;   // inside the linked ramp: speed up so the black→red transition stays smooth
         } else {
             want_ms = 200;
             lv_obj_t *scr = lv_scr_act();
@@ -1328,7 +1404,7 @@ void my_timerMain(lv_timer_t * timer)
                 scr == ui_ScreenPageTempCustom || scr == ui_ScreenPageInfoCustom ||
                 scr == ui_ScreenPageOilWarn ||
                 scr == ui_ScreenPageRpmWarn) {
-                want_ms = 400;   // 设置/信息/配置/警告类静态页: 降频
+                want_ms = 400;   // static settings/info/config/warning pages: slow down
             }
         }
         if (want_ms != s_refresh_ms) {
@@ -1371,7 +1447,7 @@ void ui_event_logo_background(lv_event_t * e)
     }   
 }
 
-// 档位/转速/车速 三页位于轮播最前：档位→转速→车速→Temp→… (左滑下一页/右滑上一页)
+// The Gear/RPM/Speed pages sit at the front of the carousel: Gear→RPM→Speed→Temp→… (swipe left = next / swipe right = previous)
 void ui_event_gear_background(lv_event_t * e)
 {
     lv_event_code_t event_code = lv_event_get_code(e);
@@ -1421,8 +1497,8 @@ void ui_event_speed_background(lv_event_t * e)
         }
     }
 }
-// 轮播顺序: 档位 → 转速 → 车速 → Temp → Info → 仪表 → 机油压 → 刹车温度 → 版本页 → 回到 档位
-// 左滑=下一页, 右滑=上一页
+// Carousel order: Gear → RPM → Speed → Temp → Info → Needle → OilPressure → BrakeTemp → version page → back to Gear
+// Swipe left = next page, swipe right = previous page
 void ui_event_temp_background(lv_event_t * e)
 {
     lv_event_code_t event_code = lv_event_get_code(e);
@@ -1465,18 +1541,18 @@ void ui_event_oil_pressure_background(lv_event_t * e)
             _ui_screen_change(&ui_ScreenPageNeedle, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageNeedle_screen_init);
         }
         else if(dir == LV_DIR_LEFT) {
-            // 刹车温页已并入曲线页, 左滑到环下一个可见页(版本页)
+            // the brake-temp page was merged into the chart page; swipe left goes to the next visible page in the ring (version page)
             lv_indev_wait_release(lv_indev_get_act());
             _ui_screen_change(&ui_ScreenPageEasterEgg, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageEasterEgg_screen_init);
         }
         else if(dir == LV_DIR_BOTTOM) {
-            // 下滑 → 曲线数据源选择页(删旧实例强制重建, 反映当前数据项/选择)
+            // swipe down → chart data-source selection page (delete the old instance to force a rebuild, reflecting the current data item/selection)
             lv_indev_wait_release(lv_indev_get_act());
             if (ui_ScreenPageChartConfig) { lv_obj_del(ui_ScreenPageChartConfig); ui_ScreenPageChartConfig = NULL; }
             _ui_screen_change(&ui_ScreenPageChartConfig, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageChartConfig_screen_init);
         }
         else if(dir == LV_DIR_TOP) {
-            // 上滑 → 报警阈值设置页(删旧实例强制重建, 按当前数据项)
+            // swipe up → alarm threshold settings page (delete the old instance to force a rebuild, per the current data item)
             lv_indev_wait_release(lv_indev_get_act());
             if (ui_ScreenPageChartAlarm) { lv_obj_del(ui_ScreenPageChartAlarm); ui_ScreenPageChartAlarm = NULL; }
             _ui_screen_change(&ui_ScreenPageChartAlarm, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageChartAlarm_screen_init);
@@ -1484,7 +1560,7 @@ void ui_event_oil_pressure_background(lv_event_t * e)
     }
 }
 
-// 曲线数据源选择页手势: 任意方向返回曲线页
+// Chart data-source selection page gestures: any direction returns to the chart page
 void ui_event_chart_config_background(lv_event_t * e)
 {
     lv_event_code_t code = lv_event_get_code(e);
@@ -1494,7 +1570,7 @@ void ui_event_chart_config_background(lv_event_t * e)
     }
 }
 
-// 曲线报警设置页手势: 任意方向返回曲线页
+// Chart alarm settings page gestures: any direction returns to the chart page
 void ui_event_chart_alarm_background(lv_event_t * e)
 {
     lv_event_code_t code = lv_event_get_code(e);
@@ -1528,8 +1604,8 @@ void ui_event_rpm_warn_background(lv_event_t * e)
     }
 }
 
-// 指针页(仪表)：位于 Info 与 OilPressure 之间(两曲线页之前)
-//  右滑 → Info，左滑 → OilPressure，下滑 → 数据源选择
+// Needle page (gauge): sits between Info and OilPressure (before the two chart pages)
+//  swipe right → Info, swipe left → OilPressure, swipe down → data-source selection
 void ui_event_needle_background(lv_event_t * e)
 {
     lv_event_code_t code = lv_event_get_code(e);
@@ -1550,7 +1626,7 @@ void ui_event_needle_background(lv_event_t * e)
     }
 }
 
-// 指针配置页：任意方向返回指针页
+// Needle config page: any direction returns to the needle page
 void ui_event_needle_config_background(lv_event_t * e)
 {
     lv_event_code_t code = lv_event_get_code(e);
@@ -1595,13 +1671,13 @@ void ui_event_easter_egg_background(lv_event_t * e)
 {
     lv_event_code_t event_code = lv_event_get_code(e);
     if(event_code == LV_EVENT_CLICKED && !s_showroom_active) {
-        showroom_handle_tap();  // 版本页连点10下进入 showroom
+        showroom_handle_tap();  // 10 rapid taps on the version page enter showroom
         return;
     }
     if(event_code == LV_EVENT_GESTURE) {
         lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
         if(dir == LV_DIR_RIGHT) {
-            // 刹车温页已并入曲线页, 版本页右滑回到曲线页
+            // the brake-temp page was merged into the chart page; swiping right on the version page returns to the chart page
             lv_indev_wait_release(lv_indev_get_act());
             _ui_screen_change(&ui_ScreenPageOilPressure, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageOilPressure_screen_init);
         }
@@ -1610,62 +1686,66 @@ void ui_event_easter_egg_background(lv_event_t * e)
             _ui_screen_change(&ui_ScreenPageGear, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageGear_screen_init);
         }
         else if(dir == LV_DIR_TOP) {
-            // 上滑 → BLE 扫描页面
+            // swipe up → BLE scan page
             lv_indev_wait_release(lv_indev_get_act());
             _ui_screen_change(&ui_ScreenPageBLEScan, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageBLEScan_screen_init);
         }
         else if(dir == LV_DIR_BOTTOM) {
-            // 下滑 → 设置页面
+            // swipe down → settings page
             lv_indev_wait_release(lv_indev_get_act());
             _ui_screen_change(&ui_ScreenPageSettings, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageSettings_screen_init);
         }
     }
 
-    // ---- 手写扩展逻辑 hook (ui_ext.c, 不被 SquareLine 覆盖) ----
+    // ---- hand-written extension logic hook (ui_ext.c, not overwritten by SquareLine) ----
     ui_ext_tick();
 }
 ///////////////////// SCREENS ////////////////////
 
 void ui_init(void)
 {
+    // Load the saved UI theme BEFORE any screen is built, so every screen
+    // picks up the active theme's colors at creation time.
+    ui_theme_init();
+
     lv_disp_t * dispp = lv_disp_get_default();
     lv_theme_t * theme = lv_theme_default_init(dispp, lv_palette_main(LV_PALETTE_BLUE), lv_palette_main(LV_PALETTE_RED),
                                                false, LV_FONT_DEFAULT);
     lv_disp_set_theme(dispp, theme);
     ui_ScreenPageLogo_screen_init();
-    // Main 三合一页仍移除；车速/转速/档位三页恢复
+    // The Main 3-in-1 page stays removed; the Speed/RPM/Gear pages are restored
     ui_ScreenPageGear_screen_init();
     ui_ScreenPageRpm_screen_init();
     ui_ScreenPageSpeed_screen_init();
     ui_ScreenPageTemp_screen_init();
-    // 刹车温独立页已并入通用曲线页, 不再创建(其数据可在曲线页选择显示)
-    ui_ScreenPageOilPressure_screen_init();   // 通用曲线页(内部按 chart_source_idx 配置)
+    // The standalone brake-temp page was merged into the generic chart page and is no longer created (its data can be selected on the chart page)
+    ui_ScreenPageOilPressure_screen_init();   // generic chart page (configured internally via chart_source_idx)
     ui_ScreenPageOilWarn_screen_init();
     ui_ScreenPageODBProtocal_screen_init();
     ui_ScreenPageNeedle_screen_init();
-    // Info 页按需懒加载，screen 指针须初始化为 NULL
+    // The Info page is lazy-loaded on demand; its screen pointer must be initialized to NULL
     ui_ScreenPageInfo = NULL;
     ui_ScreenPageTempCustom = NULL;
     ui_ScreenPageInfoCustom = NULL;
-    ui_ScreenPageNeedleConfig = NULL;   // 配置页懒加载
-    ui_ScreenPageMultiGauge = NULL;     // 三连表设置页懒加载
-    ui_ScreenPageChartConfig = NULL;    // 曲线数据源选择页懒加载
-    ui_ScreenPageChartAlarm = NULL;     // 曲线报警设置页懒加载
-    ui_ScreenPageIntro = NULL;          // 开机动画页懒加载
+    ui_ScreenPageNeedleConfig = NULL;   // config page lazy-loaded
+    ui_ScreenPageMultiGauge = NULL;     // triple-gauge settings page lazy-loaded
+    ui_ScreenPageChartConfig = NULL;    // chart data-source selection page lazy-loaded
+    ui_ScreenPageChartAlarm = NULL;     // chart alarm settings page lazy-loaded
+    ui_ScreenPageIntro = NULL;          // boot animation page lazy-loaded
     ui____initial_actions0 = lv_obj_create(NULL);
 
-    // 预创建默认启动页：开机切换前就建好，避免在过渡那一刻才同步创建导致卡顿。
-    // 其余默认页(Temp/Brake/OilP/Needle/Gear/Rpm/Speed)上面已 eager 创建；只有 Info 是懒加载。
+    // Pre-create the default boot page: build it before the boot switch so it isn't created synchronously mid-transition and cause a stutter.
+    // The other default pages (Temp/Brake/OilP/Needle/Gear/Rpm/Speed) were eagerly created above; only Info is lazy-loaded.
     if (nvs_cfg_get()->default_page == 1 && ui_ScreenPageInfo == NULL) {
         ui_ScreenPageInfo_screen_init();
     }
 
     lv_disp_load_scr(ui_ScreenPageLogo);
 
-    lv_timer_create(my_timerMain, 50, NULL);  //50 ms 周期 (20Hz, 原 100ms/10Hz)
+    lv_timer_create(my_timerMain, 50, NULL);  //50 ms period (20Hz, previously 100ms/10Hz)
 }
 
-/* OBD 协议页面事件 */
+/* OBD protocol page events */
 void ui_event_obd_prot_background(lv_event_t * e)
 {
     lv_event_code_t code = lv_event_get_code(e);
@@ -1678,7 +1758,7 @@ void ui_event_obd_prot_background(lv_event_t * e)
     }else if(code == LV_EVENT_LONG_PRESSED){
         usSaveProtTimeCnt = 0;
     }else if(code == LV_EVENT_LONG_PRESSED_REPEAT){
-        usSaveProtTimeCnt += 100; // 该事件每 100 ms 触发一次
+        usSaveProtTimeCnt += 100; // this event fires every 100 ms
         if(usSaveProtTimeCnt >= SAVE_PROTOCOL_TIME){
             usSaveProtTimeCnt = 0;
             nvs_user_cfg_t cfg = *nvs_cfg_get();
@@ -1691,14 +1771,14 @@ void ui_event_obd_prot_background(lv_event_t * e)
     }
 }
 
-/* BLE 扫描页面事件 - 左滑返回设备信息页 */
+/* BLE scan page events - swipe left returns to the device info page */
 void ui_event_ble_scan_background(lv_event_t * e)
 {
     lv_event_code_t code = lv_event_get_code(e);
     if(code == LV_EVENT_GESTURE){
         lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
         if(dir == LV_DIR_LEFT || dir == LV_DIR_RIGHT){
-            // 从表在这个页面跑的是配对扫描(gauge_pair_ble), 不是 OBD 扫描(elm327_ble); 划走时要停对应的那个。
+            // on this page slaves run the pairing scan (gauge_pair_ble), not the OBD scan (elm327_ble); stop the matching one when swiping away.
             if (nvs_cfg_get()->device_role == ESPNOW_ROLE_SLAVE) {
                 gauge_pair_ble_scan_stop();
             } else {
@@ -1710,7 +1790,7 @@ void ui_event_ble_scan_background(lv_event_t * e)
     }
 }
 
-/* 设置页面事件 - 左滑/右滑返回设备信息页 */
+/* Settings page events - swipe left/right returns to the device info page */
 void ui_event_settings_background(lv_event_t * e)
 {
     lv_event_code_t code = lv_event_get_code(e);
@@ -1720,14 +1800,14 @@ void ui_event_settings_background(lv_event_t * e)
             lv_indev_wait_release(lv_indev_get_act());
             _ui_screen_change(&ui_ScreenPageEasterEgg, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageEasterEgg_screen_init);
         }
-        else if(dir == LV_DIR_BOTTOM){   // 下滑进入三连表设置页
+        else if(dir == LV_DIR_BOTTOM){   // swipe down enters the triple-gauge settings page
             lv_indev_wait_release(lv_indev_get_act());
             _ui_screen_change(&ui_ScreenPageMultiGauge, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageMultiGauge_screen_init);
         }
     }
 }
 
-// 三连表设置页手势: 上滑/左右滑 → 返回设置页
+// Triple-gauge settings page gestures: swipe up/left/right → return to the settings page
 void ui_event_multi_gauge_background(lv_event_t * e)
 {
     lv_event_code_t code = lv_event_get_code(e);

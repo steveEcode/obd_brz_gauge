@@ -97,7 +97,7 @@ esptool.py --chip esp32s3 -p PORT -b 460800 write_flash \
   0x8000 firmware/release/partition_table/partition-table.bin \
   0xf000 firmware/release/ota_data_initial.bin \
   0x20000 firmware/release/obd_brz_gauge.bin \
-  0x620000 firmware/release/bootmedia.bin
+  0x420000 firmware/release/bootmedia.bin
 ```
 
 ## 开发与适配说明
@@ -108,6 +108,35 @@ esptool.py --chip esp32s3 -p PORT -b 460800 write_flash \
 4. UI 资源来自 [main/export_path](../main/export_path)，后续可继续调整页面布局、字体和动画。
 
 ## 更新日志
+### 主题变成配置，不再是代码
+
+加一套 UI 主题现在不用碰任何 C 文件。一个主题就是 `themes/` 下的一个文件夹，里面放一份 `theme.toml` 清单（8 个装饰色 + 可选的美术素材），再往 `themes/registry.txt` 末尾追加一行。`tools/gen_themes.py` 在 CMake configure 阶段自动运行：校验清单、把 PNG 素材转成 LVGL 图片数组、生成 `ui_theme_generated.c`。
+
+- **美术素材**：`ring`（360x360，带透明通道）替换代码画的表框，`needle` 替换指针（LVGL 绕清单里声明的 pivot 旋转，素材必须画成朝右），`dial`（360x360）作为所有页面的背景。没声明的项自动回退到代码绘制 + 对应颜色角色，所以纯配色主题依然只要一个文件。
+- **槽位稳定性**：`themes/registry.txt` 固定 槽位 -> id 的映射，且只能追加。NVS 存的是槽位号，一旦调序，所有已有设备在下次 OTA 后会被静默换成另一个主题 —— 而且本地测试根本发现不了。生成器对调序、跳号、槽位 0 不是 `default`、以及登记了却找不到文件夹的情况一律构建失败。
+- **构建期校验**覆盖素材尺寸、指针 pivot 越界、文件缺失、滚轮重名、未知字段，以及素材总预算（1536 KB —— 因为所有已注册主题的素材都会被无条件链接进固件）。每条报错都精确到文件和行号。
+- 素材转换只在 PNG 的 SHA-256 变化时才需要 Pillow；转换出来的 C 文件是入库的，所以常规编译不依赖任何第三方 Python 包。`--check` 模式供 CI 校验是否过期。
+- **修复**：设置页的主题滚轮原来用一个固定 96 字节缓冲区拼选项，主题一多就会静默截断。现在按实际长度精确分配，结构上不可能再截断。
+- **修复**：转速报警结束时会把背景恢复成硬编码的黑色，有表盘背景图的话会被永久抹掉。三条恢复路径现在都改为重新应用主题背景。
+
+编写指南：[themes/README.md](themes/README.md)（中英双语）。框架内部实现：[docs/THEMING.md](docs/THEMING.md)。
+
+### 三连表联动转速报警
+
+三块表现在可以随转速上升**依次**亮起，而不是同时闪。报警阈值往下 1000 转被分成三段，每块表按自己配置的位置在自己那一段里由黑渐变到红，到阈值时三块一起闪。每块表都用同一份 ESP-NOW 同步过来的转速自行计算自己的区间，所以不需要额外的表间通信，天然同步。
+
+- 转速报警页新增 LINKED 开关，与原有的单表闪烁互斥。
+- 在任一块表上改阈值会广播同步给其它表（新增 ESP-NOW 控制包）。
+- 测试按钮会在所有表上跑一段模拟转速曲线（5 秒上升、0.8 秒保持、2.5 秒回落）。
+- NVS 配置版本 1 -> 2：新增 `rpm_warn_linked_en` 字段；默认主题索引从 1 改为 0，并带迁移逻辑，保证老设备升级后外观不变。
+- 转速闪烁的重绘间隔原来是 1 毫秒，现在改为 25 毫秒。
+
+### 分区调整与开机动画
+
+- app 分区从 6 MB 缩到 4 MB，bootmedia SPIFFS 分区从 9.8 MB 扩到 11.9 MB。
+- **烧录方式变更：bootmedia 的地址从 `0x620000` 变为 `0x420000`。** 请同步更新你的烧录命令和脚本。
+- 开机动画按 300x300 网格重新编码（原来是 240x240），并改用新的 `delta_varint_rgb565_black_v2` 流格式。
+
 
 ### 三连表：用真蓝牙配对取代绑定按钮
 

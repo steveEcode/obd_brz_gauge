@@ -10,21 +10,13 @@ void ui_ScreenPageRpm_screen_init(void)
     ui_ScreenPageRpm = lv_obj_create(NULL);
     lv_obj_clear_flag(ui_ScreenPageRpm, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
     lv_obj_set_style_radius(ui_ScreenPageRpm, 360, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(ui_ScreenPageRpm, lv_color_hex(0x000000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_helpers_style_screen_bg(ui_ScreenPageRpm);
     lv_obj_set_style_bg_opa(ui_ScreenPageRpm, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    ui_SpinnerRpmPage = lv_obj_create(ui_ScreenPageRpm);   // 白环: 静态圆形 border, 替代旋转 spinner, 消除弧接缝缺口
-    lv_obj_set_size(ui_SpinnerRpmPage, 360, 360);
-    lv_obj_set_align(ui_SpinnerRpmPage, LV_ALIGN_CENTER);
-    lv_obj_clear_flag(ui_SpinnerRpmPage, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_radius(ui_SpinnerRpmPage, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(ui_SpinnerRpmPage, 0, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(ui_SpinnerRpmPage, 0, LV_PART_MAIN);
-    lv_obj_set_style_border_color(ui_SpinnerRpmPage, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-    lv_obj_set_style_border_width(ui_SpinnerRpmPage, 10, LV_PART_MAIN);
-    lv_obj_set_style_border_opa(ui_SpinnerRpmPage, 255, LV_PART_MAIN);
+    // Bezel ring (color from the active theme)
+    ui_SpinnerRpmPage = ui_helpers_create_ring(ui_ScreenPageRpm, 10);
 
-    lv_obj_set_style_arc_color(ui_SpinnerRpmPage, lv_color_hex(0xFFFFFF), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_color(ui_SpinnerRpmPage, ui_theme_color_lv(UI_COLOR_RING), LV_PART_INDICATOR | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_opa(ui_SpinnerRpmPage, 0, LV_PART_INDICATOR | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_width(ui_SpinnerRpmPage, 10, LV_PART_INDICATOR | LV_STATE_DEFAULT);
 
@@ -36,17 +28,17 @@ void ui_ScreenPageRpm_screen_init(void)
     lv_arc_set_value(ui_RpmPageArcRpmBack, 0);
     lv_arc_set_bg_angles(ui_RpmPageArcRpmBack, 0, 360);
     lv_arc_set_rotation(ui_RpmPageArcRpmBack, 90);
-    lv_obj_set_style_arc_color(ui_RpmPageArcRpmBack, lv_color_hex(0x333333), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_color(ui_RpmPageArcRpmBack, ui_theme_color_lv(UI_COLOR_ARC_TRACK), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_opa(ui_RpmPageArcRpmBack, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_width(ui_RpmPageArcRpmBack, 20, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_rounded(ui_RpmPageArcRpmBack, false, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    lv_obj_set_style_arc_color(ui_RpmPageArcRpmBack, lv_color_hex(0xFFFFFF), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    lv_obj_set_style_arc_color(ui_RpmPageArcRpmBack, ui_theme_color_lv(UI_COLOR_ARC_INDICATOR), LV_PART_INDICATOR | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_opa(ui_RpmPageArcRpmBack, 255, LV_PART_INDICATOR | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_width(ui_RpmPageArcRpmBack, 20, LV_PART_INDICATOR | LV_STATE_DEFAULT);
     lv_obj_set_style_arc_rounded(ui_RpmPageArcRpmBack, false, LV_PART_INDICATOR | LV_STATE_DEFAULT);
 
-    lv_obj_set_style_bg_color(ui_RpmPageArcRpmBack, lv_color_hex(0xFFFFFF), LV_PART_KNOB | LV_STATE_DEFAULT);
+    lv_obj_set_style_bg_color(ui_RpmPageArcRpmBack, ui_theme_color_lv(UI_COLOR_ARC_INDICATOR), LV_PART_KNOB | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(ui_RpmPageArcRpmBack, 0, LV_PART_KNOB | LV_STATE_DEFAULT);
 
     ui_RpmPageArcLabelRpmText = lv_label_create(ui_ScreenPageRpm);
@@ -58,7 +50,7 @@ void ui_ScreenPageRpm_screen_init(void)
     lv_label_set_long_mode(ui_RpmPageArcLabelRpmText, LV_LABEL_LONG_CLIP);
     lv_label_set_text(ui_RpmPageArcLabelRpmText, "0");
     lv_obj_set_style_text_align(ui_RpmPageArcLabelRpmText, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_text_color(ui_RpmPageArcLabelRpmText, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(ui_RpmPageArcLabelRpmText, ui_theme_color_lv(UI_COLOR_TEXT_PRIMARY), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_opa(ui_RpmPageArcLabelRpmText, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(ui_RpmPageArcLabelRpmText, &ui_font_FontTypoderSize56, LV_PART_MAIN | LV_STATE_DEFAULT);
 
@@ -69,7 +61,7 @@ void ui_ScreenPageRpm_screen_init(void)
     lv_obj_set_y(ui_RpmPageArcLabelRpmUnit, 46);
     lv_obj_set_align(ui_RpmPageArcLabelRpmUnit, LV_ALIGN_CENTER);
     lv_label_set_text(ui_RpmPageArcLabelRpmUnit, "rpm");
-    lv_obj_set_style_text_color(ui_RpmPageArcLabelRpmUnit, lv_color_hex(0xFFFFFF), LV_PART_MAIN | LV_STATE_DEFAULT);
+    lv_obj_set_style_text_color(ui_RpmPageArcLabelRpmUnit, ui_theme_color_lv(UI_COLOR_TEXT_PRIMARY), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_opa(ui_RpmPageArcLabelRpmUnit, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(ui_RpmPageArcLabelRpmUnit, &ui_font_FontTypoderSize40, LV_PART_MAIN | LV_STATE_DEFAULT);
 
@@ -84,7 +76,7 @@ void ui_ScreenPageRpm_screen_init(void)
     lv_obj_clear_flag(ui_ImageRpmBlackEar, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
 
     lv_obj_add_event_cb(ui_RpmPageArcRpmBack, ui_event_rpm_background, LV_EVENT_ALL, NULL);
-    lv_obj_move_foreground(ui_SpinnerRpmPage);   // 圆环置顶
+    lv_obj_move_foreground(ui_SpinnerRpmPage);   // bring the ring to the front
     lv_obj_add_event_cb(ui_ScreenPageRpm, ui_event_rpm_background, LV_EVENT_GESTURE, NULL);
 
 }

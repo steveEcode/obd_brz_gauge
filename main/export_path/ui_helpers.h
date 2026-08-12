@@ -137,8 +137,17 @@ void _ui_spinbox_step(lv_obj_t * target, int val)
 void _ui_switch_theme(int val)
 ;
 
-// ---- 项目自定义 helper(非 SquareLine 生成, 多个 screen 共用的样式) ----
+// ---- Project-custom helpers (not SquareLine generated; styles shared by multiple screens) ----
+
+// Outer bezel ring. Uses the active theme's `ring_img` artwork when it has one,
+// otherwise draws a plain circle border in UI_COLOR_RING at `border_width`.
 lv_obj_t * ui_helpers_create_ring(lv_obj_t * parent, uint8_t border_width);
+
+// Screen background: UI_COLOR_BG, plus the theme's dial-face artwork if it has
+// one. Every screen should use this instead of setting bg_color directly, so a
+// themed dial face reaches all pages from one place.
+void ui_helpers_style_screen_bg(lv_obj_t * scr);
+
 void ui_helpers_style_dark_roller(lv_obj_t * r, const lv_font_t * font);
 
 #ifdef __cplusplus

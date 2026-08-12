@@ -15,21 +15,22 @@ extern "C" {
 #include "ui_helpers.h"
 #include "ui_events.h"
 #include "ui_disp_item.h"
+#include "ui_theme.h"
 #include "esp_log.h"
 #include "app_obd_dsp/obd_data_cache.h"
 
 #define USE_GIF_LOGO        0
 #define USE_GIF_EASTER_EGG  0
-// 自定义开机图开关: 1=用客户自定义图片(imgBootLogoCustom)作开机动画; 0=用默认 SKY GAUGE
-// 置 1 前需把客户 PNG 转成 LVGL C 数组(变量名 imgBootLogoCustom)放进 images/ 目录
+// Custom boot logo switch: 1=use the customer's custom image (imgBootLogoCustom) as the boot animation; 0=use the default SKY GAUGE
+// Before setting 1, convert the customer PNG to an LVGL C array (variable name imgBootLogoCustom) in the images/ directory
 #define USE_CUSTOM_BOOT_LOGO 0
-// 自定义转速报警闪烁图: 1=用3张图片循环闪(替代红/黑); 0=默认红黑闪
-// 置 1 前需把 3 张 PNG 转成 LVGL C 数组放进 images/ 目录
+// Custom RPM-warning flash images: 1=flash 3 images in a loop (replacing red/black); 0=default red/black flash
+// Before setting 1, convert the 3 PNGs to LVGL C arrays in the images/ directory
 #define USE_CUSTOM_RPM_FLASH 0
 
-#define COLOR_MITSUBISHI_RED    0xFFFFFF //主色调白色(原三菱红)
-#define COLOR_DOMIANT_PINK      0xFFFFFF //主色调白色(原粉色)
-#define COLOR_SECONDARY_PINK    0x333333 //副色调深灰(原暗粉)
+#define COLOR_MITSUBISHI_RED    0xFFFFFF //main color white (originally Mitsubishi red)
+#define COLOR_DOMIANT_PINK      0xFFFFFF //main color white (originally pink)
+#define COLOR_SECONDARY_PINK    0x333333 //secondary color dark gray (originally dark pink)
 
 
 
@@ -99,7 +100,7 @@ extern lv_obj_t * ui_SpinnerEasterEgg;
 extern lv_obj_t * ArcPageEasterEggBack;
 extern lv_obj_t * imageEasterEgg;
 extern lv_obj_t * ui_ImageEggBlackEar;
-extern lv_obj_t * ui_LabelEasterEggInfo;  // \u52a8\u6001\u66f4\u65b0\u7684\u8bbe\u5907\u4fe1\u606f\u6807\u7b7e
+extern lv_obj_t * ui_LabelEasterEggInfo;  // dynamically updated device info label
 // CUSTOM VARIABLES
 
 // SCREEN: ui_ScreenPageBLEScan
@@ -125,33 +126,33 @@ void ui_ScreenPageTempCustom_screen_init(void);
 extern lv_obj_t * ui_ScreenPageTempCustom;
 void ui_event_temp_custom_background(lv_event_t * e);
 
-// SCREEN: ui_ScreenPageOilPressure —— 现为「通用可配置曲线页」(数据源由 chart_source_idx 决定)
+// SCREEN: ui_ScreenPageOilPressure — now the "generic configurable chart page" (data source selected by chart_source_idx)
 void ui_ScreenPageOilPressure_screen_init(void);
 extern lv_obj_t * ui_ScreenPageOilPressure;
-extern lv_obj_t * ui_LabelOilPressureText;   // 数值
-extern lv_obj_t * ui_ChartOilPressure;       // 趋势曲线
+extern lv_obj_t * ui_LabelOilPressureText;   // value
+extern lv_obj_t * ui_ChartOilPressure;       // trend chart
 extern lv_chart_series_t * ui_OilPressureChartSeries;
-extern lv_obj_t * ui_LabelChartTitle;        // 标题(数据项名, 随数据源变)
-extern lv_obj_t * ui_ChartDot;               // 行首彩色圆点
-extern lv_obj_t * ui_LabelChartUnit;         // 单位
+extern lv_obj_t * ui_LabelChartTitle;        // title (data-item name, follows the data source)
+extern lv_obj_t * ui_ChartDot;               // colored dot at the line start
+extern lv_obj_t * ui_LabelChartUnit;         // unit
 void ui_event_oil_pressure_background(lv_event_t * e);
-void ui_chart_apply_source(void);            // 按 chart_source_idx 应用标题/颜色/单位/量程(数据源变化后调用)
+void ui_chart_apply_source(void);            // apply title/color/unit/range per chart_source_idx (call after the data source changes)
 
-// SCREEN: ui_ScreenPageChartConfig (曲线页下滑进入: 选择显示的数据项)
+// SCREEN: ui_ScreenPageChartConfig (entered by swiping down on the chart page: choose the displayed data item)
 void ui_ScreenPageChartConfig_screen_init(void);
 extern lv_obj_t * ui_ScreenPageChartConfig;
 void ui_event_chart_config_background(lv_event_t * e);
 
-// SCREEN: ui_ScreenPageChartAlarm (曲线页上滑进入: 设置当前数据项的报警阈值)
+// SCREEN: ui_ScreenPageChartAlarm (entered by swiping up on the chart page: set the alarm threshold for the current data item)
 void ui_ScreenPageChartAlarm_screen_init(void);
 extern lv_obj_t * ui_ScreenPageChartAlarm;
 void ui_event_chart_alarm_background(lv_event_t * e);
 
-// SCREEN: ui_ScreenPageIntro (三连表开机动画 RACE / AS / ONE)
+// SCREEN: ui_ScreenPageIntro (triple-gauge boot animation RACE / AS / ONE)
 void ui_ScreenPageIntro_screen_init(void);
 extern lv_obj_t * ui_ScreenPageIntro;
-extern lv_obj_t * ui_LabelIntroWord;      // 显示本机位置对应的词(由 my_timerMain 更新)
-// 开机动画进度同步(ESP-NOW): 主表广播 / 从表跟随
+extern lv_obj_t * ui_LabelIntroWord;      // shows the word for this unit's position (updated by my_timerMain)
+// Boot animation progress sync (ESP-NOW): master broadcasts / slaves follow
 int  ui_intro_get_step(void);
 void ui_intro_set_step(int step);
 
@@ -185,16 +186,16 @@ void ui_ScreenPageOilWarn_screen_init(void);
 extern lv_obj_t * ui_ScreenPageOilWarn;
 void ui_event_oil_warn_background(lv_event_t * e);
 
-// SCREEN: ui_ScreenPageRpmWarn (转速报警设置)
+// SCREEN: ui_ScreenPageRpmWarn (RPM warning settings)
 void ui_ScreenPageRpmWarn_screen_init(void);
 extern lv_obj_t * ui_ScreenPageRpmWarn;
 void ui_event_rpm_warn_background(lv_event_t * e);
 
-// SCREEN: ui_ScreenPageNeedle (指针式可配置仪表)
+// SCREEN: ui_ScreenPageNeedle (needle-style configurable gauge)
 void ui_ScreenPageNeedle_screen_init(void);
 extern lv_obj_t * ui_ScreenPageNeedle;
 void ui_event_needle_background(lv_event_t * e);
-// 指针页控件 (由 screen_init 创建, ui.c 的定时器刷新)
+// Needle page widgets (created by screen_init, refreshed by ui.c's timer)
 extern lv_obj_t * ui_NeedleMeter;
 extern lv_meter_scale_t * ui_NeedleScale;
 extern lv_meter_indicator_t * ui_NeedleIndic;
@@ -202,25 +203,25 @@ extern lv_obj_t * ui_NeedleValueLabel;
 extern lv_obj_t * ui_NeedleNameLabel;
 extern lv_obj_t * ui_NeedleUnitLabel;
 
-// SCREEN: ui_ScreenPageNeedleConfig (下滑进入的数据源选择)
+// SCREEN: ui_ScreenPageNeedleConfig (data-source selection entered by swiping down)
 void ui_ScreenPageNeedleConfig_screen_init(void);
 extern lv_obj_t * ui_ScreenPageNeedleConfig;
 void ui_event_needle_config_background(lv_event_t * e);
 
-// SCREEN: ui_ScreenPageMultiGauge (设置页下滑进入: 三连表 主/从 + 选主表)
+// SCREEN: ui_ScreenPageMultiGauge (entered by swiping down on the settings page: triple-gauge master/slave + master selection)
 void ui_ScreenPageMultiGauge_screen_init(void);
 extern lv_obj_t * ui_ScreenPageMultiGauge;
 void ui_event_multi_gauge_background(lv_event_t * e);
 
-// 指针页运行时接口 (ui.c 实现, 复用 disp_item 系统)
+// Needle page runtime interface (implemented in ui.c, reuses the disp_item system)
 void ui_needle_page_update(float sweep_ratio, int16_t clt, int16_t iat, int16_t oil,
                            int16_t load_pct, int16_t tps, int32_t bat_mv,
                            int16_t oilp_x10, int16_t brake_x10,
                            uint16_t rpm, uint16_t speed, int16_t boost_x10,
                            int16_t afr_x100);
-void ui_needle_apply_source(void);  // 数据源变化后重建量程/名称/单位
-int  ui_sweep_get_step(void);       // 取当前扫表进度(主表广播给从表)
-// 数据项访问器 (ui_disp_item_name/unit/color/range) 见 ui_disp_item.h
+void ui_needle_apply_source(void);  // rebuild range/name/unit after the data source changes
+int  ui_sweep_get_step(void);       // get the current sweep progress (master broadcasts to slaves)
+// Data-item accessors (ui_disp_item_name/unit/color/range) — see ui_disp_item.h
 
 // EVENTS
 
@@ -235,7 +236,7 @@ LV_IMG_DECLARE(ui_img_pngmainback_png);    // assets/pngMainBack.png
 LV_IMG_DECLARE(pngLogoMITSUBISHI);    // assets/pngLogoMITSUBISHI.png
 LV_IMG_DECLARE(pngLogoSkyGarage);     // assets/sklogo.png (280x280)
 #if USE_CUSTOM_BOOT_LOGO == 1
-LV_IMG_DECLARE(imgBootLogoCustom);    // 客户自定义开机图(需自行转换并放入 images/)
+LV_IMG_DECLARE(imgBootLogoCustom);    // customer custom boot image (convert it yourself and place in images/)
 #endif
 #if USE_CUSTOM_RPM_FLASH == 1
 LV_IMG_DECLARE(imgRpmFlash1);
@@ -243,11 +244,12 @@ LV_IMG_DECLARE(imgRpmFlash2);
 LV_IMG_DECLARE(imgRpmFlash3);
 #endif
 
-// 转速报警测试: 设置 >0 后强制触发闪烁, 每拍自减, 归零停止
+// RPM warning test: when set >0 the flash is force-triggered, self-decrements each tick, stops at zero
 extern volatile int s_rpm_flash_test_ticks;
 void ui_rpm_flash_test_start(void);
+void ui_rpm_warn_refresh_from_nvs(void);  // refresh the RPM WARN page after another gauge syncs threshold/switch
 
-// Showroom 模式
+// Showroom mode
 bool ui_showroom_is_active(void);
 void ui_showroom_set_active(bool en);
 void ui_showroom_set_page_from_sync(int sweep_step);

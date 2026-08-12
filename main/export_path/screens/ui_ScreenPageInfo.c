@@ -11,7 +11,7 @@ lv_obj_t *ui_LabelInfoCLT    = NULL;
 lv_obj_t *ui_LabelInfoIAT    = NULL;
 lv_obj_t *ui_LabelInfoLoad   = NULL;
 lv_obj_t *ui_LabelInfoTPS    = NULL;
-lv_obj_t *ui_LabelInfoOil    = NULL;  // 机油温度 °C (SSM 22 10 17)
+lv_obj_t *ui_LabelInfoOil    = NULL;  // oil temp °C (SSM 22 10 17)
 lv_obj_t *ui_LabelInfoValue[5] = {NULL, NULL, NULL, NULL, NULL};
 lv_obj_t *ui_LabelInfoName[5]  = {NULL, NULL, NULL, NULL, NULL};
 lv_obj_t *ui_LabelInfoUnit[5]  = {NULL, NULL, NULL, NULL, NULL};
@@ -88,11 +88,11 @@ void ui_ScreenPageInfo_screen_init(void)
     ui_ScreenPageInfo = lv_obj_create(NULL);
     lv_obj_clear_flag(ui_ScreenPageInfo, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_radius(ui_ScreenPageInfo, 360, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(ui_ScreenPageInfo, lv_color_hex(0x000000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_helpers_style_screen_bg(ui_ScreenPageInfo);
     lv_obj_set_style_bg_opa(ui_ScreenPageInfo, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
 
     // Outer spinner ring (decorative, white)
-    lv_obj_t *ring = ui_helpers_create_ring(ui_ScreenPageInfo, 8);   // 白环: 静态圆形 border, 替代旋转 spinner, 消除弧接缝缺口
+    lv_obj_t *ring = ui_helpers_create_ring(ui_ScreenPageInfo, 8);   // white ring: static circular border, replaces the rotating spinner, removes the arc seam gap
 
     // Page title
     lv_obj_t *title = lv_label_create(ui_ScreenPageInfo);
@@ -160,6 +160,6 @@ void ui_ScreenPageInfo_screen_init(void)
     lv_obj_clear_flag(black_ear, LV_OBJ_FLAG_SCROLLABLE);
 
     // Touch events
-    lv_obj_move_foreground(ring);   // 圆环置顶
+    lv_obj_move_foreground(ring);   // bring the ring to the front
     lv_obj_add_event_cb(ui_ScreenPageInfo, ui_event_info_background, LV_EVENT_GESTURE, NULL);
 }

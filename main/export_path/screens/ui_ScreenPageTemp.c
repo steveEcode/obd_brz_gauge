@@ -5,12 +5,12 @@
 
 // Value labels (externally accessible from timer callback)
 lv_obj_t *ui_LabelCoolantTempText = NULL;
-lv_obj_t *ui_LabelOilTempText     = NULL;  // 真实机油温度 °C (SSM 22 10 17, A-40)
+lv_obj_t *ui_LabelOilTempText     = NULL;  // real oil temp °C (SSM 22 10 17, A-40)
 lv_obj_t *ui_LabelIntakeTempText  = NULL;
 lv_obj_t *ui_LabelTempValue[3]    = {NULL, NULL, NULL};
 lv_obj_t *ui_LabelTempName[3]     = {NULL, NULL, NULL};
 lv_obj_t *ui_LabelTempUnit[3]     = {NULL, NULL, NULL};
-lv_obj_t *ui_LabelTempDot[3]      = {NULL, NULL, NULL};  // 行首彩色圆点(颜色随数据项刷新)
+lv_obj_t *ui_LabelTempDot[3]      = {NULL, NULL, NULL};  // colored dot at row start (color refreshed per data item)
 
 // Helper: colored circle dot
 static lv_obj_t *create_color_dot(lv_obj_t *parent, lv_color_t color, lv_coord_t x, lv_coord_t y)
@@ -34,7 +34,7 @@ static void make_row(lv_obj_t *parent, lv_obj_t **name_out, lv_obj_t **val_out, 
     // Left column: value
     // Left boundary = 70px (matches divider line edge, safe for all row Y positions)
     *val_out = lv_label_create(parent);
-    lv_label_set_long_mode(*val_out, LV_LABEL_LONG_CLIP);   // 数值过长不换行
+    lv_label_set_long_mode(*val_out, LV_LABEL_LONG_CLIP);   // no wrap for overly long values
     lv_label_set_text(*val_out, "--");
     lv_obj_set_style_text_font(*val_out, &ui_font_FontTypoderSize40, LV_PART_MAIN);
     lv_obj_set_style_text_color(*val_out, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
@@ -48,20 +48,20 @@ static void make_row(lv_obj_t *parent, lv_obj_t **name_out, lv_obj_t **val_out, 
     *dot_out = create_color_dot(parent, color, 185, cy);
 
     *name_out = lv_label_create(parent);
-    lv_label_set_long_mode(*name_out, LV_LABEL_LONG_CLIP);   // 不换行
+    lv_label_set_long_mode(*name_out, LV_LABEL_LONG_CLIP);   // no wrap
     lv_label_set_text(*name_out, name_str);
     lv_obj_set_style_text_font(*name_out, &ui_font_FontTypoderSize20, LV_PART_MAIN);
     lv_obj_set_style_text_color(*name_out, color, LV_PART_MAIN);
-    lv_obj_set_width(*name_out, LV_SIZE_CONTENT);            // 宽度随文字, 长名(BOOST/SPEED)不换行
+    lv_obj_set_width(*name_out, LV_SIZE_CONTENT);            // width follows the text, long names (BOOST/SPEED) don't wrap
     lv_obj_set_style_text_align(*name_out, LV_TEXT_ALIGN_LEFT, LV_PART_MAIN);
     lv_obj_align(*name_out, LV_ALIGN_LEFT_MID, 200, cy);
 
     *unit_out = lv_label_create(parent);
-    lv_label_set_long_mode(*unit_out, LV_LABEL_LONG_CLIP);   // 不换行
+    lv_label_set_long_mode(*unit_out, LV_LABEL_LONG_CLIP);   // no wrap
     lv_label_set_text(*unit_out, unit_str);
     lv_obj_set_style_text_font(*unit_out, &ui_font_FontTypoderSize20, LV_PART_MAIN);
     lv_obj_set_style_text_color(*unit_out, lv_color_hex(0x666666), LV_PART_MAIN);
-    lv_obj_set_width(*unit_out, LV_SIZE_CONTENT);            // 宽度随文字 (km/h 等)
+    lv_obj_set_width(*unit_out, LV_SIZE_CONTENT);            // width follows the text (km/h etc.)
     lv_obj_set_style_text_align(*unit_out, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
     lv_obj_align(*unit_out, LV_ALIGN_RIGHT_MID, -70, cy);
 }
@@ -83,11 +83,11 @@ void ui_ScreenPageTemp_screen_init(void)
     ui_ScreenPageTemp = lv_obj_create(NULL);
     lv_obj_clear_flag(ui_ScreenPageTemp, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_radius(ui_ScreenPageTemp, 360, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(ui_ScreenPageTemp, lv_color_hex(0x000000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_helpers_style_screen_bg(ui_ScreenPageTemp);
     lv_obj_set_style_bg_opa(ui_ScreenPageTemp, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    // White border ring (恢复原始 spinner@360)
-    lv_obj_t *spinner_ring = ui_helpers_create_ring(ui_ScreenPageTemp, 10);   // 白环: 静态圆形 border, 替代旋转 spinner, 消除弧接缝缺口
+    // White border ring (restore original spinner@360)
+    lv_obj_t *spinner_ring = ui_helpers_create_ring(ui_ScreenPageTemp, 10);   // white ring: static circular border, replaces the rotating spinner, removes the arc seam gap
 
 
     // ====== Row 1 (cy=-65): CLT - Blue ======
@@ -118,6 +118,6 @@ void ui_ScreenPageTemp_screen_init(void)
     lv_obj_clear_flag(black_ear, LV_OBJ_FLAG_SCROLLABLE);
 
     // Events
-    lv_obj_move_foreground(spinner_ring);   // 圆环置顶
+    lv_obj_move_foreground(spinner_ring);   // bring the ring to the front
     lv_obj_add_event_cb(ui_ScreenPageTemp, ui_event_temp_background, LV_EVENT_GESTURE, NULL);
 }

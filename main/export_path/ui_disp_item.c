@@ -1,5 +1,5 @@
 // ================================================================
-//  ui_disp_item.c — 可配置数据项系统实现 (从 ui.c 抽出)
+//  ui_disp_item.c — configurable data-item system implementation (extracted from ui.c)
 // ================================================================
 
 #include "ui_disp_item.h"
@@ -21,8 +21,8 @@ const disp_item_meta_t s_disp_meta[DISP_ITEM_COUNT] = {
     {"AFR", "", 0xFFAA00},
 };
 
-// 每个数据项的指针量程: nmin/nmax 为自然单位 (同时用于刻度数字与指针位置),
-// div 把缓存原始值换算成自然单位 (BAT:mV→V, OILP/BKT:0.1单位→整数)。
+// Needle range per data item: nmin/nmax in natural units (used for both scale labels and needle position);
+// div converts the cached raw value to natural units (BAT: mV→V, OILP/BKT: 0.1 units → integer).
 const needle_scale_meta_t s_needle_scale_meta[DISP_ITEM_COUNT] = {
     [DISP_ITEM_CLT]   = {-20, 130, 1},
     [DISP_ITEM_IAT]   = {-20, 100, 1},
@@ -34,8 +34,8 @@ const needle_scale_meta_t s_needle_scale_meta[DISP_ITEM_COUNT] = {
     [DISP_ITEM_BAT]   = {8, 16, 1000},
     [DISP_ITEM_OILP]  = {0, 10, 10},
     [DISP_ITEM_BKT]   = {0, 800, 10},
-    [DISP_ITEM_BOOST] = {0, 20, 1},   // 量程以 0.1bar 计: 0 ~ +2.0 bar 表压(不显示负压)
-    [DISP_ITEM_AFR]   = {8, 22, 100}, // 量程 8.0~22.0:1, 原始值 ×100
+    [DISP_ITEM_BOOST] = {0, 20, 1},   // range in 0.1bar: 0 ~ +2.0 bar gauge pressure (negative pressure not displayed)
+    [DISP_ITEM_AFR]   = {8, 22, 100}, // range 8.0~22.0:1, raw value ×100
 };
 
 bool disp_item_read_value(disp_item_t item,
@@ -85,7 +85,7 @@ int32_t disp_item_sweep_value(disp_item_t item, float r)
         case DISP_ITEM_BKT:
             return (int32_t)(600.0f * r); // 0.0~60.0'C (x10)
         case DISP_ITEM_BOOST:
-            return (int32_t)(20.0f * r); // 0.0~2.0bar 表压 (x10)
+            return (int32_t)(20.0f * r); // 0.0~2.0bar gauge pressure (x10)
         case DISP_ITEM_AFR:
             return (int32_t)(800.0f + 1400.0f * r); // 8.0~22.0:1 (x100)
         default:
@@ -111,11 +111,11 @@ void disp_item_set_text(lv_obj_t *label, disp_item_t item, int32_t value, bool v
     } else if (item == DISP_ITEM_BKT) {
         lv_label_set_text_fmt(label, "%ld", (long)(value / 10));
     } else if (item == DISP_ITEM_BOOST) {
-        // 表压可为负(真空)，带符号显示一位小数, e.g. -0.6 / 1.2
+        // gauge pressure can be negative (vacuum); show signed with one decimal, e.g. -0.6 / 1.2
         int32_t a = (value < 0) ? -value : value;
         lv_label_set_text_fmt(label, "%s%d.%d", (value < 0) ? "-" : "", (int)(a / 10), (int)(a % 10));
     } else if (item == DISP_ITEM_AFR) {
-        // AFR: 原始值 ×100, 显示 14.7 (一位小数, 和 BAT/BOOST 等宽)
+        // AFR: raw value ×100, displayed as 14.7 (one decimal, same width as BAT/BOOST)
         lv_label_set_text_fmt(label, "%d.%d", (int)(value / 100), (int)((value % 100) / 10));
     } else {
         lv_label_set_text_fmt(label, "%ld", (long)value);
@@ -125,12 +125,12 @@ void disp_item_set_text(lv_obj_t *label, disp_item_t item, int32_t value, bool v
 void disp_item_set_value_color(lv_obj_t *label, disp_item_t item, int32_t value, bool valid)
 {
     if (!label) return;
-    int16_t thr = nvs_chart_alarm_get((uint8_t)item);   // 原始值单位; 32767=关闭
+    int16_t thr = nvs_chart_alarm_get((uint8_t)item);   // raw-value units; 32767=disabled
     lv_color_t color = (valid && value >= (int32_t)thr) ? lv_color_hex(0xFF4D4D) : lv_color_hex(0xFFFFFF);
     lv_obj_set_style_text_color(label, color, LV_PART_MAIN);
 }
 
-// 自适应步进: 差值 ≤ threshold 逐 ±1, 差值 > threshold 按比例快速逼近
+// Adaptive step: diff ≤ threshold steps by ±1, diff > threshold approaches proportionally
 static int32_t anim_step_i32(int32_t displayed, int32_t target, int32_t threshold)
 {
     int32_t diff = target - displayed;
@@ -139,8 +139,8 @@ static int32_t anim_step_i32(int32_t displayed, int32_t target, int32_t threshol
     int32_t step = (diff > 0) ? 1 : -1;
 
     if (abs_diff > threshold) {
-        int32_t rapid = abs_diff / 3;     // 每拍吃掉 ~33% 差距
-        if (rapid < 2) rapid = 2;          // 最小 2 步
+        int32_t rapid = abs_diff / 3;     // eat ~33% of the gap per tick
+        if (rapid < 2) rapid = 2;          // minimum 2 steps
         if (rapid > abs_diff) rapid = abs_diff;
         step = (diff > 0) ? rapid : -rapid;
     }
@@ -152,10 +152,10 @@ void disp_item_update(int32_t *state, lv_obj_t *label, disp_item_t item,
 {
     if (!state || !label) return;
     if (valid) {
-        // RPM 直出, 不走 +1/+1 递进动画: 量程大、变化快, 平滑只会看起来像"卡住不动"
+        // RPM is output directly, without the +1/+1 stepping animation: large range and fast changes — smoothing would just look "stuck"
         *state = (item == DISP_ITEM_RPM) ? raw : anim_step_i32(*state, raw, threshold);
     }
-    // invalid: 保持 *state 不变, 避免恢复时从 0 爬升
+    // invalid: keep *state unchanged, avoiding a climb from 0 when data returns
     disp_item_set_text(label, item, *state, valid);
     disp_item_set_value_color(label, item, *state, valid);
 }

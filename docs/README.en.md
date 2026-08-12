@@ -97,7 +97,7 @@ esptool.py --chip esp32s3 -p PORT -b 460800 write_flash \
   0x8000 firmware/release/partition_table/partition-table.bin \
   0xf000 firmware/release/ota_data_initial.bin \
   0x20000 firmware/release/obd_brz_gauge.bin \
-  0x620000 firmware/release/bootmedia.bin
+  0x420000 firmware/release/bootmedia.bin
 ```
 
 ## Porting Notes
@@ -108,6 +108,35 @@ esptool.py --chip esp32s3 -p PORT -b 460800 write_flash \
 4. UI assets are located under [main/export_path](../main/export_path) and can be edited further.
 
 ## Changelog
+### Themes are now data, not code
+
+Adding a UI theme no longer touches a single C file. A theme is a folder under `themes/` holding a `theme.toml` manifest — eight decorative colors plus optional artwork — and one appended line in `themes/registry.txt`. `tools/gen_themes.py` runs at CMake configure time: it validates every manifest, converts PNG artwork into LVGL image arrays, and emits `ui_theme_generated.c`.
+
+- **Artwork.** `ring` (360x360, alpha) replaces the drawn bezel, `needle` replaces the drawn meter needle (LVGL rotates it around a pivot declared in the manifest; art must point right), and `dial` (360x360) becomes the page background. Anything omitted falls back to the drawn shape and its color role, so a colour-only theme is still a single file.
+- **Slot stability.** `themes/registry.txt` pins slot -> id and is append-only. NVS stores the slot number, so reordering it would silently re-skin every existing device on the next OTA — invisible in local testing. The generator hard-fails on reordering, gaps, a non-`default` slot 0, or a registry line whose folder is missing.
+- **Build-time validation** covers artwork dimensions, needle pivot bounds, missing files, duplicate roller names, unknown keys, and a total artwork budget (1536 KB, since every registered theme's art is linked in unconditionally). Every failure points at a file and line.
+- Artwork conversion needs Pillow only when a PNG's SHA-256 changes; the generated C is checked in, so an ordinary build has no third-party Python dependency. `--check` verifies freshness for CI.
+- **Fixed:** the Settings theme roller built its option list in a fixed 96-byte buffer and silently truncated once enough themes were registered. It now uses an exactly sized buffer, so truncation is structurally impossible.
+- **Fixed:** leaving the RPM warning restored a hardcoded black background, which would permanently blank a themed dial face. All three restore paths now reapply the theme background.
+
+Authoring guide: [themes/README.md](themes/README.md) (bilingual). Framework internals: [docs/THEMING.md](docs/THEMING.md).
+
+### Multi-gauge linked RPM warning
+
+Three gauges can now light up in sequence as revs climb, instead of all strobing at once. The 1000 rpm below the warning threshold is split into thirds; each gauge ramps black to red across its own third according to its configured position, and at the threshold all three strobe together. Every unit derives its own segment from the same ESP-NOW-synced RPM, so no extra inter-gauge messaging is needed and they stay in sync naturally.
+
+- New LINKED toggle on the RPM warning page, mutually exclusive with the existing single-gauge flash.
+- Changing the threshold on one gauge broadcasts it to the others (new ESP-NOW control packet).
+- The test button drives a synthetic RPM ramp across all gauges (5 s rise, 0.8 s hold, 2.5 s fall).
+- NVS config version 1 -> 2: adds `rpm_warn_linked_en`, and migrates the default theme index 1 -> 0 so existing devices keep their current look.
+- RPM strobe redraw interval was 1 ms; it is now 25 ms.
+
+### Partition layout and boot animation
+
+- App partition shrunk 6 MB -> 4 MB; the bootmedia SPIFFS partition grew 9.8 MB -> 11.9 MB.
+- **Flashing change: bootmedia moves from `0x620000` to `0x420000`.** Update your flash command and scripts.
+- Boot animation re-encoded on a 300x300 grid (was 240x240) with a new `delta_varint_rgb565_black_v2` stream format.
+
 
 ### Multi-gauge: real BLE pairing replaces the MAC-bind button
 

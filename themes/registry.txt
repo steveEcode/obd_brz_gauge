@@ -1,0 +1,33 @@
+# Theme slot registry — APPEND ONLY / 主题槽位注册表 —— 只能追加
+# ============================================================================
+#
+#  <slot>  <id>
+#
+#  `slot` is the number stored in NVS (theme_cfg.theme). It is what a user's
+#  device remembers. `id` must match the theme's folder name and its `id` field
+#  in theme.toml.
+#  slot 是存进 NVS 的数字（theme_cfg.theme），也就是用户设备记住的值。
+#  id 必须和主题的文件夹名以及 theme.toml 里的 id 字段一致。
+#
+#  RULES / 规则
+#    1. NEVER renumber, reorder, or remove a line. Only APPEND at the end.
+#       绝对不要改号、调序或删行。只能在末尾追加。
+#       Reordering silently switches every existing device to a different theme
+#       after an OTA update — and it will not show up in local testing.
+#       调序会让所有已有设备在 OTA 之后被静默切换成另一个主题，
+#       而且本地测试根本发现不了。
+#    2. Slot 0 must stay `default` — the factory look.
+#       槽位 0 必须保持 default —— 出厂外观。
+#    3. Slots must be contiguous starting at 0. Max 255 (NVS stores a uint8).
+#       槽位必须从 0 开始连续。最多 255 个（NVS 存的是 uint8）。
+#    4. To retire a theme, keep its line and delete the folder is NOT allowed;
+#       the build will fail. Retire by leaving it in place.
+#       想废弃一个主题：不能只删文件夹而保留这行，构建会报错。请原样保留。
+#
+#  tools/gen_themes.py enforces all of the above at build time.
+#  以上规则全部由 tools/gen_themes.py 在构建时强制检查。
+# ============================================================================
+
+0  default
+1  amber
+2  ocean

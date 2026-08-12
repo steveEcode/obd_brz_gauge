@@ -1,0 +1,24 @@
+# DEFAULT — the original black-face / white-ring factory look.
+# DEFAULT —— 出厂的黑底白圈原始外观。
+#
+# Do not change these colors. Slot 0 is what every device falls back to.
+# 不要改这些颜色。槽位 0 是所有设备的回退外观。
+
+id   = "default"
+name = "DEFAULT"
+
+author      = "steveEcode"
+description = "Original black face with a white bezel ring."
+
+[colors]
+bg             = 0x000000
+ring           = 0xFFFFFF
+arc_track      = 0x333333
+arc_indicator  = 0xFFFFFF
+text_primary   = 0xFFFFFF
+text_secondary = 0x888888
+needle         = 0xFF1010
+panel          = 0x222222
+
+[bezel]
+style_id = 0

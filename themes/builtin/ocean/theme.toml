@@ -1,0 +1,21 @@
+# OCEAN — cool blue night look.
+# OCEAN —— 冷蓝夜间风格。
+
+id   = "ocean"
+name = "OCEAN"
+
+author      = "steveEcode"
+description = "Cool cyan-blue on a near-black face."
+
+[colors]
+bg             = 0x000508
+ring           = 0x33CCFF
+arc_track      = 0x10303C
+arc_indicator  = 0x33CCFF
+text_primary   = 0xBFEFFF
+text_secondary = 0x4E7C8C
+needle         = 0x66AAFF
+panel          = 0x0A1E26
+
+[bezel]
+style_id = 0

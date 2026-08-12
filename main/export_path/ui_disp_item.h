@@ -1,13 +1,14 @@
 #pragma once
 // ================================================================
-//  ui_disp_item.h — 可配置数据项系统 (从 ui.c 抽出)
+//  ui_disp_item.h — configurable data-item system (extracted from ui.c)
 //
-//  温度页 / Info 页 / 指针页 / 曲线页共用的数据项元数据与工具:
-//  名称/单位/颜色、原始值读取、刷表动画值、文本格式化、报警着色、自然量程。
+//  Data-item metadata and utilities shared by the Temp / Info / Needle / Chart pages:
+//  name/unit/color, raw value reading, sweep animation values, text formatting,
+//  alarm coloring, natural ranges.
 //
-//  原始值约定: 温度 °C、百分比 %、转速 rpm、车速 km/h、电压 mV、
-//              机油压/涡轮压/刹车温均为 ×10 整数。
-//  自然量程: nmin/nmax 为自然单位, div 满足 原始值 = 自然值 × div。
+//  Raw value conventions: temperature °C, percentage %, RPM rpm, speed km/h, voltage mV,
+//              oil pressure / boost pressure / brake temp are all ×10 integers.
+//  Natural range: nmin/nmax are in natural units, div satisfies raw = natural × div.
 // ================================================================
 
 #include <stdint.h>
@@ -34,7 +35,7 @@ typedef enum {
     DISP_ITEM_COUNT
 } disp_item_t;
 
-// 通用曲线页无效样本哨兵 (区别于合法负值如水温 -10)
+// Invalid-sample sentinel for the generic chart page (distinct from legit negative values like coolant temp -10)
 #define CHART_INVALID (-32768)
 
 typedef struct {
@@ -49,11 +50,11 @@ typedef struct {
     uint32_t color;
 } disp_item_meta_t;
 
-// 全局元数据表 (ui.c 的页面刷新逻辑直接按索引访问)
+// Global metadata tables (ui.c page-refresh logic indexes them directly)
 extern const disp_item_meta_t s_disp_meta[DISP_ITEM_COUNT];
 extern const needle_scale_meta_t s_needle_scale_meta[DISP_ITEM_COUNT];
 
-// 从 OBD 缓存原始值读取指定数据项, 成功返回 true 并写 *out
+// Read the given data item from the OBD cache raw values; returns true and writes *out on success
 bool disp_item_read_value(disp_item_t item,
                           int16_t clt, int16_t iat, int16_t oil,
                           int16_t load_pct, int16_t tps, int32_t bat_mv,
@@ -62,27 +63,27 @@ bool disp_item_read_value(disp_item_t item,
                           int16_t afr_x100,
                           int32_t *out);
 
-// 刷表动画值: r ∈ [0,1] → 该数据项的扫表峰值原始值
+// Sweep animation value: r ∈ [0,1] → sweep peak raw value for this data item
 int32_t disp_item_sweep_value(disp_item_t item, float r);
 
-// 按数据项格式化数值文本写入 label (含单位换算与字体设置)
+// Format the numeric text per data item into label (includes unit conversion and font setup)
 void disp_item_set_text(lv_obj_t *label, disp_item_t item, int32_t value, bool valid);
 
-// 按 NVS 报警阈值 (nvs_chart_alarm_get) 着色: 超阈值红, 否则白
+// Color per NVS alarm threshold (nvs_chart_alarm_get): red above threshold, else white
 void disp_item_set_value_color(lv_obj_t *label, disp_item_t item, int32_t value, bool valid);
 
-// 一体化更新: 自适应步进平滑 + 文本格式化 + 报警着色
-// *state 维护当前显示值, valid=false 时保持上次有效值
+// All-in-one update: adaptive-step smoothing + text formatting + alarm coloring
+// *state holds the currently displayed value; when valid=false the last valid value is kept
 void disp_item_update(int32_t *state, lv_obj_t *label, disp_item_t item,
                       int32_t raw, bool valid, int32_t threshold);
 
-// 访问器 (越界回退到 CLT; name 越界返回 "")
+// Accessors (out-of-range falls back to CLT; name returns "" when out of range)
 const char *ui_disp_item_name(uint8_t item);
 const char *ui_disp_item_unit(uint8_t item);
 uint32_t ui_disp_item_color(uint8_t item);
 void ui_disp_item_range(uint8_t item, int32_t *nmin, int32_t *nmax, int32_t *div);
 
-// 直接取自然量程元数据 (item 须 < DISP_ITEM_COUNT)
+// Get the natural-range metadata directly (item must be < DISP_ITEM_COUNT)
 const needle_scale_meta_t *ui_disp_item_scale(disp_item_t item);
 
 #ifdef __cplusplus

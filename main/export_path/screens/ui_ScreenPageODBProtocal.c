@@ -13,10 +13,10 @@ void ui_ScreenPageODBProtocal_screen_init(void)
     ui_ScreenPageODBProtocal = lv_obj_create(NULL);
     lv_obj_clear_flag(ui_ScreenPageODBProtocal, LV_OBJ_FLAG_SCROLLABLE);      /// Flags
     lv_obj_set_style_radius(ui_ScreenPageODBProtocal, 360, LV_PART_MAIN | LV_STATE_DEFAULT);
-    lv_obj_set_style_bg_color(ui_ScreenPageODBProtocal, lv_color_hex(0x000000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    ui_helpers_style_screen_bg(ui_ScreenPageODBProtocal);
     lv_obj_set_style_bg_opa(ui_ScreenPageODBProtocal, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    ui_SpinnerODBProtocalEgg = lv_obj_create(ui_ScreenPageODBProtocal);   // 白环: 静态圆形 border, 替代旋转 spinner, 消除弧接缝缺口
+    ui_SpinnerODBProtocalEgg = lv_obj_create(ui_ScreenPageODBProtocal);   // white ring: static circular border, replaces the rotating spinner, removes the arc seam gap
     lv_obj_set_size(ui_SpinnerODBProtocalEgg, 360, 360);
     lv_obj_set_align(ui_SpinnerODBProtocalEgg, LV_ALIGN_CENTER);
     lv_obj_clear_flag(ui_SpinnerODBProtocalEgg, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
@@ -52,7 +52,7 @@ void ui_ScreenPageODBProtocal_screen_init(void)
     lv_obj_set_style_bg_opa(ui_ArcPageODBProtocalBack, 0, LV_PART_KNOB | LV_STATE_DEFAULT);
 
     ui_RollerODBProtocalChoose = lv_roller_create(ui_ScreenPageODBProtocal);
-    lv_obj_clear_flag(ui_RollerODBProtocalChoose, LV_OBJ_FLAG_GESTURE_BUBBLE); // 滚动选值时不触发页面手势
+    lv_obj_clear_flag(ui_RollerODBProtocalChoose, LV_OBJ_FLAG_GESTURE_BUBBLE); // scrolling the selection must not trigger the page gesture
     lv_roller_set_options(ui_RollerODBProtocalChoose,
                           "0 - Automatic     \n1 - SAE J1850 PWM\n2 - SAE J1850 VPW\n3 - ISO 9141-2(10.4 k)	\n4 - ISO KWP2000(5 b) 	\n5 - ISO KWP2000(fast) 	\n6 - ISO 15765-4(11b 500)\n7 - ISO 15765-4(29b 500)\n8 - ISO 15765-4(11b 250)\n9 - ISO 15765-4(29b 250)",
                           LV_ROLLER_MODE_NORMAL);
@@ -112,10 +112,10 @@ void ui_ScreenPageODBProtocal_screen_init(void)
     lv_obj_set_style_text_align(ui_LabelSureTipText, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_text_font(ui_LabelSureTipText, &ui_font_FontTypoderSize20, LV_PART_MAIN | LV_STATE_DEFAULT);
 
-    /* 事件回调 */
-    lv_obj_move_foreground(ui_SpinnerODBProtocalEgg);   // 圆环置顶
+    /* Event callbacks */
+    lv_obj_move_foreground(ui_SpinnerODBProtocalEgg);   // bring the ring to the front
     lv_obj_add_event_cb(ui_ScreenPageODBProtocal, ui_event_obd_prot_background, LV_EVENT_ALL, NULL);
-    /* 根据 NVS 当前协议设置初始滚轮 */
+    /* Set the initial roller based on the current NVS protocol */
     const nvs_user_cfg_t *cfg = nvs_cfg_get();
     lv_roller_set_selected(ui_RollerODBProtocalChoose, cfg->protocol, LV_ANIM_OFF);
 
