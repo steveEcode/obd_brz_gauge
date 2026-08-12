@@ -101,19 +101,19 @@ static bool parse_temp_from_rx(const uint8_t *rx, int rx_len, const brake_modbus
         if (p[0] != cfg->addr) continue;
         if (p[1] != cfg->func) continue;
         
-        uint8_t byte_count = p[2];  // 数据字节数，不强制为 0x02
-        
-        // 校验最小长度：addr(1) + func(1) + byte_count(1) + 数据 + CRC(2)
+        uint8_t byte_count = p[2];  // data byte count; not forced to 0x02
+
+        // Check minimum length: addr(1) + func(1) + byte_count(1) + data + CRC(2)
         if (i + 3 + byte_count + 2 > rx_len) continue;
 
-        // 计算 CRC（从 addr 到 byte_count ...数据，不包括 CRC 本身）
+        // Compute CRC (from addr through byte_count and the data, excluding the CRC itself)
         uint16_t crc_calc = modbus_crc16(p, 3 + byte_count);
         uint16_t crc_recv = (uint16_t)p[3 + byte_count] | ((uint16_t)p[4 + byte_count] << 8);
         
         if (crc_calc != crc_recv) continue;
 
-        // 大多数温度传感器返回单个 16 位寄存器(2 字节)
-        // 但也可能返回多个寄存器，取第一个寄存器
+        // Most temperature sensors return a single 16-bit register (2 bytes),
+        // but some may return multiple registers; take the first register
         if (byte_count < 2) continue;
 
         int16_t raw = (int16_t)(((uint16_t)p[3] << 8) | p[4]);
@@ -158,16 +158,16 @@ static query_status_t query_with_cfg(const brake_modbus_cfg_t *cfg, int16_t *tem
     static int s_last_parity = -1;
     static int s_last_stop_bits = -1;
 
-    // 如果 UART 参数改变，需要刷新后再操作
+    // If UART parameters changed, refresh before operating
     int baud_changed = (s_last_baud != cfg->baud);
     int frame_changed = (s_last_parity != (int)cfg->parity) || (s_last_stop_bits != (int)cfg->stop_bits);
 
     ensure_uart_baud(cfg->baud);
     ensure_uart_frame(cfg->parity, cfg->stop_bits);
 
-    // 参数改变后增加防抖延迟
+    // Add a debounce delay after a parameter change
     if (baud_changed || frame_changed) {
-        vTaskDelay(pdMS_TO_TICKS(10));  // 让 UART 硬件稳定
+        vTaskDelay(pdMS_TO_TICKS(10));  // let the UART hardware settle
     }
 
     s_last_baud = cfg->baud;
@@ -185,7 +185,7 @@ static query_status_t query_with_cfg(const brake_modbus_cfg_t *cfg, int16_t *tem
         vTaskDelay(pdMS_TO_TICKS(2));
     }
 
-    // 累计接收一段时间，避免串口分片导致只收到半包。
+    // Accumulate received data over a period to avoid getting only half a packet due to serial fragmentation.
     while (wait_ms > 0 && total < (int)sizeof(rx)) {
         int chunk_timeout = (wait_ms > 30) ? 30 : wait_ms;
         n = uart_read_bytes(BRAKE_TEMP_UART_PORT,

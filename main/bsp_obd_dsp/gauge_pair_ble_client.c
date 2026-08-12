@@ -1,9 +1,11 @@
-// 三连表蓝牙配对: 从表侧一次性 BLE 中心设备 —— 扫描附近 "SkyGauge" 主表广播、
-// 连接、读取其配对特征值(本机 ESP-NOW MAC)、读到后立即断开。不做持续通知订阅、
-// 不做断线自动重连(这是用户主动触发的一次性配对动作，不是长连接)。
+// Triple-gauge BLE pairing: one-shot BLE central on the slave gauge side — scans for nearby
+// "SkyGauge" master gauge advertising, connects, reads its pairing characteristic (this
+// device's ESP-NOW MAC), and disconnects immediately after reading. No persistent
+// notification subscription, no auto-reconnect on disconnect (this is a user-initiated
+// one-shot pairing action, not a long-lived connection).
 //
-// 只会跑在从表设备上；从表从不初始化 elm327_ble_client.c，所以这里独立注册
-// 自己的 GAP/GATTC 回调，不存在回调表冲突。
+// Runs only on slave gauge devices; the slave never initializes elm327_ble_client.c, so this
+// file registers its own GAP/GATTC callbacks independently — no callback table conflicts.
 
 #include "gauge_pair_ble_client.h"
 
@@ -28,18 +30,18 @@ static const char *TAG = "gauge_pair_ble";
 
 static bool s_ble_inited = false;
 
-// ---- 扫描状态 ----
+// ---- Scan state ----
 static bool s_scanning = false;
 static int  s_pending_scan_duration = 10;
 static gauge_pair_scan_cb_t s_scan_cb = NULL;
 static gauge_pair_scan_result_t s_scan_list[GAUGE_PAIR_SCAN_MAX_DEVICES];
 static int s_scan_count = 0;
 
-// ---- 连接/配对状态 ----
+// ---- Connection/pairing state ----
 static esp_gatt_if_t s_gattc_if = ESP_GATT_IF_NONE;
 static uint16_t s_conn_id = 0xFFFF;
 static bool s_gattc_connected = false;
-static bool s_pairing = false;               // 一次配对流程正在进行
+static bool s_pairing = false;               // a pairing flow is in progress
 static uint8_t s_target_bda[6] = {0};
 static char s_target_name[32] = {0};
 static bool s_have_pair_svc = false;
@@ -72,7 +74,7 @@ static void ensure_timeout_timer(void) {
 }
 
 static void report_result(bool ok, const uint8_t mac[6]) {
-    if (!s_pairing) return;   // 已经报告过一次, 忽略后续(如 READ 成功后紧跟的 DISCONNECT)
+    if (!s_pairing) return;   // already reported once; ignore later calls (e.g. DISCONNECT right after a successful READ)
     s_pairing = false;
     if (s_timeout_timer) esp_timer_stop(s_timeout_timer);
 
@@ -155,8 +157,8 @@ static void gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp_ble
     case ESP_GATTC_CONNECT_EVT: {
         s_gattc_connected = true;
         s_conn_id = param->connect.conn_id;
-        // 不带过滤条件地枚举全部 service, 在 SEARCH_RES_EVT 里自己比对 UUID(和 elm327_ble_client.c
-        // 的服务发现方式一致, 避免依赖按 UUID 过滤搜索的行为)。
+        // Enumerate all services without a filter and compare UUIDs ourselves in SEARCH_RES_EVT
+        // (same service discovery approach as elm327_ble_client.c, avoiding reliance on UUID-filtered search behavior).
         esp_ble_gattc_search_service(gattc_if, s_conn_id, NULL);
         break;
     }
@@ -244,7 +246,7 @@ static void gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp_ble
         s_have_pair_svc = false;
         s_pair_svc_start = s_pair_svc_end = 0;
         s_char_mac_handle = 0;
-        report_result(false, NULL);   // 若已经在 READ_CHAR_EVT 里报告过, report_result 会直接忽略
+        report_result(false, NULL);   // if already reported in READ_CHAR_EVT, report_result simply ignores this
         break;
 
     default:

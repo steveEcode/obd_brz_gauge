@@ -1,12 +1,12 @@
-// 公共板级配置头文件
-// 适配 Waveshare ESP32-S3-Touch-LCD-1.85 开发板
+// Common board-level configuration header
+// Targets the Waveshare ESP32-S3-Touch-LCD-1.85 development board
 #ifndef BSP_BOARD_H_
 #define BSP_BOARD_H_
 
 #include "driver/gpio.h"
 #include "nvs_storage.h"
 
-// LCD 背光 GPIO 及电平定义 (避免与 ST77916.h 重复)
+// LCD backlight GPIO and level definitions (avoid duplication with ST77916.h)
 #ifndef EXAMPLE_LCD_PIN_NUM_BK_LIGHT
 #define EXAMPLE_PIN_NUM_BK_LIGHT       GPIO_NUM_5
 #else

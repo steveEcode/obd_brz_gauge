@@ -8,55 +8,58 @@
 extern "C" {
 #endif
 
-// 默认目标：名称 "OBDII"，服务 UUID 0xFFF0，写特征 0xFFF1，通知特征优先 0xFFF2（若不存在则回落到 0xFFF1）
-     // 010C - 发动机转速：41 0C AA BB  -> RPM = ((AA*256)+BB)/4
-        // 010D - 车速：41 0D AA          -> SPEED = AA km/h
-        // 0105 - 发动机冷却液温度：41 05 AA -> TEMP = AA - 40 °C
-        // 010F - 进气温度：41 0F AA      -> TEMP = AA - 40 °C
-        // 010B - 进气歧管绝对压力：41 0B AA -> PRESSURE = AA kPa
-        // 0111 - 节气门位置：41 11 AA    -> POSITION = (AA*100)/255 %
-        // 012F - 燃油液位：41 2F AA      -> LEVEL = (AA*100)/255 %
-        // 0142 - 控制模块电压：41 42 AA BB -> VOLTAGE = ((AA*256)+BB)/1000 V
+// Default target: name "OBDII", service UUID 0xFFF0, write characteristic 0xFFF1,
+// notify characteristic prefers 0xFFF2 (falls back to 0xFFF1 if absent).
+     // 010C - engine RPM: 41 0C AA BB      -> RPM = ((AA*256)+BB)/4
+        // 010D - vehicle speed: 41 0D AA     -> SPEED = AA km/h
+        // 0105 - engine coolant temp: 41 05 AA -> TEMP = AA - 40 °C
+        // 010F - intake air temp: 41 0F AA      -> TEMP = AA - 40 °C
+        // 010B - manifold absolute pressure: 41 0B AA -> PRESSURE = AA kPa
+        // 0111 - throttle position: 41 11 AA    -> POSITION = (AA*100)/255 %
+        // 012F - fuel level: 41 2F AA           -> LEVEL = (AA*100)/255 %
+        // 0142 - control module voltage: 41 42 AA BB -> VOLTAGE = ((AA*256)+BB)/1000 V
 
 typedef struct {
     void (*on_connected)(void);
     void (*on_disconnected)(void);
     void (*on_raw_notify)(const uint8_t *data, size_t len);
-    void (*on_parsed_rpm)(uint16_t rpm);//发动机转速
-    void (*on_parsed_speed_kmh)(uint8_t kmh);//车速
-    void (*on_parsed_coolant_temp)(uint32_t coolant_temp);//发动机冷却液温度
-    void (*on_parsed_intake_temp)(uint32_t intake_temp);//进气温度
-    void (*on_parsed_oil_temp)(uint32_t oil_temp);  // 机油温度 °C (公式已应用)
-    void (*on_parsed_load_pct)(uint32_t load_pct);   // 发动机负荷 0~100%
-    void (*on_parsed_manifold_pressure)(uint32_t manifold_pressure);//进气歧管绝对压力
-    void (*on_parsed_throttle_position)(uint32_t throttle_position);//节气门位置
-    void (*on_parsed_gear)(int8_t gear);  // 直接档位 (CAN 广播)
-    void (*on_parsed_fuel_level)(uint32_t fuel_level);//燃油液位
-    void (*on_parsed_control_module_voltage)(uint32_t control_module_voltage);//控制模块电压
-    void (*on_parsed_afr)(uint32_t afr_x100);    // 空燃比 AFR, ×100 (1470=14.7:1)
+    void (*on_parsed_rpm)(uint16_t rpm);// engine RPM
+    void (*on_parsed_speed_kmh)(uint8_t kmh);// vehicle speed
+    void (*on_parsed_coolant_temp)(uint32_t coolant_temp);// engine coolant temperature
+    void (*on_parsed_intake_temp)(uint32_t intake_temp);// intake air temperature
+    void (*on_parsed_oil_temp)(uint32_t oil_temp);  // oil temperature °C (formula already applied)
+    void (*on_parsed_load_pct)(uint32_t load_pct);   // engine load 0~100%
+    void (*on_parsed_manifold_pressure)(uint32_t manifold_pressure);// manifold absolute pressure
+    void (*on_parsed_throttle_position)(uint32_t throttle_position);// throttle position
+    void (*on_parsed_gear)(int8_t gear);  // direct gear (CAN broadcast)
+    void (*on_parsed_fuel_level)(uint32_t fuel_level);// fuel level
+    void (*on_parsed_control_module_voltage)(uint32_t control_module_voltage);// control module voltage
+    void (*on_parsed_afr)(uint32_t afr_x100);    // air-fuel ratio AFR, x100 (1470=14.7:1)
 
 } elm327_ble_callbacks_t;
 
-// 初始化 BLE 客户端并开始扫描连接
-// target_name 可为 NULL 使用默认 "OBDII"
+// Initialize the BLE client and start scanning/connecting.
+// target_name may be NULL to use the default "OBDII".
 void elm327_ble_init_and_start(const char *target_name, const elm327_ble_callbacks_t *cbs);
 
-// 仅初始化 BT 控制器+Bluedroid+GAP/GATTC 回调(幂等,可重复调用),不发起任何 ELM327 扫描/连接。
-// 供暂无 OBD 设备但仍需要蓝牙外围广播的场景使用(如 RaceChrono DIY / SkyGauge 配对广播)。
+// Only initialize the BT controller + Bluedroid + GAP/GATTC callbacks (idempotent, safe to call
+// repeatedly); does not start any ELM327 scan/connection. For cases that have no OBD device yet
+// still need BLE peripheral advertising (e.g. RaceChrono DIY / SkyGauge pairing broadcast).
 void elm327_ble_ensure_stack_init(void);
 
-// 发送 OBD 命令（如 "01 0C\r" 转成字节再调用本函数）
+// Send an OBD command (e.g. convert "01 0C\r" to bytes, then call this function).
 bool elm327_ble_send_command(const uint8_t *data, size_t len);
 
-// 小工具：将形如 "01 0C\r" 的 ASCII 命令转换为字节（空格可有可无）
-// 返回写入的字节数；out_buf_len 为 out_buf 容量
+// Helper: convert an ASCII command like "01 0C\r" into bytes (spaces optional).
+// Returns the number of bytes written; out_buf_len is the capacity of out_buf.
 size_t elm327_ble_ascii_cmd_to_bytes(const char *ascii, uint8_t *out_buf, size_t out_buf_len);
 
-// 启动带默认日志回调与周期轮询（010C/010D）的便捷接口
-// mac 非 NULL 且非全零时按精确 MAC 匹配连接(忽略同名设备); 否则退回 target_name 模糊匹配(兼容旧配置)
+// Convenience entry point that starts default logging callbacks and periodic polling (010C/010D).
+// If mac is non-NULL and non-zero, connect by exact MAC match (ignoring same-name devices);
+// otherwise fall back to fuzzy target_name matching (backward compatible).
 void elm327_ble_start_default(const char *target_name, const uint8_t mac[6]);
 
-// ---- BLE 扫描模式 API ----
+// ---- BLE scan-mode API ----
 #define BLE_SCAN_MAX_DEVICES 20
 
 typedef struct {
@@ -65,45 +68,45 @@ typedef struct {
     int rssi;
 } ble_scan_result_t;
 
-// 扫描到设备时的回调（在 BT 回调线程中调用，如需更新 UI 请做线程安全处理）
+// Callback when a device is found (invoked on the BT callback thread; make UI updates thread-safe).
 typedef void (*ble_scan_found_cb_t)(const ble_scan_result_t *dev, int total_count);
 
-// 开始扫描（仅扫描，不连接）。duration_s：扫描时长秒。cb：每发现新设备时回调
+// Start scanning (scan only, do not connect). duration_s: scan duration in seconds. cb: called for each new device.
 void elm327_ble_scan_only_start(int duration_s, ble_scan_found_cb_t cb);
 
-// 停止扫描
+// Stop scanning.
 void elm327_ble_scan_only_stop(void);
 
-// 连接到指定 MAC 地址的设备（停止扫描后调用）：精确匹配，不会被同名设备误连。
-// name 仅用于日志/UI 显示。
+// Connect to the device with the given MAC (call after stopping the scan): exact match, so a
+// same-name device cannot hijack the connection. name is only for logging/UI display.
 void elm327_ble_connect_by_addr(const uint8_t mac[6], const char *name);
 
-// 查询当前连接状态
+// Query the current connection state.
 bool elm327_ble_is_connected(void);
 void elm327_ble_disconnect(void);
 
-// 获取当前连接/目标设备名称
+// Get the currently connected / target device name.
 const char *elm327_ble_get_connected_name(void);
 
-// ---- 油温校准接口 ----
-// 设置油温偏移量（补偿校准值），单位：°C
-// 例如：实际油温 90°C，但读数显示 92°C，应设置 offset = -2
+// ---- Oil temperature calibration API ----
+// Set the oil-temp offset (calibration compensation), in °C.
+// Example: actual oil temp is 90°C but the reading shows 92°C -> set offset = -2.
 void elm327_oil_temp_set_offset(int8_t offset_c);
 
-// 获取当前油温偏移量
+// Get the current oil-temp offset.
 int8_t elm327_oil_temp_get_offset(void);
 
-// 获取油温诊断信息（用于 UI 显示or调试）
+// Get oil-temp diagnostics (for UI display or debugging).
 typedef struct {
-    uint32_t mode0_ok;    // Mode 01 5C 成功次数
-    uint32_t mode1_ok;    // Mode 22 10 17 成功次数
-    uint32_t mode2_ok;    // Mode 21 01 成功次数
-    uint32_t mode0_fail;  // 失败次数
+    uint32_t mode0_ok;    // Mode 01 5C success count
+    uint32_t mode1_ok;    // Mode 22 10 17 success count
+    uint32_t mode2_ok;    // Mode 21 01 success count
+    uint32_t mode0_fail;  // failure count
     uint32_t mode1_fail;
     uint32_t mode2_fail;
-    int16_t last_raw;     // 最后一次原始读数
-    int16_t last_filtered; // 最后一次过滤后读数
-    uint8_t current_mode; // 当前查询模式 (0-2)
+    int16_t last_raw;     // last raw reading
+    int16_t last_filtered; // last filtered reading
+    uint8_t current_mode; // current query mode (0-2)
 } elm327_oil_diag_t;
 
 void elm327_oil_temp_get_diag(elm327_oil_diag_t *out);
@@ -111,5 +114,3 @@ void elm327_oil_temp_get_diag(elm327_oil_diag_t *out);
 #ifdef __cplusplus
 }
 #endif
-
-

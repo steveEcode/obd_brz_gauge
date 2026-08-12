@@ -14,15 +14,15 @@
 
 #define TAG "oil_press"
 
-// ADS1115 I2C 地址（ADDR 引脚接 GND 时为 0x48）
+// ADS1115 I2C address (0x48 when the ADDR pin is tied to GND)
 #define ADS1115_ADDR            0x48
 #define ADS1115_REG_CONV        0x00
 #define ADS1115_REG_CONFIG      0x01
 
 #define OIL_PRESS_POLL_MS       100
 
-// 标定参数：3.3V 供电传感器，输出 0.5~2.5V 对应 0.0~10.0 bar
-// ADS1115 使用 AIN0 通道（传感器信号线接 AIN0，GND 接 GND）
+// Calibration parameters: 3.3V-powered sensor, output 0.5~2.5V maps to 0.0~10.0 bar
+// ADS1115 uses the AIN0 channel (sensor signal line to AIN0, GND to GND)
 #define OIL_PRESS_ADC_MIN_MV    500
 #define OIL_PRESS_ADC_MAX_MV    2500
 #define OIL_PRESS_MIN_BAR_X10   0
@@ -30,15 +30,15 @@
 
 static bool s_started = false;
 
-// 触发单次转换并读取 AIN0 电压（单位 mV）
+// Trigger a single conversion and read the AIN0 voltage (in mV)
 static esp_err_t ads1115_read_ain0_mv(int32_t *out_mv)
 {
     if (out_mv == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    // OS=1（启动单次转换）, MUX=AIN0/GND(100), PGA=±4.096V(001),
-    // MODE=single-shot(1), DR=860SPS(111), COMP 禁用(11)
+    // OS=1 (start single conversion), MUX=AIN0/GND(100), PGA=±4.096V(001),
+    // MODE=single-shot(1), DR=860SPS(111), COMP disabled(11)
     // Config = 0x8000|0x4000|0x0200|0x0100|0x00E0|0x0003 = 0xC3E3
     uint16_t cfg = 0xC3E3u;
     uint8_t cfg_bytes[2] = {(uint8_t)(cfg >> 8), (uint8_t)(cfg & 0xFF)};
@@ -48,7 +48,7 @@ static esp_err_t ads1115_read_ain0_mv(int32_t *out_mv)
         return err;
     }
 
-    // 860 SPS 转换时间约 1.2ms，给 3ms 余量
+    // 860 SPS conversion takes ~1.2ms; allow 3ms of margin
     vTaskDelay(pdMS_TO_TICKS(3));
 
     uint8_t conv[2] = {0};
@@ -59,7 +59,7 @@ static esp_err_t ads1115_read_ain0_mv(int32_t *out_mv)
 
     int16_t raw = (int16_t)(((uint16_t)conv[0] << 8) | conv[1]);
 
-    // PGA=±4.096V 时，LSB = 125µV = 0.125mV → mv = raw / 8
+    // With PGA=±4.096V, LSB = 125µV = 0.125mV → mv = raw / 8
     int32_t mv = (int32_t)raw / 8;
     if (mv < 0) {
         mv = 0;

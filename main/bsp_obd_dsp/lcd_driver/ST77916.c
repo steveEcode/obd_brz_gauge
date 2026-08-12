@@ -9,7 +9,7 @@ static const char *TAG_LCD = "ST77916";
 
 esp_lcd_panel_handle_t panel_handle = NULL;
 
-/* LVGL flush 完成回调 (可选，在 LCD_Init 前通过 LCD_SetFlushCallback 设置) */
+/* LVGL flush-complete callback (optional; set via LCD_SetFlushCallback before LCD_Init) */
 static bool (*s_flush_cb)(esp_lcd_panel_io_handle_t, esp_lcd_panel_io_event_data_t *, void *) = NULL;
 static void *s_flush_ctx = NULL;
 
@@ -274,7 +274,7 @@ int QSPI_Init(void){
   };
   esp_err_t ret;
   int lcd_cmd = 0x04;
-  uint8_t register_data[4] = {0};   // 读失败时保持全 0, 避免用未初始化的栈数据去比对厂商特征码
+  uint8_t register_data[4] = {0};   // keep all-zero on read failure, so uninitialized stack data isn't compared against the vendor signature
   size_t param_size = sizeof(register_data);
   lcd_cmd &= 0xff;
   lcd_cmd <<= 8;
@@ -322,7 +322,7 @@ int QSPI_Init(void){
   // esp_lcd_panel_invert_color(panel_handle,false);
 
   esp_lcd_panel_disp_on_off(panel_handle, true);
-  // LCD 初始化完成
+  // LCD init complete
   return 1;
 }
 

@@ -1,11 +1,11 @@
 #pragma once
 // ================================================================
-//  vehicle_custom_config.h — 车型自定义配置 (数据驱动)
+//  vehicle_custom_config.h — vehicle custom configuration (data-driven)
 //
-//  开发者只需编辑这一个文件即可添加新车型。
-//  不在此声明的车型 = 纯 OBD2 标准协议，零配置即用。
+//  Developers only need to edit this single file to add a new vehicle.
+//  A vehicle not declared here = pure OBD2 standard protocol, zero-config and ready to use.
 //
-//  详见 docs/VEHICLE_CONFIG.md
+//  See docs/VEHICLE_CONFIG.md for details
 // ================================================================
 
 #include <stdint.h>
@@ -17,69 +17,69 @@
 extern "C" {
 #endif
 
-// ---- 数据通道 ----
+// ---- Data channels ----
 enum {
     CH_RPM = 0, CH_SPEED, CH_OIL_TEMP, CH_COOLANT,
     CH_TPS, CH_LOAD, CH_INTAKE, CH_BOOST, CH_GEAR, CH_COUNT
 };
 
-// ---- CAN 帧解码规则 ----
-// 一条规则 = 从某个 CAN ID 的某个位域提取一个数据通道
+// ---- CAN frame decode rules ----
+// One rule = extract one data channel from a bit field of a given CAN ID
 typedef struct {
-    uint16_t can_id;       // CAN 帧 ID (11-bit)
-    uint8_t  bit_off;      // 起始位 (LSB=0)
-    uint8_t  bit_len;      // 位长度 (1-32)
-    float    scale;        // 乘数
-    float    offset;       // 偏移 (乘后加)
+    uint16_t can_id;       // CAN frame ID (11-bit)
+    uint8_t  bit_off;      // start bit (LSB=0)
+    uint8_t  bit_len;      // bit length (1-32)
+    float    scale;        // multiplier
+    float    offset;       // offset (added after scaling)
     uint8_t  channel;      // CH_RPM / CH_SPEED / ...
 } can_rule_t;
 
-// ---- 油温公式类型 ----
+// ---- Oil temp formula types ----
 enum {
-    OIL_STD_PID = 0,   // 标准 Mode 01 PID (单字节, value + offset)
-    OIL_UDS_22,        // UDS Mode 22 (1-2 字节, value * scale + offset)
-    OIL_SPECIAL,       // 特殊解析 (Toyota Mode21 / Porsche CAN441 等)
+    OIL_STD_PID = 0,   // Standard Mode 01 PID (single byte, value + offset)
+    OIL_UDS_22,        // UDS Mode 22 (1-2 bytes, value * scale + offset)
+    OIL_SPECIAL,       // Special parsing (Toyota Mode21 / Porsche CAN441 etc.)
 };
 
-// ---- 油温公式 ----
+// ---- Oil temp formula ----
 typedef struct {
     uint8_t  type;         // OIL_STD_PID / OIL_UDS_22 / OIL_SPECIAL
-    uint8_t  pid[3];       // PID 字节 (标准=1字节, UDS=2-3字节)
-    uint8_t  pid_len;      // PID 长度
-    uint8_t  resp_byte;    // 响应数据第几字节 (0-based)
-    uint8_t  resp_bytes;   // 1=单字节, 2=双字节大端
-    float    scale;        // 乘数
-    float    offset;       // 偏移
-    uint8_t  special_id;   // OIL_SPECIAL 时: 0=Toyota21, 1=Porsche441
+    uint8_t  pid[3];       // PID bytes (standard=1 byte, UDS=2-3 bytes)
+    uint8_t  pid_len;      // PID length
+    uint8_t  resp_byte;    // which response data byte (0-based)
+    uint8_t  resp_bytes;   // 1=single byte, 2=two bytes big-endian
+    float    scale;        // multiplier
+    float    offset;       // offset
+    uint8_t  special_id;   // for OIL_SPECIAL: 0=Toyota21, 1=Porsche441
 } oil_formula_t;
 
-// ---- 车型覆盖配置 ----
+// ---- Vehicle override configuration ----
 typedef struct {
-    const char          *match_name;     // 匹配 vehicle_profiles 里的 name
-    const can_rule_t    *can_rules;      // CAN 解码规则表 (NULL=不用CAN)
+    const char          *match_name;     // matches the name in vehicle_profiles
+    const can_rule_t    *can_rules;      // CAN decode rule table (NULL=no CAN)
     uint8_t              can_rule_count;
-    const oil_formula_t *oil_primary;    // 油温主公式 (NULL=标准01 5C)
-    const oil_formula_t *oil_secondary;  // 油温备用公式
-    uint8_t              forced_protocol;// ELM327 协议 (0=自动)
+    const oil_formula_t *oil_primary;    // primary oil temp formula (NULL=standard 01 5C)
+    const oil_formula_t *oil_secondary;  // secondary oil temp formula
+    uint8_t              forced_protocol;// ELM327 protocol (0=auto)
     bool                 functional_addr;// true=ATSH7DF
-    uint8_t              obd_timeout;    // ATST 值 (0=默认)
-    bool                 has_boost;      // 涡轮车
-    uint8_t              poll_gap_ms;    // 轮询间隔 (0=默认)
-    const char          *uds_header_cmd; // 查 UDS 油温前临时切换的 ATSH 头 (如 FCA 扩展寻址 "ATSH18DA10F1\r"), 查完恢复标准头; NULL=默认行为
+    uint8_t              obd_timeout;    // ATST value (0=default)
+    bool                 has_boost;      // turbocharged vehicle
+    uint8_t              poll_gap_ms;    // poll interval (0=default)
+    const char          *uds_header_cmd; // ATSH header temporarily switched to before querying UDS oil temp (e.g. FCA extended addressing "ATSH18DA10F1\r"), the standard header is restored after the query; NULL=default behavior
 } vehicle_override_t;
 
 // ================================================================
-//  CAN 规则表 — 每个车型一张
+//  CAN rule tables — one per vehicle
 // ================================================================
 
 // BRZ ZC6 Gen1 (2013-2020)
-// 参考: https://github.com/timurrrr/ft86/blob/main/can_bus/gen1.md
+// Ref: https://github.com/timurrrr/ft86/blob/main/can_bus/gen1.md
 static const can_rule_t can_rules_zc6[] = {
-    { 0x140, 16, 14, 1.0f,        0.0f, CH_RPM },       // 转速
-    { 0x140, 48,  8, 100.0f/255,  0.0f, CH_TPS },       // 节气门 byte6
-    { 0x360, 16,  8, 1.0f,      -40.0f, CH_OIL_TEMP },  // 油温 byte2
-    { 0x360, 24,  8, 1.0f,      -40.0f, CH_COOLANT },   // 水温 byte3
-    // 车速走 OBD PID 01 0D, 不走 CAN 0x0D1 (避免静止噪声导致非零爬升)
+    { 0x140, 16, 14, 1.0f,        0.0f, CH_RPM },       // RPM
+    { 0x140, 48,  8, 100.0f/255,  0.0f, CH_TPS },       // throttle byte6
+    { 0x360, 16,  8, 1.0f,      -40.0f, CH_OIL_TEMP },  // oil temp byte2
+    { 0x360, 24,  8, 1.0f,      -40.0f, CH_COOLANT },   // coolant temp byte3
+    // Speed goes through OBD PID 01 0D, not CAN 0x0D1 (avoids non-zero creep caused by stationary noise)
 };
 
 // BMW G-series (G20/G21/G22/G80/G82) PT-CAN
@@ -90,80 +90,80 @@ static const can_rule_t can_rules_zc6[] = {
 // 0x3F9 (1Hz):   coolant byte4 (raw−48), oil byte5 (raw−48), gear byte6 nibble (raw−4)
 // 0x0D9 (100Hz): throttle byte2-3 12-bit
 static const can_rule_t can_rules_bmw_g[] = {
-    { 0x0A5, 40, 16, 0.25f,         0.0f, CH_RPM },       // 转速 byte5-6 LE, raw÷4 (1/min)
-    { 0x0A5, 16, 16, 1.0f,          0.0f, CH_TPS },       // 引擎扭矩 (备用, 暂不接入UI)
-    { 0x254, 32, 16, 0.015625f, -511.98f, CH_SPEED },     // 左前轮速 byte4-5 LE
-    { 0x3F9, 32,  8, 1.0f,        -48.0f, CH_COOLANT },   // 水温 byte4, raw−48
-    { 0x3F9, 40,  8, 1.0f,        -48.0f, CH_OIL_TEMP },  // 油温 byte5, raw−48
-    { 0x3F9, 48,  4, 1.0f,         -4.0f, CH_GEAR },   // 档位 byte6低4位, raw−4 (0=P, 1=R, 2=N, 3=D, 4+=M1…)
+    { 0x0A5, 40, 16, 0.25f,         0.0f, CH_RPM },       // RPM byte5-6 LE, raw÷4 (1/min)
+    { 0x0A5, 16, 16, 1.0f,          0.0f, CH_TPS },       // engine torque (backup, not wired to the UI yet)
+    { 0x254, 32, 16, 0.015625f, -511.98f, CH_SPEED },     // front-left wheel speed byte4-5 LE
+    { 0x3F9, 32,  8, 1.0f,        -48.0f, CH_COOLANT },   // coolant temp byte4, raw−48
+    { 0x3F9, 40,  8, 1.0f,        -48.0f, CH_OIL_TEMP },  // oil temp byte5, raw−48
+    { 0x3F9, 48,  4, 1.0f,         -4.0f, CH_GEAR },   // gear byte6 low nibble, raw−4 (0=P, 1=R, 2=N, 3=D, 4+=M1…)
 };
 
 // BRZ ZD8 Gen2 (2022+)
-// 参考: https://github.com/timurrrr/ft86/blob/main/can_bus/gen2.md
+// Ref: https://github.com/timurrrr/ft86/blob/main/can_bus/gen2.md
 static const can_rule_t can_rules_zd8[] = {
-    { 0x040, 16, 14, 1.0f,        0.0f, CH_RPM },       // 转速
-    { 0x040, 32,  8, 100.0f/255,  0.0f, CH_TPS },       // 节气门 byte4
-    { 0x345, 24,  8, 1.0f,      -40.0f, CH_OIL_TEMP },  // 油温 byte3
-    { 0x345, 32,  8, 1.0f,      -40.0f, CH_COOLANT },   // 水温 byte4
+    { 0x040, 16, 14, 1.0f,        0.0f, CH_RPM },       // RPM
+    { 0x040, 32,  8, 100.0f/255,  0.0f, CH_TPS },       // throttle byte4
+    { 0x345, 24,  8, 1.0f,      -40.0f, CH_OIL_TEMP },  // oil temp byte3
+    { 0x345, 32,  8, 1.0f,      -40.0f, CH_COOLANT },   // coolant temp byte4
 };
 
 // ================================================================
-//  油温公式 — 每个车型 1-2 个
+//  Oil temp formulas — 1-2 per vehicle
 // ================================================================
 
-// 标准 OBD2 PID 01 5C (°C = A - 40)
+// Standard OBD2 PID 01 5C (°C = A - 40)
 static const oil_formula_t oil_std_5c = {
     OIL_STD_PID, {0x5C}, 1, 0, 1, 1.0f, -40.0f, 0
 };
 
-// Toyota/Subaru Mode 21 01 (特殊多帧解析)
+// Toyota/Subaru Mode 21 01 (special multi-frame parsing)
 static const oil_formula_t oil_toyota_21 = {
     OIL_SPECIAL, {0x01}, 1, 0, 1, 1.0f, -40.0f, 0  // special_id=0
 };
 
-// Mazda 22 13 10 (双字节: (A*256+B)/100 - 40)
+// Mazda 22 13 10 (two bytes: (A*256+B)/100 - 40)
 static const oil_formula_t oil_mazda_1310 = {
     OIL_UDS_22, {0x13,0x10}, 2, 0, 2, 0.01f, -40.0f, 0
 };
 
-// Alfa Romeo Giulia 2.0T (汽油) 22 13 02 (响应第2数据字节直接为油温°C, 无偏移)
-// 必须在扩展头 18DA10F1 下查询 (见 override uds_header_cmd); 双源交叉验证:
-// danardi78/Alfaromeo-Giulia-Stelvio-PIDs + ClaudeMarais/Simple_OBD2_for_AlfaRomeoGiulia
+// Alfa Romeo Giulia 2.0T (gasoline) 22 13 02 (the 2nd response data byte is directly the oil temp in °C, no offset)
+// Must be queried under the extended header 18DA10F1 (see override uds_header_cmd); cross-verified from two sources:
+// danarda78/Alfaromeo-Giulia-Stelvio-PIDs + ClaudeMarais/Simple_OBD2_for_AlfaRomeoGiulia
 static const oil_formula_t oil_giulia_1302 = {
     OIL_UDS_22, {0x13,0x02}, 2, 1, 1, 1.0f, 0.0f, 0
 };
 
-// Mazda 22 11 1F (单字节: A - 50)
+// Mazda 22 11 1F (single byte: A - 50)
 static const oil_formula_t oil_mazda_111f = {
     OIL_UDS_22, {0x11,0x1F}, 2, 0, 1, 1.0f, -50.0f, 0
 };
 
-// BMW F/G 22 44 02 (单字节: B - 64)
+// BMW F/G 22 44 02 (single byte: B - 64)
 static const oil_formula_t oil_bmw_4402 = {
     OIL_UDS_22, {0x44,0x02}, 2, 1, 1, 1.0f, -64.0f, 0
 };
 
-// BMW G 22 44 02 (双字节: (A*256+B)*191.25/255 - 48)
+// BMW G 22 44 02 (two bytes: (A*256+B)*191.25/255 - 48)
 static const oil_formula_t oil_bmw_g_4402 = {
     OIL_UDS_22, {0x44,0x02}, 2, 0, 2, 191.25f/255.0f, -48.0f, 0
 };
 
-// BMW 22 D0 02 (双字节: 同 G 4402 公式)
+// BMW 22 D0 02 (two bytes: same formula as G 4402)
 static const oil_formula_t oil_bmw_d002 = {
     OIL_UDS_22, {0xD0,0x02}, 2, 0, 2, 191.25f/255.0f, -48.0f, 0
 };
 
-// BMW 22 03 F3 (单字节: A - 40)
+// BMW 22 03 F3 (single byte: A - 40)
 static const oil_formula_t oil_bmw_03f3 = {
     OIL_UDS_22, {0x03,0xF3}, 2, 0, 1, 1.0f, -40.0f, 0
 };
 
-// BMW/MINI 22 58 22 (单字节: A - 60)
+// BMW/MINI 22 58 22 (single byte: A - 60)
 static const oil_formula_t oil_mini_5822 = {
     OIL_UDS_22, {0x58,0x22}, 2, 0, 1, 1.0f, -60.0f, 0
 };
 
-// BMW 22 11 1F (单字节: A - 50)
+// BMW 22 11 1F (single byte: A - 50)
 static const oil_formula_t oil_bmw_111f = {
     OIL_UDS_22, {0x11,0x1F}, 2, 0, 1, 1.0f, -50.0f, 0
 };
@@ -179,20 +179,20 @@ static const oil_formula_t oil_porsche_9971 = {
 };
 
 // ================================================================
-//  覆盖表 — 不在这里的车型 = 纯 OBD2 标准协议
+//  Override table — vehicles not listed here = pure OBD2 standard protocol
 // ================================================================
 static const vehicle_override_t s_vehicle_overrides[] = {
     {
         .match_name      = "ZN/C6 CAN",
         .can_rules       = can_rules_zc6,
-        .can_rule_count  = 4,   // 转速/TPS/油温/水温, 车速走 OBD
+        .can_rule_count  = 4,   // RPM/TPS/oil temp/coolant temp, speed via OBD
         .oil_primary     = &oil_toyota_21,
         .forced_protocol = 6,
         .poll_gap_ms     = 1,
     },
     {
-        // ZN/C6 标准 PID 兜底: 不设 can_rules, 转速/水温走标准 PID (01 0C / 01 05),
-        // 油温走 Toyota Mode 21 01 (同 CAN 版引入之前的老配置)
+        // ZN/C6 standard PID fallback: no can_rules, RPM/coolant temp go through standard PIDs (01 0C / 01 05),
+        // oil temp goes through Toyota Mode 21 01 (same as the old config before the CAN version was introduced)
         .match_name      = "ZN/C6 PID",
         .oil_primary     = &oil_toyota_21,
         .forced_protocol = 6,
@@ -207,7 +207,7 @@ static const vehicle_override_t s_vehicle_overrides[] = {
         .poll_gap_ms     = 1,
     },
     {
-        // ZD8 标准 OBD 兜底: 不设 can_rules, 转速/水温/油温全走标准 PID
+        // ZD8 standard OBD fallback: no can_rules, RPM/coolant temp/oil temp all go through standard PIDs
         .match_name      = "ZD8",
         .oil_primary     = &oil_std_5c,
         .forced_protocol = 6,
@@ -224,7 +224,7 @@ static const vehicle_override_t s_vehicle_overrides[] = {
         .match_name      = "BMW G CAN",
         .can_rules       = can_rules_bmw_g,
         .can_rule_count  = 6,
-        .oil_primary     = &oil_std_5c,       // CAN 0x3F9 直接提供油温, OBD 兜底用标准 01 5C
+        .oil_primary     = &oil_std_5c,       // CAN 0x3F9 provides oil temp directly; standard 01 5C as the OBD fallback
         .forced_protocol = 6,
         .functional_addr = true,
         .obd_timeout     = 0x0A,
@@ -258,10 +258,10 @@ static const vehicle_override_t s_vehicle_overrides[] = {
         .forced_protocol = 6,
     },
     {
-        // Giulia 2.0T: 油温走 FCA UDS 扩展寻址 18DA10F1 (响应 18DAF110), 标准 01 5C 不支持。
-        // 标准 PID (转速/车速/水温/进气温/负荷/TPS/电压/MAP) 走功能寻址 7DF。
-        // 其余可扩展 DID (同头 18DA10F1): 油压 22 13 0A=A*10/255, 档位 22 19 2D (0=N,0x10=R),
-        // 增压表压 22 19 5A=((A*256+B)-32768)/1000-1 bar, 节气门 22 19 24=(A*256+B)/655.35 %
+        // Giulia 2.0T: oil temp goes through FCA UDS extended addressing 18DA10F1 (response 18DAF110); standard 01 5C is not supported.
+        // Standard PIDs (RPM/speed/coolant temp/intake temp/load/TPS/voltage/MAP) go through functional addressing 7DF.
+        // Other extensible DIDs (same header 18DA10F1): oil pressure 22 13 0A=A*10/255, gear 22 19 2D (0=N,0x10=R),
+        // boost gauge pressure 22 19 5A=((A*256+B)-32768)/1000-1 bar, throttle 22 19 24=(A*256+B)/655.35 %
         .match_name      = "GIULIA 2.0T",
         .oil_primary     = &oil_giulia_1302,
         .functional_addr = true,
@@ -270,12 +270,12 @@ static const vehicle_override_t s_vehicle_overrides[] = {
         .poll_gap_ms     = 50,
         .uds_header_cmd  = "ATSH18DA10F1\r",
     },
-    // OBD2 Generic: 不在表里 = 纯标准协议
+    // OBD2 Generic: not in the table = pure standard protocol
 };
 
 #define VEHICLE_OVERRIDE_COUNT (sizeof(s_vehicle_overrides) / sizeof(s_vehicle_overrides[0]))
 
-// 查找覆盖配置 (找不到 = 纯 OBD2 标准)
+// Find the override configuration (not found = pure OBD2 standard)
 static inline const vehicle_override_t *vehicle_find_override(const char *name)
 {
     if (!name) return NULL;
@@ -286,7 +286,7 @@ static inline const vehicle_override_t *vehicle_find_override(const char *name)
     return NULL;
 }
 
-// ---- 通用 CAN 位域提取 (小端) ----
+// ---- Generic CAN bit-field extraction (little-endian) ----
 static inline bool can_extract_bits_le(const uint8_t data[8],
                                        uint8_t bit_off, uint8_t bit_len,
                                        uint32_t *out)
@@ -304,7 +304,7 @@ static inline bool can_extract_bits_le(const uint8_t data[8],
     return true;
 }
 
-// ---- 通用 CAN 规则解析: 遍历规则表, 匹配 CAN ID, 提取数据写入 channels[] ----
+// ---- Generic CAN rule parsing: iterate the rule table, match the CAN ID, extract data into channels[] ----
 static inline void can_apply_rules(const can_rule_t *rules, uint8_t count,
                                    uint16_t can_id, const uint8_t data[8],
                                    float channels[CH_COUNT])
@@ -320,8 +320,8 @@ static inline void can_apply_rules(const can_rule_t *rules, uint8_t count,
     }
 }
 
-// ---- 通用油温公式执行: 根据公式类型构建 ELM327 命令 ----
-// 返回需要发送的命令字符串 (静态缓冲), NULL 表示 SPECIAL 类型需外部处理
+// ---- Generic oil temp formula execution: build the ELM327 command based on the formula type ----
+// Returns the command string to send (static buffer); NULL means the SPECIAL type needs external handling
 static inline const char *oil_formula_build_cmd(const oil_formula_t *f, char *buf, size_t buflen)
 {
     if (!f || !buf) return NULL;
@@ -338,13 +338,13 @@ static inline const char *oil_formula_build_cmd(const oil_formula_t *f, char *bu
             return NULL;
         return buf;
     }
-    return NULL;  // OIL_SPECIAL: 调用方自行处理
+    return NULL;  // OIL_SPECIAL: the caller handles it itself
 }
 
-// ---- 通用油温响应解析: 从 ELM327 响应字节计算温度 ----
-// resp_data: 响应中的数据字节 (不含 mode/PID 头)
-// resp_len: 数据字节数
-// 返回计算后的温度 °C, 失败返回 -32768
+// ---- Generic oil temp response parsing: compute the temperature from the ELM327 response bytes ----
+// resp_data: the data bytes in the response (excluding the mode/PID header)
+// resp_len: number of data bytes
+// Returns the computed temperature in °C; -32768 on failure
 static inline int16_t oil_formula_parse_resp(const oil_formula_t *f,
                                              const uint32_t *resp_data,
                                              uint8_t resp_len)

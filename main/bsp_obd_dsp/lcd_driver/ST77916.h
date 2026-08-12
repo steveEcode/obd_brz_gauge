@@ -46,8 +46,9 @@
 #define EXAMPLE_LCD_BK_LIGHT_ON_LEVEL       (1)
 #define EXAMPLE_LCD_BK_LIGHT_OFF_LEVEL !EXAMPLE_LCD_BK_LIGHT_ON_LEVEL
 
-// 容下一条 40 行渲染带(28.8KB), 每次刷新单次传输完, 减少事务开销提帧率。
-// (比之前花屏时的整帧/43KB 小; 若仍花屏说明本屏单次传输上限更低, 回退 2048)
+// Fits one 40-line render band (28.8KB), transferred in a single transaction per refresh to cut
+// transaction overhead and raise frame rate. (Smaller than the full-frame/43KB that caused
+// glitching before; if it still glitches, this panel's single-transfer limit is lower — fall back to 2048.)
 #define ESP_PANEL_HOST_SPI_MAX_TRANSFER_SIZE   (EXAMPLE_LCD_WIDTH * 40 * 2 + 64)
 
 #define LEDC_HS_TIMER          LEDC_TIMER_0
@@ -62,9 +63,9 @@ extern esp_lcd_panel_handle_t panel_handle;
 extern uint8_t LCD_Backlight;
 
 /**
- * @brief 设置 LVGL flush 完成回调 (在 LCD_Init 之前调用)
- * @param cb   回调函数指针，DMA 传输完成时调用
- * @param ctx  用户上下文 (通常为 &disp_drv)
+ * @brief Set the LVGL flush-complete callback (call before LCD_Init)
+ * @param cb   callback function pointer, invoked when the DMA transfer completes
+ * @param ctx  user context (typically &disp_drv)
  */
 void LCD_SetFlushCallback(bool (*cb)(esp_lcd_panel_io_handle_t, esp_lcd_panel_io_event_data_t *, void *), void *ctx);
 

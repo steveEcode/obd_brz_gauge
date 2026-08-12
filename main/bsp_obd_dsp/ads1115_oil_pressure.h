@@ -4,7 +4,7 @@
 extern "C" {
 #endif
 
-// 启动机油压力采集任务（ESP32 ADC 直连）。
+// Start the oil pressure sampling task (direct ESP32 ADC connection).
 void oil_pressure_start(void);
 
 #ifdef __cplusplus

@@ -16,7 +16,7 @@
 /****************************************************** The macro defines the TCA9554PWR information ******************************************************/ 
 
 #define TCA9554_ADDRESS             0x20                    // TCA9554PWR I2C address
-// TCA9554PWR寄存器地址
+// TCA9554PWR register addresses
 #define TCA9554_INPUT_REG           0x00                    // Input register,input level
 #define TCA9554_OUTPUT_REG          0x01                    // Output register, high and low level output 
 #define TCA9554_Polarity_REG        0x02                    // The Polarity Inversion register (register 2) allows polarity inversion of pins defined as inputs by the Configuration register.  

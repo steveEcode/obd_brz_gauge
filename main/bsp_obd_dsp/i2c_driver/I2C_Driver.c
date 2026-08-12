@@ -30,8 +30,9 @@ static i2c_master_dev_handle_t get_device(uint8_t addr)
     i2c_master_dev_handle_t dev_handle;
     ESP_ERROR_CHECK(i2c_master_bus_add_device(s_i2c_bus, &dev_cfg, &dev_handle));
 
-    // 只有真正存进缓存才递增计数; 否则 s_dev_count 会超过数组大小, 上面的遍历会越界读,
-    // 且缓存满之后同一地址每次都会重新 add_device 从而在下一次 ESP_ERROR_CHECK 处直接 abort。
+    // Only increment the count when actually stored in the cache; otherwise s_dev_count would
+    // exceed the array size, the loop above would read out of bounds, and once the cache is full
+    // the same address would re-add_device every time and abort at the next ESP_ERROR_CHECK.
     if (s_dev_count < MAX_I2C_DEVICES) {
         s_dev_cache[s_dev_count].addr = addr;
         s_dev_cache[s_dev_count].handle = dev_handle;

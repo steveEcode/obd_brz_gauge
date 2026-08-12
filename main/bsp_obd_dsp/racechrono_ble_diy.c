@@ -19,7 +19,7 @@
 #include "app_obd_dsp/obd_data_cache.h"
 #include "bsp_obd_dsp/nvs_storage.h"
 #include "bsp_obd_dsp/espnow_link.h"
-#include "bsp_obd_dsp/gauge_pair_ble_client.h"   // GAUGE_PAIR_SERVICE_UUID / GAUGE_PAIR_CHAR_MAC (与从表配对客户端共用)
+#include "bsp_obd_dsp/gauge_pair_ble_client.h"   // GAUGE_PAIR_SERVICE_UUID / GAUGE_PAIR_CHAR_MAC (shared with the slave-gauge pairing client)
 
 #define RC_TAG "racechrono_diy"
 
@@ -90,8 +90,9 @@ enum {
     IDX_NB,
 };
 
-// 配对服务用独立的属性表(单独一次 create_attr_tab 调用), 保证在对端 GATT 数据库里
-// 是一个独立可发现的 Primary Service, 不会和 RaceChrono 服务的边界混在一起。
+// The pairing service uses its own attribute table (a separate create_attr_tab call), so it is
+// an independently discoverable Primary Service in the peer's GATT database, with boundaries
+// not mixed with the RaceChrono service.
 enum {
     IDX_PAIR_SVC,
     IDX_PAIR_CHAR_MAC,
@@ -115,9 +116,9 @@ static uint8_t s_dummy_val[20] = {0};
 
 static uint16_t s_pair_service_uuid = GAUGE_PAIR_SERVICE_UUID;
 static uint16_t s_char_uuid_pair_mac = GAUGE_PAIR_CHAR_MAC;
-static uint8_t s_pair_mac[6] = {0};   // 本机 ESP-NOW/WiFi MAC, 仅 MASTER 角色时有意义
+static uint8_t s_pair_mac[6] = {0};   // this device's ESP-NOW/WiFi MAC; only meaningful in the MASTER role
 
-// 广播/GAP 设备名: MASTER 角色广播 "SkyGauge-XXYY"(供从表配对发现), 否则维持 "SkyGarageRC"(RaceChrono 手机 App 用)。
+// Advertising/GAP device name: the MASTER role advertises "SkyGauge-XXYY" (for slave-gauge pairing discovery), otherwise keeps "SkyGarageRC" (for the RaceChrono phone app).
 static char s_adv_name[20] = RC_DEVICE_NAME;
 
 static uint8_t s_adv_raw[] = {
@@ -126,7 +127,7 @@ static uint8_t s_adv_raw[] = {
 };
 static uint8_t s_scan_rsp_raw[31] = {0};
 
-// 按当前 device_role 决定广播名和配对 MAC 特征值内容; 在启动流程/角色变化前调用一次。
+// Decide the advertising name and pairing MAC characteristic content based on the current device_role; called once before the startup flow / role change.
 static void build_adv_identity(void)
 {
     const nvs_user_cfg_t *cfg = nvs_cfg_get();
@@ -214,7 +215,7 @@ static const esp_gatts_attr_db_t s_gatt_db[IDX_NB] = {
       sizeof(s_dummy_val), sizeof(uint8_t), s_dummy_val}},
 };
 
-// ---- 配对服务(独立属性表; 仅 MASTER 角色时 s_pair_mac 有效, 供从表蓝牙配对读取) ----
+// ---- Pairing service (separate attribute table; s_pair_mac is valid only in the MASTER role, read by the slave gauge during BLE pairing) ----
 static const esp_gatts_attr_db_t s_gatt_db_pair[IDX_PAIR_NB] = {
     [IDX_PAIR_SVC] =
     {{ESP_GATT_AUTO_RSP},
@@ -571,8 +572,8 @@ static void gatts_cb(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble
             esp_ble_gatts_start_service(h[IDX_SVC]);
             s_attr_ready = true;
             ESP_LOGI(RC_TAG, "RC attr table ready, CAN main handle=0x%04X", s_handle_can_main);
-            // RC 服务表建好后, 再单独建配对服务的属性表(各自独立的 create_attr_tab 调用,
-            // 保证两个服务在对端 GATT 数据库里是各自独立可发现的 Primary Service)。
+            // After the RC service table is created, create the pairing service attribute table separately
+            // (independent create_attr_tab calls, so both services are independently discoverable Primary Services in the peer's GATT database).
             esp_ble_gatts_create_attr_tab(s_gatt_db_pair, gatts_if, IDX_PAIR_NB, 1);
         } else if (param->add_attr_tab.status == ESP_GATT_OK &&
                    param->add_attr_tab.num_handle == IDX_PAIR_NB &&
