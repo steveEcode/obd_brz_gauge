@@ -1,5 +1,5 @@
-// boot_block_player.c — 从 hokori_vehicle_gauge 移植
-// delta_varint_rgb565_black_v1 格式解码 + LVGL canvas 逐帧渲染
+// boot_block_player.c — ported from hokori_vehicle_gauge
+// delta_varint_rgb565_black_v1 format decoding + frame-by-frame LVGL canvas rendering
 #include "app_obd_dsp/boot_block_player.h"
 
 #include <stdio.h>
@@ -41,9 +41,11 @@ static const char *TAG = "boot_block";
 
 #define BOOT_BLOCK_DEFAULT_DATA_FILE "boot_block.bin"
 #define BOOT_BLOCK_DEFAULT_STREAM_FORMAT "delta_varint_rgb565_black_v1"
+// v2: identical to v1, except the per-frame change count is widened from a 2-byte u16 to a 4-byte u32 (supports full-resolution encoding with >255 cells)
+#define BOOT_BLOCK_STREAM_FORMAT_V2 "delta_varint_rgb565_black_v2"
 #define BOOT_BLOCK_MAX_DIMENSION     512u
 
-// 路径由外部设置 (简化版, 不依赖完整 registry)
+// Paths are set externally (simplified version, does not depend on the full registry)
 static char s_manifest_path[96] = "/bootmedia/boot_block.txt";
 static char s_data_path[96] = "/bootmedia/boot_block.bin";
 
@@ -115,7 +117,8 @@ static bool manifest_load(boot_block_manifest_t *out) {
     if (m.canvas_width > BOOT_BLOCK_MAX_DIMENSION || m.canvas_height > BOOT_BLOCK_MAX_DIMENSION)
         return false;
     if (!m.duration_ms) m.duration_ms = ((uint32_t)m.frame_count * 1000u) / m.fps;
-    if (strcmp(m.stream_format, BOOT_BLOCK_DEFAULT_STREAM_FORMAT) != 0) return false;
+    if (strcmp(m.stream_format, BOOT_BLOCK_DEFAULT_STREAM_FORMAT) != 0 &&
+        strcmp(m.stream_format, BOOT_BLOCK_STREAM_FORMAT_V2) != 0) return false;
 
     *out = m;
     return true;
@@ -218,13 +221,16 @@ static bool apply_change(uint32_t idx, uint32_t packed) {
 }
 
 static bool apply_next_frame(void) {
-    uint8_t header[2];
-    if (!read_bytes(header, 2)) return false;
+    // v2 frame change count is a 4-byte u32 (single-frame changes can exceed 65535 in full-resolution encoding); v1 remains a 2-byte u16
+    bool count_u32 = (strcmp(s_state.manifest.stream_format, BOOT_BLOCK_STREAM_FORMAT_V2) == 0);
+    uint8_t header[4];
+    if (!read_bytes(header, count_u32 ? 4 : 2)) return false;
 
-    uint16_t change_count = (uint16_t)header[0] | ((uint16_t)header[1] << 8);
+    uint32_t change_count = (uint32_t)header[0] | ((uint32_t)header[1] << 8);
+    if (count_u32) change_count |= ((uint32_t)header[2] << 16) | ((uint32_t)header[3] << 24);
     uint32_t prev_idx = UINT32_MAX;
 
-    for (uint16_t i = 0; i < change_count; i++) {
+    for (uint32_t i = 0; i < change_count; i++) {
         uint32_t delta_and_black;
         if (!read_varint_u32(&delta_and_black)) return false;
 
@@ -273,7 +279,7 @@ bool boot_block_player_create(lv_obj_t *parent, lv_obj_t **out_obj) {
     s_state.next_frame_index = 0;
     s_state.next_frame_due_ms = 0;
 
-    // 立刻解码首帧
+    // Decode the first frame immediately
     if (apply_next_frame()) {
         s_state.next_frame_index = 1;
         s_state.next_frame_due_ms = s_state.frame_interval_ms;

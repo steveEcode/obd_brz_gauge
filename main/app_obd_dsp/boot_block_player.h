@@ -5,24 +5,24 @@
 
 #include "lvgl.h"
 
-// 创建 boot_block 播放器 (在 parent 上创建 LVGL canvas)
-// 返回 true 表示成功, out_obj 输出 canvas 对象
+// Create the boot_block player (creates an LVGL canvas on parent)
+// Returns true on success; out_obj outputs the canvas object
 bool boot_block_player_create(lv_obj_t *parent, lv_obj_t **out_obj);
 
-// 销毁播放器, 释放所有资源
+// Destroy the player and free all resources
 void boot_block_player_destroy(void);
 
-// 是否播放完毕
+// Whether playback has finished
 bool boot_block_player_is_finished(void);
 
-// 获取 canvas 尺寸
+// Get the canvas size
 bool boot_block_player_get_canvas_size(uint16_t *out_width, uint16_t *out_height);
 
-// 每帧调用, 传入开机以来经过的毫秒数, 推进动画
+// Call every frame with the milliseconds elapsed since boot to advance the animation
 void boot_block_player_update(uint32_t elapsed_ms);
 
-// 获取动画总时长 (ms)
+// Get the total animation duration (ms)
 uint32_t boot_block_player_get_duration_ms(void);
 
-// 设置 manifest 和 data 文件路径 (在 create 之前调用)
+// Set the manifest and data file paths (call before create)
 void boot_block_player_set_paths(const char *manifest, const char *data);

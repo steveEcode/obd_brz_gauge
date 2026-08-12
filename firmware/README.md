@@ -23,7 +23,7 @@ This directory contains pre-built firmware binaries ready to flash onto an ESP32
 | `0x8000` | `release/partition_table/partition-table.bin` |
 | `0xf000` | `release/ota_data_initial.bin` |
 | `0x20000` | `release/obd_brz_gauge.bin` |
-| `0x620000` | `release/bootmedia.bin` |
+| `0x420000` | `release/bootmedia.bin` |
 
 ## Example Flash Command
 
@@ -35,7 +35,7 @@ esptool.py --chip esp32s3 -p PORT -b 460800 write_flash \
   0x8000 release/partition_table/partition-table.bin \
   0xf000 release/ota_data_initial.bin \
   0x20000 release/obd_brz_gauge.bin \
-  0x620000 release/bootmedia.bin
+  0x420000 release/bootmedia.bin
 ```
 
 ## Notes

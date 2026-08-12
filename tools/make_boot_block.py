@@ -109,8 +109,11 @@ def frame_to_cells(img: Image.Image, grid_size: int, x_edges: list, y_edges: lis
     return cells
 
 
-def encode_frame_delta(prev_cells: dict, curr_cells: list) -> bytes:
-    """Encode changed cells as delta_varint_rgb565_black_v1."""
+def encode_frame_delta(prev_cells: dict, curr_cells: list, count_u32: bool = False) -> bytes:
+    """Encode changed cells as delta_varint_rgb565_black_v1/v2.
+
+    count_u32=True (v2): 帧变化数用 4 字节 u32, 支持 grid² > 65535 的全分辨率编码。
+    """
     changes = []
     for idx, packed in curr_cells:
         if prev_cells.get(idx, -1) != packed:
@@ -119,7 +122,7 @@ def encode_frame_delta(prev_cells: dict, curr_cells: list) -> bytes:
 
     buf = bytearray()
     change_count = len(changes)
-    buf += struct.pack('<H', change_count)
+    buf += struct.pack('<I' if count_u32 else '<H', change_count)
 
     prev_idx = -1
     for idx, packed in changes:
@@ -170,6 +173,10 @@ def main():
     canvas = args.canvas
     grid = args.grid
     fps = args.fps
+
+    # grid² > 65535 时单帧变化数会超 u16 上限, 自动切 v2 格式 (4字节计数, 播放器按 manifest 识别)
+    use_v2 = grid * grid > 0xFFFF
+    stream_format = "delta_varint_rgb565_black_v2" if use_v2 else "delta_varint_rgb565_black_v1"
 
     print(f"Encoding boot block media")
     print(f"  input    : {input_path}")
@@ -238,7 +245,7 @@ def main():
                 changed = [(idx, packed) for idx, packed in curr_cells
                            if prev_cells.get(idx, -1) != packed]
 
-                frame_data = encode_frame_delta(prev_cells, curr_cells)
+                frame_data = encode_frame_delta(prev_cells, curr_cells, count_u32=use_v2)
                 f.write(frame_data)
 
                 change_count = len(changed)
@@ -260,7 +267,7 @@ def main():
             f"fps={fps}",
             f"frame_count={frame_count}",
             f"duration_ms={duration_ms}",
-            "stream_format=delta_varint_rgb565_black_v1",
+            f"stream_format={stream_format}",
             "data_file=boot_block.bin",
         ]
         manifest_path.write_text("\n".join(manifest_lines) + "\n")

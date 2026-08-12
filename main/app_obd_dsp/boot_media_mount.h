@@ -6,13 +6,13 @@
 extern "C" {
 #endif
 
-// 挂载 bootmedia 分区 (SPIFFS), 返回 true 表示成功
+// Mount the bootmedia partition (SPIFFS); returns true on success
 bool boot_media_mount(void);
 
-// 卸载
+// Unmount
 void boot_media_unmount(void);
 
-// 检查 boot_block 媒体文件是否存在
+// Check whether the boot_block media files exist
 bool boot_media_has_block_video(void);
 
 #ifdef __cplusplus

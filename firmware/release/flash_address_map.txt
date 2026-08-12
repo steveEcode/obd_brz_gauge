@@ -1,8 +1,5 @@
-# FlashTool 烧录地址对照表
-# Chip: ESP32-S3 | SPI Mode: DIO | SPI Speed: 80MHz | Flash Size: 16MB
-
-0x0        bootloader/bootloader.bin
-0x8000     partition_table/partition-table.bin
-0xF000     ota_data_initial.bin
-0x20000    obd_brz_gauge.bin
-0x620000   bootmedia.bin
+0x000000 bootloader/bootloader.bin
+0x008000 partition_table/partition-table.bin
+0x00F000 ota_data_initial.bin
+0x020000 obd_brz_gauge.bin
+0x420000 bootmedia.bin

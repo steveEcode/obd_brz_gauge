@@ -1,4 +1,4 @@
-// boot_media_mount.c — 挂载 bootmedia SPIFFS 分区
+// boot_media_mount.c — mount the bootmedia SPIFFS partition
 #include "app_obd_dsp/boot_media_mount.h"
 
 #include <sys/stat.h>
