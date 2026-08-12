@@ -1,5 +1,6 @@
-// 三连表 ESP-NOW 互联: 主表读 OBD 后广播, 从表接收并显示。
-// 一主多从, 广播(1对多), 与 BLE 共存(主表)。步骤1: 广播+无MAC过滤(同车单主表场景足够)。
+// Three-gauge ESP-NOW link: the master reads OBD then broadcasts to slaves.
+// One master, many slaves, broadcast (1-to-many), coexists with BLE (master).
+// Step 1: broadcast + no MAC filtering (enough for the single-master-per-car case).
 
 #include "espnow_link.h"
 #include "app_obd_dsp/app_event.h"
@@ -17,35 +18,53 @@
 #include "bsp_obd_dsp/elm327_ble_client.h"
 #include "bsp_obd_dsp/nvs_storage.h"
 
-// 扫表/开机动画同步: 主表读 (实现在 ui.c, 避免在此重引 lvgl 头)
+// Sweep / boot-animation sync: read from the master (implemented in ui.c to avoid re-including lvgl here)
 extern int  ui_sweep_get_step(void);
 extern int  ui_intro_get_step(void);
 
 #define TAG "espnow_link"
 
-#define ESPNOW_CHANNEL          1       // 主从必须同信道(STA 不连AP时固定在此)
-#define ESPNOW_MAGIC            0x4F42  // 'OB' 包头校验
-#define ESPNOW_VER              5       // v5: 追加 afr_x100(空燃比)
+#define ESPNOW_CHANNEL          1       // master and slaves must share a channel (fixed here when STA is not connected to an AP)
+#define ESPNOW_MAGIC            0x4F42  // 'OB' packet-header magic
+#define ESPNOW_VER              5       // v5: added afr_x100 (air-fuel ratio)
 #define MASTER_NAME_LEN         12
-static const char MASTER_NAME[] = "SkyGauge";   // 主表广播的名字(从表显示用); 后续可做成可配置
-#define BROADCAST_INTERVAL_MS   100     // 主表广播周期(10Hz, 仪表足够)
-#define PRESENCE_INTERVAL_MS    500     // 从表上报"存在"周期
-#define MG_MAX_SLAVES           4       // 主表最多跟踪的从表数
-#define MG_SLAVE_TIMEOUT_US     2000000 // 从表 2s 内有上报视为在线
+static const char MASTER_NAME[] = "SkyGauge";   // name the master broadcasts (shown on slaves); could become configurable later
+#define BROADCAST_INTERVAL_MS   100     // master broadcast period (10Hz, plenty for gauges)
+#define PRESENCE_INTERVAL_MS    500     // slave "presence" report period
+#define MG_MAX_SLAVES           4       // max slaves the master tracks
+#define MG_SLAVE_TIMEOUT_US     2000000 // a slave is considered online if it reported within 2s
 
 static bool s_is_master = false;
 
-// 从表→主表 "存在"包(小; 与 OBD 数据包按长度区分)
+// Slave -> master "presence" packet (small; distinguished from the OBD packet by length)
 typedef struct __attribute__((packed)) {
     uint16_t magic;
     uint8_t  version;
-    uint8_t  position;   // 从表位置 1/2/3
+    uint8_t  position;   // slave position 1/2/3
 } espnow_presence_t;
 
-// 主表侧: 在线从表记录
+// Multi-gauge linked control packet (slave <-> master; length differs from both OBD and presence packets, dispatched by length)
+#define ESPNOW_CTRL_TEST_START   1   // ask the master to start the linked test (arg unused)
+#define ESPNOW_CTRL_THRESH_SET   2   // sync the RPM warning threshold (arg = threshold)
+typedef struct __attribute__((packed)) {
+    uint16_t magic;
+    uint8_t  version;
+    uint8_t  cmd;
+    uint16_t arg;
+} espnow_ctrl_packet_t;
+
+// Master side: linked-test RPM ramp state (the master is the single RPM injection source; slaves follow via broadcast)
+static volatile bool s_linktest_active = false;
+static int64_t s_linktest_start_us = 0;
+static volatile bool s_rx_linktest = false;   // slave side: last received "linked test in progress" flag from the master
+#define LINKTEST_RISE_MS 5000   // 0 -> peak, slow rise
+#define LINKTEST_HOLD_MS 800    // hold at peak (flash)
+#define LINKTEST_FALL_MS 2500   // peak -> 0, fall back
+
+// Master side: online slave records
 static struct { uint8_t mac[6]; uint8_t position; int64_t last_us; } s_slaves[MG_MAX_SLAVES];
 
-// recv 回调前向声明(定义在文件后段, 主表初始化处要用; 签名随 IDF 版本)
+// recv callback forward declaration (defined later in the file, needed by master init; signature depends on IDF version)
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
 static void recv_cb(const esp_now_recv_info_t *info, const uint8_t *data, int len);
 #else
@@ -56,16 +75,16 @@ static const uint8_t s_broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 static volatile int64_t s_last_rx_us = 0;
 static uint32_t s_tx_seq = 0;
 
-// 广播包: 镜像 obd_data_cache 的可用字段(packed, 主从一致)。
+// Broadcast packet: mirrors the available fields of obd_data_cache (packed, identical on master and slaves).
 typedef struct __attribute__((packed)) {
     uint16_t magic;
     uint8_t  version;
-    uint8_t  flags;             // bit0: 主表已连上 ELM327
-    uint32_t seq;               // 递增序号(丢包诊断)
+    uint8_t  flags;             // bit0: master connected to ELM327; bit1: linked test in progress
+    uint32_t seq;               // incrementing sequence (for packet-loss diagnosis)
     uint16_t rpm;
     uint8_t  speed;
-    uint8_t  sweep_step;        // 主表当前扫表进度(0=无), 从表跟随实现同步扫表
-    uint8_t  intro_step;        // 开机动画进度(0=无,1..4,255=done), 从表跟随
+    uint8_t  sweep_step;        // master's current sweep progress (0=none); slaves follow for a synced sweep
+    uint8_t  intro_step;        // boot-animation progress (0=none, 1..4, 255=done); slaves follow
     int16_t  coolant_temp;
     int16_t  intake_temp;
     int16_t  oil_temp;
@@ -75,13 +94,13 @@ typedef struct __attribute__((packed)) {
     int16_t  load_pct;
     int16_t  tps;
     int32_t  bat_mv;
-    int16_t  afr_x100;          // 空燃比 AFR, ×100 (1470=14.7:1), -1=无效
-    char     name[MASTER_NAME_LEN];  // 主表名字(从表信息页显示 "SLAVE: <name>")
+    int16_t  afr_x100;          // air-fuel ratio AFR, x100 (1470=14.7:1), -1=invalid
+    char     name[MASTER_NAME_LEN];  // master name (shown on the slave info page as "SLAVE: <name>")
 } espnow_obd_packet_t;
 
-static char s_master_name[MASTER_NAME_LEN] = {0};  // 从表侧: 最近收到的主表名字
+static char s_master_name[MASTER_NAME_LEN] = {0};  // slave side: name of the last master heard
 
-// ---- WiFi + ESP-NOW 底层初始化(主从共用) ----
+// ---- WiFi + ESP-NOW low-level init (shared by master and slave) ----
 static void wifi_espnow_init(void) {
     ESP_ERROR_CHECK(esp_netif_init());
     esp_err_t e = esp_event_loop_create_default();
@@ -93,20 +112,21 @@ static void wifi_espnow_init(void) {
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
     ESP_ERROR_CHECK(esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE));
-    esp_wifi_set_ps(WIFI_PS_NONE);   // 关省电, 否则 ESP-NOW 接收会丢/延迟
+    esp_wifi_set_ps(WIFI_PS_NONE);   // disable power save, otherwise ESP-NOW RX drops/lags
     ESP_ERROR_CHECK(esp_now_init());
 }
 
-// ========================= 主表 =========================
+// ========================= Master =========================
 static void master_pack(espnow_obd_packet_t *p) {
     p->magic   = ESPNOW_MAGIC;
     p->version = ESPNOW_VER;
-    p->flags   = elm327_ble_is_connected() ? 0x01 : 0x00;
+    // bit0 = ELM connected; bit1 = linked test in progress (slaves use it to force gradient rendering during TEST)
+    p->flags   = (elm327_ble_is_connected() ? 0x01 : 0x00) | (s_linktest_active ? 0x02 : 0x00);
     p->seq     = ++s_tx_seq;
     p->rpm              = obd_data_get_rpm();
     p->speed            = obd_data_get_speed();
-    p->sweep_step       = (uint8_t)ui_sweep_get_step();   // 广播扫表进度供从表同步
-    p->intro_step       = (uint8_t)ui_intro_get_step();   // 广播开机动画进度供从表同步
+    p->sweep_step       = (uint8_t)ui_sweep_get_step();   // broadcast sweep progress for slave sync
+    p->intro_step       = (uint8_t)ui_intro_get_step();   // broadcast boot-animation progress for slave sync
     p->coolant_temp     = obd_data_get_coolant_temp();
     p->intake_temp      = obd_data_get_intake_temp();
     p->oil_temp         = obd_data_get_oil_temp();
@@ -117,7 +137,36 @@ static void master_pack(espnow_obd_packet_t *p) {
     p->tps              = obd_data_get_tps();
     p->bat_mv           = obd_data_get_bat_mv();
     p->afr_x100         = obd_data_get_afr_x100();
-    strncpy(p->name, MASTER_NAME, MASTER_NAME_LEN);   // 广播主表名字
+    strncpy(p->name, MASTER_NAME, MASTER_NAME_LEN);   // broadcast the master name
+}
+
+// Linked-test ramp control: compute the simulated RPM along the timeline and write it into the RPM override layer.
+// The master's get_rpm returns the override -> master_pack broadcasts it to slaves and the master displays it; all gauges stay in sync.
+static void master_linktest_task(void *arg) {
+    for (;;) {
+        if (s_linktest_active) {
+            uint16_t thresh = nvs_cfg_get()->rpm_warn_threshold;
+            uint32_t peak = (uint32_t)thresh + 200;   // slightly above threshold so the all-gauge flash is clearly visible
+            int64_t el_ms = (esp_timer_get_time() - s_linktest_start_us) / 1000;
+            int64_t total = LINKTEST_RISE_MS + LINKTEST_HOLD_MS + LINKTEST_FALL_MS;
+            if (el_ms < 0 || el_ms >= total) {
+                s_linktest_active = false;
+                obd_data_rpm_override_set(false, 0);   // release the override, restore real RPM
+            } else {
+                uint32_t rpm;
+                if (el_ms < LINKTEST_RISE_MS) {
+                    rpm = (uint32_t)((uint64_t)peak * el_ms / LINKTEST_RISE_MS);
+                } else if (el_ms < LINKTEST_RISE_MS + LINKTEST_HOLD_MS) {
+                    rpm = peak;
+                } else {
+                    int64_t f = el_ms - LINKTEST_RISE_MS - LINKTEST_HOLD_MS;
+                    rpm = peak - (uint32_t)((uint64_t)peak * f / LINKTEST_FALL_MS);
+                }
+                obd_data_rpm_override_set(true, (uint16_t)rpm);
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));   // advance at 50Hz for a smooth gradient
+    }
 }
 
 static void master_task(void *arg) {
@@ -127,13 +176,14 @@ static void master_task(void *arg) {
         master_pack(&pkt);
         esp_err_t r = esp_now_send(s_broadcast_mac, (const uint8_t *)&pkt, sizeof(pkt));
         if (r != ESP_OK) ESP_LOGW(TAG, "esp_now_send err=%d", r);
-        // 每 ~2s 打一行, 便于确认广播在跑(台架无车时也能看到)
+        // log a line every ~2s to confirm the broadcast is running (visible even on the bench without a car)
         if ((++n % (2000 / BROADCAST_INTERVAL_MS)) == 0) {
             ESP_LOGI(TAG, "TX seq=%u rpm=%u spd=%u clt=%d (obd=%s)",
                      (unsigned)pkt.seq, pkt.rpm, pkt.speed, pkt.coolant_temp,
                      (pkt.flags & 0x01) ? "conn" : "--");
         }
-        vTaskDelay(pdMS_TO_TICKS(BROADCAST_INTERVAL_MS));
+        // speed up broadcasting during the linked test (100ms -> 20ms) so the slaves' ramped RPM is smooth too
+        vTaskDelay(pdMS_TO_TICKS(s_linktest_active ? 20 : BROADCAST_INTERVAL_MS));
     }
 }
 
@@ -148,13 +198,15 @@ void espnow_link_start_master(void) {
     peer.encrypt = false;
     ESP_ERROR_CHECK(esp_now_add_peer(&peer));
 
-    ESP_ERROR_CHECK(esp_now_register_recv_cb(recv_cb));   // 接收从表 presence(握手统计)
+    ESP_ERROR_CHECK(esp_now_register_recv_cb(recv_cb));   // receive slave presence/control packets
     xTaskCreate(master_task, "espnow_tx", 3072, NULL, 4, NULL);
+    xTaskCreate(master_linktest_task, "espnow_lt", 3072, NULL, 4, NULL);
     ESP_LOGI(TAG, "ESP-NOW MASTER up (broadcast %dms, ch%d)", BROADCAST_INTERVAL_MS, ESPNOW_CHANNEL);
 }
 
-// ========================= 从表 =========================
+// ========================= Slave =========================
 static void apply_packet(const espnow_obd_packet_t *p) {
+    s_rx_linktest = (p->flags & 0x02) != 0;   // master is running a linked test -> slaves take part in rendering during TEST
     obd_data_set_rpm(p->rpm);
     obd_data_set_speed(p->speed);
     obd_data_set_coolant_temp(p->coolant_temp);
@@ -167,14 +219,14 @@ static void apply_packet(const espnow_obd_packet_t *p) {
     obd_data_set_tps(p->tps);
     obd_data_set_bat_mv(p->bat_mv);
     obd_data_set_afr_x100(p->afr_x100);
-    // 通过事件队列通知 UI task (消除跨 task 直接调用的竞态)
+    // Notify the UI task via the event queue (avoids races from direct cross-task calls)
     app_event_send(APP_EVT_ESPNOW_SYNC_SLOT, p->sweep_step);
     app_event_send(APP_EVT_ESPNOW_INTRO_STEP, p->intro_step);
     memcpy(s_master_name, p->name, MASTER_NAME_LEN);
-    s_master_name[MASTER_NAME_LEN - 1] = '\0';   // 记录主表名字(信息页显示)
+    s_master_name[MASTER_NAME_LEN - 1] = '\0';   // remember the master name (shown on the info page)
 }
 
-// 主表侧: 收到从表 presence → 记录/更新在线从表
+// Master side: received a slave presence -> record/refresh the online slave
 static void handle_presence(const uint8_t *mac, const espnow_presence_t *pr) {
     if (!mac) return;
     int free_idx = -1, match = -1, oldest = 0;
@@ -189,7 +241,7 @@ static void handle_presence(const uint8_t *mac, const espnow_presence_t *pr) {
     s_slaves[idx].last_us = esp_timer_get_time();
 }
 
-// 从表侧: 收到主表 OBD 包 → 写缓存
+// Slave side: received the master's OBD packet -> write the cache
 static void handle_obd(const espnow_obd_packet_t *p) {
     s_last_rx_us = esp_timer_get_time();
     apply_packet(p);
@@ -199,25 +251,43 @@ static void handle_obd(const espnow_obd_packet_t *p) {
     }
 }
 
+// Linked control packet:
+//   master receives TEST_START -> start the RPM ramp; receives THRESH_SET -> send event (UI task writes NVS + relays)
+//   slave receives THRESH_SET  -> send event (UI task writes NVS, no relay); TEST is master-driven, slave ignores it
+static void handle_ctrl(const espnow_ctrl_packet_t *c) {
+    if (c->cmd == ESPNOW_CTRL_TEST_START) {
+        if (s_is_master) {
+            s_linktest_start_us = esp_timer_get_time();
+            s_linktest_active = true;
+            ESP_LOGI(TAG, "Linked test started (ctrl from slave)");
+        }
+    } else if (c->cmd == ESPNOW_CTRL_THRESH_SET) {
+        app_event_send(APP_EVT_ESPNOW_THRESH_SYNC, (uint32_t)c->arg);
+    }
+}
+
 static void handle_rx(const uint8_t *mac, const uint8_t *data, int len) {
     if (len == (int)sizeof(espnow_obd_packet_t)) {
-        if (s_is_master) return;   // 主表不处理 OBD 包
+        if (s_is_master) return;   // the master does not process OBD packets
         const espnow_obd_packet_t *p = (const espnow_obd_packet_t *)data;
         if (p->magic == ESPNOW_MAGIC && p->version == ESPNOW_VER) handle_obd(p);
+    } else if (len == (int)sizeof(espnow_ctrl_packet_t)) {
+        const espnow_ctrl_packet_t *c = (const espnow_ctrl_packet_t *)data;
+        if (c->magic == ESPNOW_MAGIC && c->version == ESPNOW_VER) handle_ctrl(c);
     } else if (len == (int)sizeof(espnow_presence_t)) {
-        if (!s_is_master) return;  // 只有主表统计从表
+        if (!s_is_master) return;  // only the master tallies slaves
         const espnow_presence_t *pr = (const espnow_presence_t *)data;
         if (pr->magic == ESPNOW_MAGIC && pr->version == ESPNOW_VER) handle_presence(mac, pr);
     }
 }
 
-// recv 回调签名在 IDF 5.0 变更, 兼容两版
+// The recv callback signature changed in IDF 5.0; support both versions.
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 0, 0)
 static void recv_cb(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
-    // 从表 MAC 过滤: 绑定了主表 MAC 后, 只接收该 MAC 的包
+    // Slave MAC filter: once bound to a master MAC, only accept packets from that MAC.
     if (!s_is_master && info) {
         const nvs_user_cfg_t *cfg = nvs_cfg_get();
-        if (cfg->espnow_master_mac[0] != 0) {  // 已绑定
+        if (cfg->espnow_master_mac[0] != 0) {  // bound
             bool mac_match = true;
             for (int i = 0; i < 6; i++) {
                 if (info->src_addr[i] != cfg->espnow_master_mac[i]) {
@@ -225,17 +295,17 @@ static void recv_cb(const esp_now_recv_info_t *info, const uint8_t *data, int le
                     break;
                 }
             }
-            if (!mac_match) return;  // 忽略非绑定主表的包
+            if (!mac_match) return;  // ignore packets from other masters
         }
     }
     handle_rx(info ? info->src_addr : NULL, data, len);
 }
 #else
 static void recv_cb(const uint8_t *mac, const uint8_t *data, int len) {
-    // 从表 MAC 过滤: 绑定了主表 MAC 后, 只接收该 MAC 的包
+    // Slave MAC filter: once bound to a master MAC, only accept packets from that MAC.
     if (!s_is_master && mac) {
         const nvs_user_cfg_t *cfg = nvs_cfg_get();
-        if (cfg->espnow_master_mac[0] != 0) {  // 已绑定
+        if (cfg->espnow_master_mac[0] != 0) {  // bound
             bool mac_match = true;
             for (int i = 0; i < 6; i++) {
                 if (mac[i] != cfg->espnow_master_mac[i]) {
@@ -243,14 +313,14 @@ static void recv_cb(const uint8_t *mac, const uint8_t *data, int len) {
                     break;
                 }
             }
-            if (!mac_match) return;  // 忽略非绑定主表的包
+            if (!mac_match) return;  // ignore packets from other masters
         }
     }
     handle_rx(mac, data, len);
 }
 #endif
 
-// 从表: 周期广播 presence(含本机位置), 供主表握手统计
+// Slave: periodically broadcast presence (including this gauge's position) for the master's handshake tally
 static void slave_presence_task(void *arg) {
     espnow_presence_t pr = { .magic = ESPNOW_MAGIC, .version = ESPNOW_VER };
     for (;;) {
@@ -263,7 +333,7 @@ static void slave_presence_task(void *arg) {
 void espnow_link_start_slave(void) {
     wifi_espnow_init();
     s_is_master = false;
-    // 从表也需广播 peer 才能发 presence
+    // A slave also needs the broadcast peer to be able to send presence
     esp_now_peer_info_t peer = {0};
     memcpy(peer.peer_addr, s_broadcast_mac, 6);
     peer.channel = ESPNOW_CHANNEL;
@@ -277,19 +347,19 @@ void espnow_link_start_slave(void) {
 
 bool espnow_link_slave_has_data(void) {
     if (s_last_rx_us == 0) return false;
-    return (esp_timer_get_time() - s_last_rx_us) < 2000000; // 2s 内有数据视为在线
+    return (esp_timer_get_time() - s_last_rx_us) < 2000000; // data within 2s counts as online
 }
 
 const char *espnow_link_get_master_name(void) {
-    return s_master_name;   // 空串=尚未收到主表数据
+    return s_master_name;   // empty string = no master data received yet
 }
 
-// 从表: 获取当前绑定主表的 MAC 地址 (全 0 表示未绑定)
+// Slave: MAC of the currently bound master (all-zero = unbound)
 const uint8_t *espnow_link_get_bound_master_mac(void) {
     return nvs_cfg_get()->espnow_master_mac;
 }
 
-// 从表: 绑定到指定的主表 MAC 地址(蓝牙配对读到的 ESP-NOW MAC)
+// Slave: bind to a specific master MAC (the ESP-NOW MAC read during BLE pairing)
 void espnow_link_bind_master(const uint8_t mac[6]) {
     if (!mac) return;
     nvs_user_cfg_t cfg = *nvs_cfg_get();
@@ -300,7 +370,7 @@ void espnow_link_bind_master(const uint8_t mac[6]) {
              cfg.espnow_master_mac[3], cfg.espnow_master_mac[4], cfg.espnow_master_mac[5]);
 }
 
-// 从表: 解除主表绑定 (恢复全收模式)
+// Slave: unbind the master (return to accept-any mode)
 void espnow_link_unbind_master(void) {
     nvs_user_cfg_t cfg = *nvs_cfg_get();
     memset(cfg.espnow_master_mac, 0, 6);
@@ -308,7 +378,7 @@ void espnow_link_unbind_master(void) {
     ESP_LOGI(TAG, "Unbound master MAC (receive from any master)");
 }
 
-// 主表: 当前在线从表数(近 MG_SLAVE_TIMEOUT_US 内有上报)
+// Master: number of slaves currently online (reported within the last MG_SLAVE_TIMEOUT_US)
 uint8_t espnow_master_online_slaves(void) {
     int64_t now = esp_timer_get_time();
     uint8_t n = 0;
@@ -316,4 +386,48 @@ uint8_t espnow_master_online_slaves(void) {
         if (s_slaves[i].last_us != 0 && (now - s_slaves[i].last_us) < MG_SLAVE_TIMEOUT_US) n++;
     }
     return n;
+}
+
+// ========================= Multi-gauge linked sync =========================
+// Trigger the linked test: the master starts the RPM ramp directly; a slave sends a request to the
+// master, which drives it centrally (all gauges stay in sync).
+void espnow_link_trigger_linked_test(void) {
+    if (s_is_master) {
+        s_linktest_start_us = esp_timer_get_time();
+        s_linktest_active = true;
+        ESP_LOGI(TAG, "Linked test started (local)");
+    } else {
+        espnow_ctrl_packet_t c = { .magic = ESPNOW_MAGIC, .version = ESPNOW_VER,
+                                   .cmd = ESPNOW_CTRL_TEST_START, .arg = 0 };
+        esp_now_send(s_broadcast_mac, (const uint8_t *)&c, sizeof(c));
+    }
+}
+
+// The local user changed the threshold -> broadcast it to the other gauges. When the master
+// receives such a packet from a slave it relays it, covering all slaves.
+void espnow_link_broadcast_threshold(uint16_t thresh) {
+    espnow_ctrl_packet_t c = { .magic = ESPNOW_MAGIC, .version = ESPNOW_VER,
+                               .cmd = ESPNOW_CTRL_THRESH_SET, .arg = thresh };
+    esp_now_send(s_broadcast_mac, (const uint8_t *)&c, sizeof(c));
+}
+
+// Whether a linked test is in progress: master = local ramp state, slave = the last flag received
+// from the master's broadcast. During TEST a gauge takes part in the gradient rendering even if it
+// has LINKED FLASH turned off, guaranteeing "TEST on any gauge syncs all gauges".
+bool espnow_link_linktest_active(void) {
+    return s_is_master ? s_linktest_active : s_rx_linktest;
+}
+
+// Apply a threshold synced from another gauge (called by the UI task): write local NVS; the master
+// additionally relays it to the other slaves. ESP-NOW does not loop back one's own sends, so the
+// relay cannot form a loop.
+void espnow_link_apply_synced_threshold(uint16_t thresh) {
+    nvs_user_cfg_t cfg = *nvs_cfg_get();
+    if (cfg.rpm_warn_threshold != thresh) {
+        cfg.rpm_warn_threshold = thresh;
+        nvs_cfg_set(&cfg);
+    }
+    if (s_is_master) {
+        espnow_link_broadcast_threshold(thresh);
+    }
 }

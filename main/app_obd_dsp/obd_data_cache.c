@@ -9,38 +9,52 @@
 #include <inttypes.h>
 
 
-// 使用简单全局变量 + 临界区保护
+// Simple globals protected by a critical section
 static volatile uint16_t s_rpm = 0;
 static volatile uint8_t  s_speed = 0;
 static volatile int16_t  s_coolant_temp = -40;
-static volatile int16_t  s_oil_temp = -100;  // 真实机油温度 °C, -100=无效
+static volatile int16_t  s_oil_temp = -100;  // actual oil temp °C, -100=invalid
 static volatile int16_t  s_intake_temp = -40;
-static volatile int16_t  s_load_pct = -1;   // 发动机负荷 0~100%, -1=无效
-static volatile int16_t  s_tps = -1;         // 节气门开度 0~100%, -1=无效
-static volatile int32_t  s_bat_mv = -1;     // 电压 mV, -1=无效
-static volatile int16_t  s_oil_pressure_x10 = -1; // 油压, 0.1bar, -1=无效
-static volatile int16_t  s_brake_temp_x10 = -1000; // 刹车温度, 0.1°C, -1000=无效
-static volatile int16_t  s_boost_x10 = -32768; // 涡轮表压, 0.1bar(可为负=真空), -32768=无效
-static volatile int8_t   s_gear = 127;          // 直接档位: -1=R, 0=N, 1+=前进挡, 127=无效
-static volatile int16_t  s_afr_x100 = -1;       // 空燃比 AFR, ×100 (1470=14.7:1), -1=无效
+static volatile int16_t  s_load_pct = -1;   // engine load 0~100%, -1=invalid
+static volatile int16_t  s_tps = -1;         // throttle opening 0~100%, -1=invalid
+static volatile int32_t  s_bat_mv = -1;     // battery voltage mV, -1=invalid
+static volatile int16_t  s_oil_pressure_x10 = -1; // oil pressure, 0.1bar, -1=invalid
+static volatile int16_t  s_brake_temp_x10 = -1000; // brake temp, 0.1°C, -1000=invalid
+static volatile int16_t  s_boost_x10 = -32768; // boost gauge pressure, 0.1bar (can be negative = vacuum), -32768=invalid
+static volatile int8_t   s_gear = 127;          // direct gear value: -1=R, 0=N, 1+=forward gear, 127=invalid
+static volatile int16_t  s_afr_x100 = -1;       // air-fuel ratio AFR, ×100 (1470=14.7:1), -1=invalid
 static volatile brake_rs485_status_t s_brake_rs485_status = BRAKE_RS485_IDLE;
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 
-#define RPM_SMOOTH_TIME_MS   30    // 已废弃: RPM 直出无需平滑, 保留以兼容旧引用
-#define SPEED_SMOOTH_TIME_MS 300   // 速度缓升缓降时间常数 (ms); UI 侧已有 anim_step, 此处不宜过大
-#define FALL_TO_ZERO_MS      500   // 归零缓降时间常数 (ms)
+#define RPM_SMOOTH_TIME_MS   30    // deprecated: RPM is passed through raw and needs no smoothing; kept for compatibility with old references
+#define SPEED_SMOOTH_TIME_MS 300   // speed ramp-up/down time constant (ms); the UI side already has anim_step, keep this small
+#define FALL_TO_ZERO_MS      500   // fall-to-zero ramp-down time constant (ms)
 
-// 平滑状态(在 setter 侧推进, getter 只读, 不受调用者数量影响)
+// Smoothing state (advanced on the setter side, getters only read; unaffected by the number of callers)
 static volatile uint16_t s_rpm_smooth = 0;
 static volatile uint8_t  s_speed_smooth = 0;
 static TickType_t s_speed_last_tick = 0;
 static float s_speed_smooth_f = 0.f;
 
+// RPM override layer: during multi-gauge linkage tests, the master gauge injects simulated RPM here.
+// When enabled, obd_data_get_rpm() returns the override value (used for both local display and ESP-NOW broadcast);
+// the real OBD RPM keeps being written to s_rpm_smooth and is restored immediately once the override is cleared.
+static volatile bool     s_rpm_override_en = false;
+static volatile uint16_t s_rpm_override_val = 0;
+
+void obd_data_rpm_override_set(bool en, uint16_t val)
+{
+    portENTER_CRITICAL(&s_mux);
+    s_rpm_override_en = en;
+    s_rpm_override_val = val;
+    portEXIT_CRITICAL(&s_mux);
+}
+
 void obd_data_set_rpm(uint16_t rpm)
 {
     portENTER_CRITICAL(&s_mux);
     s_rpm = rpm;
-    s_rpm_smooth = rpm;  // CAN 100Hz 数据已经干净，不需要平滑
+    s_rpm_smooth = rpm;  // CAN 100Hz data is already clean, no smoothing needed
     portEXIT_CRITICAL(&s_mux);
 }
 
@@ -72,7 +86,7 @@ void obd_data_set_coolant_temp(int16_t temp)
 
 void obd_data_set_oil_temp(int16_t temp)
 {
-    // 有效范围 -20~150°C，超出视为解析错误丢弃
+    // Valid range -20~150°C; values outside are treated as parse errors and dropped
     if (temp < -20 || temp > 150) return;
     portENTER_CRITICAL(&s_mux);
     s_oil_temp = temp;
@@ -86,12 +100,12 @@ void obd_data_set_intake_temp(int16_t temp)
     portEXIT_CRITICAL(&s_mux);
 }
 
-// 转速/速度: 平滑已在 setter 侧完成, getter 直接返回平滑值(多调用者安全)
+// RPM/speed: smoothing is done on the setter side; getters return the smoothed value directly (safe with multiple callers)
 uint16_t obd_data_get_rpm(void)
 {
     uint16_t val;
     portENTER_CRITICAL(&s_mux);
-    val = s_rpm_smooth;
+    val = s_rpm_override_en ? s_rpm_override_val : s_rpm_smooth;
     portEXIT_CRITICAL(&s_mux);
     return val;
 }
@@ -182,7 +196,7 @@ int32_t obd_data_get_bat_mv(void)
 
 void obd_data_set_oil_pressure_x10(int16_t pressure_x10)
 {
-    // 合理范围: 0.0bar ~ 20.0bar
+    // Plausible range: 0.0bar ~ 20.0bar
     if (pressure_x10 < 0 || pressure_x10 > 200) return;
     portENTER_CRITICAL(&s_mux);
     s_oil_pressure_x10 = pressure_x10;
@@ -200,7 +214,7 @@ int16_t obd_data_get_oil_pressure_x10(void)
 
 void obd_data_set_boost_x10(int16_t boost_x10)
 {
-    // 涡轮表压合理范围: -1.5bar(真空) ~ +30.0bar
+    // Plausible boost gauge pressure range: -1.5bar (vacuum) ~ +30.0bar
     if (boost_x10 < -15 || boost_x10 > 300) return;
     portENTER_CRITICAL(&s_mux);
     s_boost_x10 = boost_x10;
@@ -218,7 +232,7 @@ int16_t obd_data_get_boost_x10(void)
 
 void obd_data_set_brake_temp_x10(int16_t temp_x10)
 {
-    // 合理范围: -50.0°C ~ 1200.0°C
+    // Plausible range: -50.0°C ~ 1200.0°C
     if (temp_x10 < -500 || temp_x10 > 12000) return;
     portENTER_CRITICAL(&s_mux);
     s_brake_temp_x10 = temp_x10;
@@ -259,7 +273,7 @@ int8_t obd_data_get_gear(void)
 
 void obd_data_set_afr_x100(int16_t afr_x100)
 {
-    // 合理范围: 8.0:1 ~ 22.0:1 (800~2200 ×100)
+    // Plausible range: 8.0:1 ~ 22.0:1 (800~2200 ×100)
     if (afr_x100 < 800 || afr_x100 > 2200) return;
     portENTER_CRITICAL(&s_mux);
     s_afr_x100 = afr_x100;
@@ -276,26 +290,26 @@ int16_t obd_data_get_afr_x100(void)
 }
 
 /**
- * @brief 根据转速和车速计算并判断档位
- * @param rpm 发动机转速 (RPM)
- * @param speed 车速 (km/h)
- * @return 计算出的档位
+ * @brief Compute and determine the gear from RPM and vehicle speed
+ * @param rpm engine speed (RPM)
+ * @param speed vehicle speed (km/h)
+ * @return the computed gear
  */
 enGear calculate_gear(float rpm, float speed) {
     static enGear s_last_gear = GEAR_NEUTRAL;
-    // 1. 检查输入数据有效性
+    // 1. Check input data validity
     if (rpm <= 0 || speed <= 0) {
         s_last_gear = GEAR_NEUTRAL;
         return GEAR_NEUTRAL;
     }
 
-    // 2. 使用当前车辆配置计算总传动比
+    // 2. Compute the total gear ratio using the active vehicle profile
     const vehicle_profile_t *profile = vehicle_profile_get_active();
     float calc_const = vehicle_profile_calc_constant(profile);
     float total_ratio = rpm / (speed * calc_const);
     ESP_LOGD("gear", "RPM=%.0f Speed=%.1f ratio=%.2f", rpm, speed, total_ratio);
 
-    // 3. 与各档位范围进行比较
+    // 3. Compare against each gear's ratio range
     uint8_t range_count = 0;
     const gear_ratio_range_t *ranges = vehicle_profile_get_gear_ranges(&range_count);
     for (int i = 0; i < range_count; i++) {
@@ -306,23 +320,23 @@ enGear calculate_gear(float rpm, float speed) {
         }
     }
     
-    // 4. 如果在所有范围外，检查是否可能为空档（转速高车速为零）
-    if (rpm > 800 && speed < 5) { // 怠速以上且几乎静止
+    // 4. Outside all ranges: check if it could be neutral (high RPM, near-zero speed)
+    if (rpm > 800 && speed < 5) { // Above idle and nearly stationary
         s_last_gear = GEAR_NEUTRAL;
         return GEAR_NEUTRAL;
     }
     
-    // 5. 无法识别的传动比 返回上一次档位
+    // 5. Unrecognized ratio: return the last gear
     return s_last_gear;
 }
 
 
 /**
- * @brief 里程统计任务
- * @param pvParameter 参数
- * @return 无
- * @note  
- * @note 里程统计任务
+ * @brief Mileage statistics timer callback
+ * @param pvParameter argument
+ * @return none
+ * @note
+ * @note Mileage statistics task
  */
 static void mileage_timer_cb(void* arg)
 {
@@ -340,10 +354,10 @@ static void mileage_timer_cb(void* arg)
 }
 
 /**
- * @brief 初始化里程统计任务
- * @return 无
- * @note  
- * @note 初始化里程统计任务
+ * @brief Initialize the mileage statistics task
+ * @return none
+ * @note
+ * @note Initialize the mileage statistics task
  */
 void vMileageDataStatisticTask(void)
 {

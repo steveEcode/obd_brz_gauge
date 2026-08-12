@@ -1,5 +1,5 @@
 // ================================================================
-//  app_event.c — 跨 task 事件队列实现
+//  app_event.c — cross-task event queue implementation
 // ================================================================
 
 #include "app_event.h"
@@ -23,19 +23,19 @@ bool app_event_send(app_event_type_t type, uint32_t data)
 {
     if (!s_queue) return false;
     app_event_t evt = { .type = type, .data.u32 = data };
-    // 从 ISR 或普通 task 都能调用
+    // Can be called from an ISR or a normal task
     if (xPortInIsrContext()) {
         BaseType_t woken = pdFALSE;
         xQueueSendFromISR(s_queue, &evt, &woken);
         return woken == pdTRUE;
     }
-    return xQueueSend(s_queue, &evt, 0) == pdTRUE;  // 不阻塞
+    return xQueueSend(s_queue, &evt, 0) == pdTRUE;  // non-blocking
 }
 
 bool app_event_recv(app_event_t *out)
 {
     if (!s_queue || !out) return false;
-    return xQueueReceive(s_queue, out, 0) == pdTRUE;  // 非阻塞
+    return xQueueReceive(s_queue, out, 0) == pdTRUE;  // non-blocking
 }
 
 QueueHandle_t app_event_queue(void)

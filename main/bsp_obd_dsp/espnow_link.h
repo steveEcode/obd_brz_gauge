@@ -6,34 +6,53 @@
 extern "C" {
 #endif
 
-#define ESPNOW_ROLE_MASTER    0   // 连 ELM327 读数 + ESP-NOW 广播给从表(启 WiFi)
-#define ESPNOW_ROLE_SLAVE     1   // 只收主表 ESP-NOW 数据显示(启 WiFi)
-#define ESPNOW_ROLE_STANDALONE 2  // 单机: 连 ELM327 全功能, 但不启 WiFi/ESP-NOW(新设备默认)
+#define ESPNOW_ROLE_MASTER    0   // reads ELM327 + broadcasts to slaves over ESP-NOW (WiFi on)
+#define ESPNOW_ROLE_SLAVE     1   // only receives the master's ESP-NOW data and displays it (WiFi on)
+#define ESPNOW_ROLE_STANDALONE 2  // standalone: full ELM327 features but no WiFi/ESP-NOW (default for new devices)
 
-// 主表: 初始化 WiFi + ESP-NOW, 周期性把 OBD 数据缓存广播给从表。
-// 与 BLE(连 ELM327)共存运行(ESP32-S3 单射频分时复用, sdkconfig 已开软件共存)。
+// Master: init WiFi + ESP-NOW and periodically broadcast the OBD data cache to slaves.
+// Runs alongside BLE (ELM327 link); ESP32-S3 single-radio time-shares (software coexistence enabled in sdkconfig).
 void espnow_link_start_master(void);
 
-// 从表: 初始化 WiFi + ESP-NOW, 接收主表广播并写入本地 OBD 数据缓存(不连 ELM327)。
+// Slave: init WiFi + ESP-NOW, receive the master's broadcast and write it into the local OBD data cache (no ELM327 link).
 void espnow_link_start_slave(void);
 
-// 从表: 最近 ~2s 内是否收到过主表数据(用于"等待主机"提示)。
+// Slave: whether master data was received within the last ~2s (for the "waiting for master" hint).
 bool espnow_link_slave_has_data(void);
 
-// 从表: 最近收到的主表名字(空串=尚未收到)。
+// Slave: name of the last master heard (empty string = none yet).
 const char *espnow_link_get_master_name(void);
 
-// 从表: 获取当前绑定主表的 MAC 地址 (返回 6 字节数组, 全 0 表示未绑定)
+// Slave: MAC of the currently bound master (returns a 6-byte array; all-zero = unbound).
 const uint8_t *espnow_link_get_bound_master_mac(void);
 
-// 从表: 绑定到指定的主表 MAC 地址(蓝牙配对读到的 ESP-NOW MAC)
+// Slave: bind to a specific master MAC (the ESP-NOW MAC read during BLE pairing).
 void espnow_link_bind_master(const uint8_t mac[6]);
 
-// 从表: 解除主表绑定 (恢复全收模式)
+// Slave: unbind the master (return to accept-any mode).
 void espnow_link_unbind_master(void);
 
-// 主表: 当前在线从表数(用于判定是否多表/是否播放开机动画)。
+// Master: number of slaves currently online (used to detect multi-gauge / whether to play the boot animation).
 uint8_t espnow_master_online_slaves(void);
+
+// ---- Multi-gauge linked-flash sync ----
+// Trigger the linked test: the master injects a simulated RPM ramp into the RPM override layer
+// (the broadcast carries it to the slaves); a slave sends a TEST request to the master, which
+// drives it centrally so all gauges stay in sync.
+void espnow_link_trigger_linked_test(void);
+
+// The local user changed the RPM threshold -> broadcast it to the other gauges
+// (relayed through the master so every slave is reached).
+void espnow_link_broadcast_threshold(uint16_t thresh);
+
+// Apply a threshold synced from another gauge: write it to local NVS; the master additionally
+// relays it to the other slaves. Called by the UI task on APP_EVT_ESPNOW_THRESH_SYNC
+// (avoids writing flash from inside the recv callback).
+void espnow_link_apply_synced_threshold(uint16_t thresh);
+
+// Whether a linked test is in progress (master = ramping, slave = flag received from the master).
+// During TEST every gauge is forced to take part in the rendering.
+bool espnow_link_linktest_active(void);
 
 #ifdef __cplusplus
 }
