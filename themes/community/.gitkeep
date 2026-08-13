@@ -1,3 +1,16 @@
-# Drop your custom theme files here / 把你的自定义主题文件放到这个目录
-# Naming / 命名规范: <theme-name>.theme.c   e.g. sunset.theme.c
-# See ../README.md / 详见 ../README.md
+# Community themes go here / 社区主题放这个目录
+#
+# One folder per theme, named after its id:
+# 每套主题一个文件夹，文件夹名就是主题 id：
+#
+#   themes/community/<id>/
+#     theme.toml            required — id, name, eight colors / 必填
+#     assets/ring.png       optional artwork / 可选素材
+#     assets/needle.png
+#     assets/dial.png
+#     preview.png           optional screen photo / 可选预览图
+#
+# Then append one line to ../registry.txt (append only!).
+# 然后往 ../registry.txt 末尾追加一行（只能追加！）。
+#
+# Full guide: ../README.md  (bilingual 中英双语)

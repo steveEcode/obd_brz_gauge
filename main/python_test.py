@@ -1,6 +1,6 @@
 from pymodbus.client import ModbusSerialClient
 
-PORT = "/dev/cu.usbserial-1130"  # 改成你的端口
+PORT = "/dev/cu.usbserial-1130"  # change to your port
 BAUDRATES = [9600, 4800, 19200, 2400, 38400]
 PARITIES = ["N", "E", "O"]
 STOPBITS = [1, 2]
