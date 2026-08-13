@@ -1,5 +1,7 @@
 # OBD BRZ Gauge
 
+> 📖 Full documentation index: [project README](../README.md) · 中文说明: [README.zh-CN.md](README.zh-CN.md)
+
 ## Overview
 
 OBD BRZ Gauge is an ESP-IDF based round dashboard project for the Waveshare ESP32-S3-Touch-LCD-1.85 development board. It connects to an ELM327-compatible BLE OBD adapter, reads vehicle data, and renders the information on a round touch display using LVGL.
@@ -9,15 +11,15 @@ OBD BRZ Gauge is an ESP-IDF based round dashboard project for the Waveshare ESP3
 - Hardware platform: Waveshare ESP32-S3-Touch-LCD-1.85
 - Software stack: ESP-IDF 5.5.3, LVGL 8
 - Protocol path: BLE + ELM327 (standard OBD PID + CAN broadcast frame ATMA monitoring)
-- Vehicle profiles: BRZ ZC6 CAN / ZD8 CAN, Toyota GT86 ZN6, Mazda MX-5 ND, BMW G-series, Porsche 987.1/997.1/997.2, MINI JCW F56, OBD2 Generic
+- Vehicle profiles (12): OBD2 Generic, ZN/C6 CAN, ZN/C6 PID, ZD8 CAN, ZD8, MX-5 ND, BMW F/G, BMW G CAN, JCW F56, POS 997.2, POS 997.1, GIULIA 2.0T
 - Multi-gauge: one master + multiple slaves linked over ESP-NOW
-- Validation status: fully verified on Subaru BRZ ZC6; other profiles are configured and may still need on-car verification
+- Validation status: fully verified on Subaru BRZ ZN/C6; other profiles are configured and may still need on-car verification
 
 ## Features
 
 - BLE scan and connection for ELM327-compatible adapters
 - **CAN broadcast frame ATMA monitoring**: bypasses standard OBD PID polling for high-frequency data — RPM at 100 Hz, oil/coolant temp at 10–20 Hz, with periodic OBD fallback for remaining channels (speed, load, voltage, intake temp)
-  - ZC6 (Gen1): 0x140 (RPM + TPS) + 0x360 (oil + coolant temp)
+  - ZN/C6 (Gen1): 0x140 (RPM + TPS) + 0x360 (oil + coolant temp)
   - ZD8 (Gen2): 0x40 (RPM + TPS) + 0x345 (oil + coolant temp)
 - **Custom boot logo & boot media playback**: configurable boot logo with multi-block animation, SPIFFS-mounted bootmedia partition for rich startup sequences
 - **Unified vehicle configuration system**: compile-time `vehicle_custom_config.h` for per-vehicle thresholds, warnings, and gauge ranges
@@ -108,63 +110,9 @@ esptool.py --chip esp32s3 -p PORT -b 460800 write_flash \
 4. UI assets are located under [main/export_path](../main/export_path) and can be edited further.
 
 ## Changelog
-### Themes are now data, not code
 
-Adding a UI theme no longer touches a single C file. A theme is a folder under `themes/` holding a `theme.toml` manifest — eight decorative colors plus optional artwork — and one appended line in `themes/registry.txt`. `tools/gen_themes.py` runs at CMake configure time: it validates every manifest, converts PNG artwork into LVGL image arrays, and emits `ui_theme_generated.c`.
-
-- **Artwork.** `ring` (360x360, alpha) replaces the drawn bezel, `needle` replaces the drawn meter needle (LVGL rotates it around a pivot declared in the manifest; art must point right), and `dial` (360x360) becomes the page background. Anything omitted falls back to the drawn shape and its color role, so a colour-only theme is still a single file.
-- **Slot stability.** `themes/registry.txt` pins slot -> id and is append-only. NVS stores the slot number, so reordering it would silently re-skin every existing device on the next OTA — invisible in local testing. The generator hard-fails on reordering, gaps, a non-`default` slot 0, or a registry line whose folder is missing.
-- **Build-time validation** covers artwork dimensions, needle pivot bounds, missing files, duplicate roller names, unknown keys, and a total artwork budget (1536 KB, since every registered theme's art is linked in unconditionally). Every failure points at a file and line.
-- Artwork conversion needs Pillow only when a PNG's SHA-256 changes; the generated C is checked in, so an ordinary build has no third-party Python dependency. `--check` verifies freshness for CI.
-- **Fixed:** the Settings theme roller built its option list in a fixed 96-byte buffer and silently truncated once enough themes were registered. It now uses an exactly sized buffer, so truncation is structurally impossible.
-- **Fixed:** leaving the RPM warning restored a hardcoded black background, which would permanently blank a themed dial face. All three restore paths now reapply the theme background.
-
-Authoring guide: [themes/README.md](themes/README.md) (bilingual). Framework internals: [docs/THEMING.md](docs/THEMING.md).
-
-### Multi-gauge linked RPM warning
-
-Three gauges can now light up in sequence as revs climb, instead of all strobing at once. The 1000 rpm below the warning threshold is split into thirds; each gauge ramps black to red across its own third according to its configured position, and at the threshold all three strobe together. Every unit derives its own segment from the same ESP-NOW-synced RPM, so no extra inter-gauge messaging is needed and they stay in sync naturally.
-
-- New LINKED toggle on the RPM warning page, mutually exclusive with the existing single-gauge flash.
-- Changing the threshold on one gauge broadcasts it to the others (new ESP-NOW control packet).
-- The test button drives a synthetic RPM ramp across all gauges (5 s rise, 0.8 s hold, 2.5 s fall).
-- NVS config version 1 -> 2: adds `rpm_warn_linked_en`, and migrates the default theme index 1 -> 0 so existing devices keep their current look.
-- RPM strobe redraw interval was 1 ms; it is now 25 ms.
-
-### Partition layout and boot animation
-
-- App partition shrunk 6 MB -> 4 MB; the bootmedia SPIFFS partition grew 9.8 MB -> 11.9 MB.
-- **Flashing change: bootmedia moves from `0x620000` to `0x420000`.** Update your flash command and scripts.
-- Boot animation re-encoded on a 300x300 grid (was 240x240) with a new `delta_varint_rgb565_black_v2` stream format.
-
-
-### Multi-gauge: real BLE pairing replaces the MAC-bind button
-
-The old "BIND MASTER" button worked by grabbing whichever master's ESP-NOW broadcast the slave happened to be receiving at the moment — with no way to pick a specific one when multiple masters are nearby (e.g. a track day with several cars running the same product). The master now advertises a real BLE peripheral (`SkyGauge-XXYY`); the slave discovers and binds to it through the existing BLE scan page (now doubling as a "FIND MASTER" screen when the device role is SLAVE), and reconnects automatically on every following boot.
-
-- New `gauge_pair_ble_client.c/h` (slave-side one-shot BLE pairing client) and `ble_adv_util.c/h` (shared BLE advertisement-name parsing, deduplicated out of the OBD BLE client).
-- `racechrono_ble_diy.c` gained an independent pairing GATT service alongside the existing RaceChrono service, sharing one BLE advertisement.
-- `ui_ScreenPageMultiGauge.c` no longer has BIND MASTER / UNBIND buttons.
-- Boot flow: an unbound slave lands on the pairing screen; a bound slave skips straight to its gauge display.
-
-### Fixed: master watchdog reboot during OBD protocol detection
-
-Root-caused a board reboot seen during testing: the blocking wait for an ELM327 response could sit for up to 3 seconds without feeding the task watchdog. A run of consecutive protocol auto-detect timeouts could add up past the 5 s TWDT window and reboot the board mid-poll. Fixed by resetting the watchdog inside that wait loop.
-
-### Other fixes
-
-- Slave-side BLE scan state could get stuck once its 15 s scan window elapsed, silently blocking retry/rescan.
-- Leaving the pairing screen in slave mode stopped the wrong BLE scan API, leaving a scan running in the background.
-- I2C device cache could read out of bounds once more than 8 addresses were queried (latent crash, not yet hit in practice).
-- LCD init could read an uninitialized register value if the QSPI probe failed.
-
-### Improvements
-
-- "NO SIGNAL" indicator on the gauge pages when BLE/ESP-NOW data goes stale.
-- Gear display now prefers the CAN-decoded precise gear over the RPM/speed estimate when a vehicle profile provides one.
-- Mileage/trip statistics are runtime-only now (no longer written to flash every 30 s) — nothing displayed them, so it was pure flash wear.
-- Removed unused `fsm.h` state-machine scaffolding and an unused OBD-data "dirty flag" tracking layer — neither was ever wired up to anything.
-- De-duplicated a shared BLE-advertisement-name parser, a screen ring border, and a dark roller LVGL style across ~18 screens; throttled a full chart redraw and a few gauge pages to only refresh when actually visible or actually changed.
+See [CHANGELOG.md](../CHANGELOG.md) — it is the single source of truth for
+both languages. It used to be duplicated across three README files.
 
 ## Known Limitations
 
@@ -184,4 +132,4 @@ The `model/` directory contains open-source 3D printable files:
 | `model/Subaru/brz_zc6/passenger_dashboard_scan.stl` | BRZ ZC6 passenger dashboard scan (for fitting reference) |
 | `model/mazda/mx5_nd/air_vent_bracket.stl` | MX-5 ND air vent mount bracket |
 
-Chinese documentation is available at [README.zh-CN.md](README.zh-CN.md), and the project root README is at [../../README.md](../../README.md).
+Chinese documentation is available at [README.zh-CN.md](README.zh-CN.md), and the project root README is at [../README.md](../README.md).

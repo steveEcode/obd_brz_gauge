@@ -170,7 +170,7 @@ RS485_DE_RE_GPIO: -1 (禁用，因为 USB 模块自动处理)
 项目提供了快速 RS485 诊断脚本（仅用于 RS485 刹车温度）：
 
 ```bash
-cd /Users/parklu/personProject/obd_brz_gauge/main
+cd main
 python3 python_quick_rs485_check.py --baud 9600 --tries 5
 ```
 
@@ -229,6 +229,6 @@ idf.py monitor
 
 ## 获取更多帮助
 
-- GitHub Issues: [项目 repo](https://github.com/yourusername/obd_brz_gauge)
-- 项目文档: [docs/](../docs/)
-- 项目结构: [PROJECT_STRUCTURE.md](./PROJECT_STRUCTURE.md)
+- GitHub Issues: [steveEcode/obd_brz_gauge](https://github.com/steveEcode/obd_brz_gauge/issues)
+- 文档索引与目录结构: [项目主 README](../README.md)
+- 新增/调整车型: [VEHICLE_CONFIG.md](./VEHICLE_CONFIG.md)
