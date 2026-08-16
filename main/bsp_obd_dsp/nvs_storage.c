@@ -85,7 +85,7 @@ esp_err_t nvs_storage_init(void)
         if (s_mg.device_position < 1 || s_mg.device_position > 3) s_mg.device_position = 1;
         if (s_mg.intro_enable > 4) s_mg.intro_enable = 0;
         if (s_mg.boot_mode > 2) s_mg.boot_mode = 0;
-        ESP_LOGI("nvs", "mg loaded: intro=%u pos=%u boot=%u (blob_sz=%u)", s_mg.intro_enable, s_mg.device_position, s_mg.boot_mode, (unsigned)sz);
+        ESP_LOGD("nvs", "mg loaded: intro=%u pos=%u boot=%u (blob_sz=%u)", s_mg.intro_enable, s_mg.device_position, s_mg.boot_mode, (unsigned)sz);
     }
 
     /* ---- Config version migration ----

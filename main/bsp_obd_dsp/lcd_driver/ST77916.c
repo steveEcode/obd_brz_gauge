@@ -235,10 +235,10 @@ int QSPI_Init(void){
     .intr_flags = 0,                            
   };
   if(spi_bus_initialize(ESP_PANEL_HOST_SPI_ID_DEFAULT, &host_config, SPI_DMA_CH_AUTO) != ESP_OK){
-    printf("The SPI initialization failed.\r\n");
+    ESP_LOGE(TAG_LCD, "The SPI initialization failed.");
     return 0;
   }
-  printf("The SPI initialization succeeded.\r\n");
+  ESP_LOGD(TAG_LCD, "The SPI initialization succeeded.");
   
   esp_lcd_panel_io_spi_config_t io_config ={
     .cs_gpio_num = ESP_PANEL_LCD_SPI_IO_CS,               
@@ -261,12 +261,12 @@ int QSPI_Init(void){
   };
   esp_lcd_panel_io_handle_t io_handle = NULL;
   if(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)ESP_PANEL_HOST_SPI_ID_DEFAULT, &io_config, &io_handle) != ESP_OK){
-    printf("Failed to set LCD communication parameters -- SPI\r\n");
+    ESP_LOGE(TAG_LCD, "Failed to set LCD communication parameters -- SPI");
     return 0;
   }
-  printf("LCD communication parameters are set successfully -- SPI\r\n");
+  ESP_LOGD(TAG_LCD, "LCD communication parameters are set successfully -- SPI");
 
-  printf("Install LCD driver of st77916\r\n");
+  ESP_LOGD(TAG_LCD, "Install LCD driver of st77916");
   st77916_vendor_config_t vendor_config={
     .flags = {
       .use_qspi_interface = 1,
@@ -281,28 +281,28 @@ int QSPI_Init(void){
   lcd_cmd |= LCD_OPCODE_READ_CMD << 24;  // Use the read opcode instead of write
   ret = esp_lcd_panel_io_rx_param(io_handle, lcd_cmd, register_data, param_size); 
   if (ret == ESP_OK) {
-    printf("Register 0x04 data: %02x %02x %02x %02x\n", register_data[0], register_data[1], register_data[2], register_data[3]);
+    ESP_LOGD(TAG_LCD, "Register 0x04 data: %02x %02x %02x %02x", register_data[0], register_data[1], register_data[2], register_data[3]);
   } else {
-    printf("Failed to read register 0x04, error code: %d\n", ret);
+    ESP_LOGW(TAG_LCD, "Failed to read register 0x04, error code: %d", ret);
   } 
   // panel_io_spi_del(io_handle);
   io_config.pclk_hz = ESP_PANEL_LCD_SPI_CLK_HZ;
   if(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)ESP_PANEL_HOST_SPI_ID_DEFAULT, &io_config, &io_handle) != ESP_OK){
-    printf("Failed to set LCD communication parameters -- SPI\r\n");
+    ESP_LOGE(TAG_LCD, "Failed to set LCD communication parameters -- SPI");
     return 0;
   }
-  printf("LCD communication parameters are set successfully -- SPI\r\n");
+  ESP_LOGD(TAG_LCD, "LCD communication parameters are set successfully -- SPI");
   
   // Check register values and configure accordingly
   if (register_data[0] == 0x00 && register_data[1] == 0x7F && register_data[2] == 0x7F && register_data[3] == 0x7F) {
     // Handle the case where the register data matches this pattern
-    printf("Vendor-specific initialization for case 1.\n");
+    ESP_LOGD(TAG_LCD, "Vendor-specific initialization for case 1.");
   }
   else if (register_data[0] == 0x00 && register_data[1] == 0x02 && register_data[2] == 0x7F && register_data[3] == 0x7F) {
     // Provide vendor-specific initialization commands if register data matches this pattern
     vendor_config.init_cmds = vendor_specific_init_new;
     vendor_config.init_cmds_size = sizeof(vendor_specific_init_new) / sizeof(st77916_lcd_init_cmd_t);
-    printf("Vendor-specific initialization for case 2.\n");
+    ESP_LOGD(TAG_LCD, "Vendor-specific initialization for case 2.");
   }
 
   esp_lcd_panel_dev_config_t panel_config={
@@ -329,7 +329,7 @@ int QSPI_Init(void){
 void ST77916_Init() {
   ST77916_Reset();
   if(!QSPI_Init()){
-    printf("ST77916 Failed to be initialized\r\n");
+    ESP_LOGE(TAG_LCD, "ST77916 failed to be initialized");
   }
 }
 
@@ -340,7 +340,7 @@ uint8_t LCD_Backlight = 70;
 static ledc_channel_config_t ledc_channel;
 void Backlight_Init(void)
 {
-    ESP_LOGI(TAG_LCD, "Turn off LCD backlight");
+    ESP_LOGD(TAG_LCD, "Turn off LCD backlight");
     gpio_config_t bk_gpio_config = {
         .mode = GPIO_MODE_OUTPUT,
         .pin_bit_mask = 1ULL << EXAMPLE_LCD_PIN_NUM_BK_LIGHT

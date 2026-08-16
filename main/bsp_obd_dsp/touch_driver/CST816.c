@@ -173,7 +173,7 @@ static esp_err_t read_id(esp_lcd_touch_handle_t tp)
 {
     uint8_t id;
     ESP_RETURN_ON_ERROR(i2c_read_bytes(tp, CHIP_ID_REG, &id, 1), TAG, "I2C read failed");
-    ESP_LOGI(TAG, "IC id: %d", id);
+    ESP_LOGD(TAG, "IC id: %d", id);
     return ESP_OK;
 }
 /*!
@@ -226,7 +226,7 @@ static esp_err_t Touch_I2C_Init(void)
 void Touch_Init(void)
 {
     ESP_ERROR_CHECK(Touch_I2C_Init());
-    ESP_LOGI(TAG, "I2C initialized successfully");
+    ESP_LOGD(TAG, "I2C initialized successfully");
 
     esp_lcd_touch_config_t tp_cfg = {
         .x_max = EXAMPLE_LCD_WIDTH,
@@ -241,6 +241,6 @@ void Touch_Init(void)
     };
 
     /* Initialize touch directly via I2C master bus + device */
-    ESP_LOGI(TAG, "Initialize touch controller CST816");
+    ESP_LOGD(TAG, "Initialize touch controller CST816");
     ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_cst816(s_touch_i2c_bus, &tp_cfg, &tp));
 }

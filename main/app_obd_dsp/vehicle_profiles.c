@@ -1,4 +1,5 @@
 #include "vehicle_profiles.h"
+#include "app_obd_dsp/obd_data_cache.h"
 #include "bsp_obd_dsp/nvs_storage.h"
 #include "esp_log.h"
 #include <string.h>
@@ -26,11 +27,9 @@ static const vehicle_profile_t s_profiles[] = {
         .has_boost = false,                // Generic defaults to NA; turbo cars can still use standard 010B (manual enable)
     },
     {
-        // BRZ ZC6 CAN (2013-2020, FA20 NA, Gen1)
-        // ATMA monitor: 0x140 (100Hz RPM+TPS), 0x360 (20Hz oil+coolant temp)
-        // Remaining channels use standard OBD PID
-        // Ref: https://github.com/timurrrr/ft86/blob/main/can_bus/gen1.md
-        // For the standard PID fallback version, see "ZN/C6 PID" right below
+        // BRZ ZC6 Gen1 (2013-2020, FA20 NA, Gen1)
+        // RPM stays on OBD; TPS/coolant/oil come from CAN broadcast frames.
+        // For the explicit OBD-only fallback version, see "ZN/C6 PID" right below
         .name = "ZN/C6 CAN",
         .final_drive_ratio = 4.100f,
         .tire_rolling_radius_m = 0.314f,   // 215/45R17
@@ -44,6 +43,7 @@ static const vehicle_profile_t s_profiles[] = {
         },
         .forced_protocol = 6,
         .can_broadcast_mode = true,
+        .obd_timeout = 0x0A,
         .poll_gap_ms = 1,
     },
     {
@@ -64,18 +64,18 @@ static const vehicle_profile_t s_profiles[] = {
             .tertiary = OIL_TEMP_MODE_NONE,
         },
         .forced_protocol = 6,
+        .obd_timeout = 0x0A,
         .poll_gap_ms = 1,
     },
     {
-        // BRZ ZD8 CAN (2022+, FA24 NA, Gen2)
-        // ATMA monitor: 0x40 (100Hz RPM+TPS), 0x345 (10Hz oil+coolant temp)
-        // Remaining channels use standard OBD PID
-        // Ref: https://github.com/timurrrr/ft86/blob/main/can_bus/gen2.md
-        .name = "ZD8 CAN",
-        .final_drive_ratio = 3.700f,       // ZD8 final drive ratio
+        // BRZ ZD8 OBD-only fallback (2022+, FA24 NA, Gen2, 6MT)
+        // CAN monitoring is disabled here to keep the ELM327 loop single-threaded.
+        // Remaining channels use standard OBD PID.
+        .name = "ZD8 OBD",
+        .final_drive_ratio = 4.100f,       // ZD8 6MT final drive ratio
         .tire_rolling_radius_m = 0.318f,   // 225/40R18
         .gear_count = 6,
-        .gear_ratios = {0, 3.765f, 2.476f, 1.633f, 1.190f, 0.932f, 0.751f},
+        .gear_ratios = {0, 3.626f, 2.189f, 1.541f, 1.213f, 1.000f, 0.767f},
         .gear_tolerance = 0.15f,
         .oil_temp_strategy = {
             .primary = OIL_TEMP_MODE_PID_5C,        // ZD8 uses standard PID 5C
@@ -83,20 +83,17 @@ static const vehicle_profile_t s_profiles[] = {
             .tertiary = OIL_TEMP_MODE_NONE,
         },
         .forced_protocol = 6,
-        .can_broadcast_mode = true,
+        .obd_timeout = 0x0A,
         .poll_gap_ms = 1,
     },
     {
-        // BRZ ZD8 (standard OBD fallback, no CAN ATMA monitoring)
-        // Some cheap clone ELM327 adapters do not support ATMA / the car's bus does not emit the monitored frames, so "ZD8 CAN"
-        // cannot get the 0x040/0x345 data (RPM can still fall back to standard 01 0C refresh, but oil/coolant temp depend entirely on 0x345 and would never be read).
-        // This variant routes RPM/coolant temp/oil temp all through standard OBD PIDs (01 0C / 01 05 / 01 5C), trading the 100Hz RPM
-        // refresh rate for stability; if ATMA monitoring works fine, prefer "ZD8 CAN" above.
+        // BRZ ZD8 standard OBD fallback (6MT).
+        // This variant routes RPM/coolant temp/oil temp all through standard OBD PIDs (01 0C / 01 05 / 01 5C), trading refresh rate for stability.
         .name = "ZD8",
-        .final_drive_ratio = 3.700f,
+        .final_drive_ratio = 4.100f,
         .tire_rolling_radius_m = 0.318f,   // 225/40R18
         .gear_count = 6,
-        .gear_ratios = {0, 3.765f, 2.476f, 1.633f, 1.190f, 0.932f, 0.751f},
+        .gear_ratios = {0, 3.626f, 2.189f, 1.541f, 1.213f, 1.000f, 0.767f},
         .gear_tolerance = 0.15f,
         .oil_temp_strategy = {
             .primary = OIL_TEMP_MODE_PID_5C,        // ZD8 supports standard PID 5C
@@ -104,6 +101,7 @@ static const vehicle_profile_t s_profiles[] = {
             .tertiary = OIL_TEMP_MODE_NONE,
         },
         .forced_protocol = 6,
+        .obd_timeout = 0x0A,
         .poll_gap_ms = 1,
     },
     {
@@ -125,8 +123,8 @@ static const vehicle_profile_t s_profiles[] = {
     },
     {
         // BMW G-series (G20/G21/G22, B48/B58 turbo, ZF 8HP)
+        // OBD-only fallback; CAN monitoring is disabled to avoid interleaving with OBD requests on the single-threaded ELM327 loop.
         // Standard OBD only responds to 7DF functional addressing, 7E0 physical gets no response; hence obd_functional_addr=true.
-        // During Mode 22 vendor PID polling, code temporarily switches to ATSH7E0 in Slot6, then restores ATSH7DF.
         // Oil temp: try PID 4402 (double byte) first, then PID D002 (oil pan backup), finally fallback to PID 03F3.
         .name = "BMW F/G",
         .final_drive_ratio = 2.813f,       // G20 330i final drive ratio
@@ -146,13 +144,9 @@ static const vehicle_profile_t s_profiles[] = {
         .obd_timeout = 0x0F,
     },
     {
-        // BMW G-series CAN (G20/G21/G22/G80/G82, B48/B58 turbo, ZF 8HP)
-        // PT-CAN 500kbps, ATMA monitoring replaces OBD polling for key channels:
-        //   0x0A5 (100Hz): RPM byte5-6 LE (raw×4)
-        //   0x254 (50Hz):  wheel speed byte4-5 LE (raw×0.015625−511.98 km/h, front-left)
-        //   0x3F9 (1Hz):   coolant byte4 (raw−48), oil byte5 (raw−48), gear byte6 nibble (raw−4)
-        // Ref: racechrono-canbus decoder_bmwg8x.cpp, thesecretingredient.neocities.org/bmw/can/g29/
-        .name = "BMW G CAN",
+        // BMW G-series compatibility profile (G20/G21/G22/G80/G82, B48/B58 turbo, ZF 8HP)
+        // CAN broadcast is disabled; use the same OBD-only request path as BMW F/G to keep the ELM327 loop serial.
+        .name = "BMW G OBD",
         .final_drive_ratio = 2.813f,       // G20 330i final drive ratio
         .tire_rolling_radius_m = 0.330f,   // 225/45R18
         .gear_count = 8,                   // ZF 8HP 8-speed
@@ -165,10 +159,9 @@ static const vehicle_profile_t s_profiles[] = {
             .quaternary = OIL_TEMP_MODE_NONE,
         },
         .has_boost = true,                 // B48/B58 turbo
-        .forced_protocol = 7,              // PT-CAN uses 29-bit extended frames (protocol 7)
+        .forced_protocol = 7,              // PT-CAN auto-detect is unstable; lock to protocol 7
         .obd_functional_addr = true,       // 7DF functional addressing
         .obd_timeout = 0x0A,               // 40ms; BMW CAN responds quickly
-        .can_broadcast_mode = true,        // ATMA monitoring for 0x0A5/0x254/0x3F9
         .poll_gap_ms = 1,
     },
     {
@@ -190,7 +183,7 @@ static const vehicle_profile_t s_profiles[] = {
         .has_boost = true,                 // B48 turbo, boost pressure via standard 010B
     },
     {
-        // Porsche Gen2: 987.2/997.2 (2009-2012, DFI 9A1; NA; oil temp x-60)
+        // Porsche Gen2: 987.2/997.2 (2009-2012, DFI 9A1; NA; OBD fallback)
         .name = "POS 997.2",
         .final_drive_ratio = 3.44f,        // 997.2 PDK final drive ratio (user measured)
         .tire_rolling_radius_m = 0.325f,   // User measured rolling radius
@@ -198,18 +191,17 @@ static const vehicle_profile_t s_profiles[] = {
         .gear_ratios = {0, 3.91f, 2.29f, 1.65f, 1.30f, 1.08f, 0.88f, 0.62f},
         .gear_tolerance = 0.15f,
         .oil_temp_strategy = {
-            // Oil temp/pressure via CAN broadcast 0x441 (byte5=oil temp, byte6=oil pressure×5/127), read via ELM327 ATMA
-            .primary = OIL_TEMP_MODE_PORSCHE_CAN_441,
+            // CAN oil-temp paths are disabled here; use the standard OBD PID 01 5C fallback.
+            .primary = OIL_TEMP_MODE_PID_5C,
             .secondary = OIL_TEMP_MODE_PID_5C,
             .tertiary = OIL_TEMP_MODE_NONE,
-            .can_num = 1, .can_den = 1, .can_off = -60,   // °C = x - 60
         },
         .has_boost = false,                // Naturally aspirated
-        .forced_protocol = 6,              // Broadcast 0x441 is 11bit/500k, lock protocol 6 for ATMA monitoring
+        .forced_protocol = 6,
     },
     {
-        // Porsche Gen1: 987.1/997.1 (2005-2008, M96/M97; oil temp x*3/4-48)
-        // Note: Gear ratios use Gen2 placeholders (987.1 differs slightly); main difference is oil temp formula.
+        // Porsche Gen1: 987.1/997.1 (2005-2008, M96/M97; OBD fallback)
+        // Note: Gear ratios use Gen2 placeholders (987.1 differs slightly).
         .name = "POS 997.1",
         .final_drive_ratio = 3.89f,
         .tire_rolling_radius_m = 0.335f,
@@ -217,13 +209,13 @@ static const vehicle_profile_t s_profiles[] = {
         .gear_ratios = {0, 3.67f, 2.05f, 1.46f, 1.13f, 0.97f, 0.84f},
         .gear_tolerance = 0.15f,
         .oil_temp_strategy = {
-            .primary = OIL_TEMP_MODE_PORSCHE_CAN_441,
+            // CAN oil-temp paths are disabled here; use the standard OBD PID 01 5C fallback.
+            .primary = OIL_TEMP_MODE_PID_5C,
             .secondary = OIL_TEMP_MODE_PID_5C,
             .tertiary = OIL_TEMP_MODE_NONE,
-            .can_num = 3, .can_den = 4, .can_off = -48,   // °C = x*3/4 - 48
         },
         .has_boost = false,
-        .forced_protocol = 6,              // Broadcast 0x441 is 11bit/500k, lock protocol 6 for ATMA monitoring
+        .forced_protocol = 6,
     },
     {
         // Alfa Romeo Giulia 2.0T (GME 2.0 turbo + ZF 8HP50 8AT, RWD)
@@ -272,7 +264,7 @@ static void rebuild_gear_ranges(const vehicle_profile_t *p)
         s_gear_range_count++;
     }
     s_ranges_dirty = false;
-    ESP_LOGI(TAG, "Rebuilt gear ranges for '%s' (%d gears)", p->name, p->gear_count);
+    ESP_LOGD(TAG, "Rebuilt gear ranges for '%s' (%d gears)", p->name, p->gear_count);
 }
 
 const vehicle_profile_t *vehicle_profile_get_all(uint8_t *count)
@@ -297,13 +289,14 @@ void vehicle_profile_set_active(uint8_t index)
     if (index >= PROFILE_COUNT) index = 0;
     s_active_idx = index;
     s_ranges_dirty = true;
+    obd_data_reset_temp_cache();
 
     // Save to NVS
     nvs_user_cfg_t cfg = *nvs_cfg_get();
     cfg.vehicle_profile_idx = index;
     nvs_cfg_set(&cfg);
 
-    ESP_LOGI(TAG, "Active profile set to [%d] '%s'", index, s_profiles[index].name);
+    ESP_LOGD(TAG, "Active profile set to [%d] '%s'", index, s_profiles[index].name);
 }
 
 float vehicle_profile_calc_constant(const vehicle_profile_t *p)

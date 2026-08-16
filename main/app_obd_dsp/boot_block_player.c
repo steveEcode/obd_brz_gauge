@@ -290,7 +290,7 @@ bool boot_block_player_create(lv_obj_t *parent, lv_obj_t **out_obj) {
     }
 
     if (out_obj) *out_obj = s_state.canvas_obj;
-    ESP_LOGI(TAG, "player ready: %ux%u grid=%ux%u fps=%u frames=%u dur=%ums",
+    ESP_LOGD(TAG, "player ready: %ux%u grid=%ux%u fps=%u frames=%u dur=%ums",
              manifest.canvas_width, manifest.canvas_height,
              manifest.grid_width, manifest.grid_height,
              manifest.fps, manifest.frame_count, manifest.duration_ms);
@@ -338,7 +338,7 @@ void boot_block_player_update(uint32_t elapsed_ms) {
 
     if (s_state.next_frame_index >= s_state.manifest.frame_count ||
         elapsed_ms >= s_state.manifest.duration_ms) {
-        ESP_LOGI(TAG, "finished: frame=%u/%u elapsed=%ums dur=%ums",
+        ESP_LOGD(TAG, "finished: frame=%u/%u elapsed=%ums dur=%ums",
                  s_state.next_frame_index, s_state.manifest.frame_count,
                  elapsed_ms, s_state.manifest.duration_ms);
         s_state.finished = true;

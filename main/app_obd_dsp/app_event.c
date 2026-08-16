@@ -15,7 +15,7 @@ void app_event_init(void)
     if (!s_queue) {
         ESP_LOGE(TAG, "Queue create failed!");
     } else {
-        ESP_LOGI(TAG, "Event queue initialized (depth=%d)", APP_EVENT_QUEUE_DEPTH);
+        ESP_LOGD(TAG, "Event queue initialized (depth=%d)", APP_EVENT_QUEUE_DEPTH);
     }
 }
 

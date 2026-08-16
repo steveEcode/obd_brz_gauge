@@ -26,6 +26,7 @@ static const char *TAG = "gauge_pair_ble";
 
 #define GAUGE_PAIR_APP_ID     0x53
 #define GAUGE_PAIR_NAME_PREFIX "SkyGauge"
+#define GAUGE_PAIR_NAME_PREFIX_LEN (sizeof(GAUGE_PAIR_NAME_PREFIX) - 1)
 #define GAUGE_PAIR_TIMEOUT_US  (8 * 1000 * 1000)
 
 static bool s_ble_inited = false;
@@ -125,7 +126,7 @@ static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) 
         char dev_name[32] = {0};
         ble_adv_extract_name(pr->scan_rst.ble_adv, pr->scan_rst.adv_data_len,
                           pr->scan_rst.scan_rsp_len, dev_name, sizeof(dev_name));
-        if (strncmp(dev_name, GAUGE_PAIR_NAME_PREFIX, strlen(GAUGE_PAIR_NAME_PREFIX)) != 0) break;
+        if (strncmp(dev_name, GAUGE_PAIR_NAME_PREFIX, GAUGE_PAIR_NAME_PREFIX_LEN) != 0) break;
         if (s_scan_count >= GAUGE_PAIR_SCAN_MAX_DEVICES) break;
 
         bool exists = false;

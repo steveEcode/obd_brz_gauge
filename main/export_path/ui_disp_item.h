@@ -66,7 +66,7 @@ bool disp_item_read_value(disp_item_t item,
 // Sweep animation value: r ∈ [0,1] → sweep peak raw value for this data item
 int32_t disp_item_sweep_value(disp_item_t item, float r);
 
-// Format the numeric text per data item into label (includes unit conversion and font setup)
+// Format the numeric text per data item into label (includes unit conversion and dirty-check update)
 void disp_item_set_text(lv_obj_t *label, disp_item_t item, int32_t value, bool valid);
 
 // Color per NVS alarm threshold (nvs_chart_alarm_get): red above threshold, else white

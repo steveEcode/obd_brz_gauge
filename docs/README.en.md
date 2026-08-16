@@ -10,25 +10,25 @@ OBD BRZ Gauge is an ESP-IDF based round dashboard project for the Waveshare ESP3
 
 - Hardware platform: Waveshare ESP32-S3-Touch-LCD-1.85
 - Software stack: ESP-IDF 5.5.3, LVGL 8
-- Protocol path: BLE + ELM327 (standard OBD PID + CAN broadcast frame ATMA monitoring)
-- Vehicle profiles (12): OBD2 Generic, ZN/C6 CAN, ZN/C6 PID, ZD8 CAN, ZD8, MX-5 ND, BMW F/G, BMW G CAN, JCW F56, POS 997.2, POS 997.1, GIULIA 2.0T
+- Protocol path: BLE + ELM327 (standard OBD PID; only ZN/C6 CAN uses CAN broadcast frame ATMA monitoring)
+- Vehicle profiles (12): OBD2 Generic, ZN/C6 CAN, ZN/C6 PID, ZD8 OBD, ZD8, MX-5 ND, BMW F/G, BMW G OBD, JCW F56, POS 997.2, POS 997.1, GIULIA 2.0T
 - Multi-gauge: one master + multiple slaves linked over ESP-NOW
 - Validation status: fully verified on Subaru BRZ ZN/C6; other profiles are configured and may still need on-car verification
 
 ## Features
 
 - BLE scan and connection for ELM327-compatible adapters
-- **CAN broadcast frame ATMA monitoring**: bypasses standard OBD PID polling for high-frequency data — RPM at 100 Hz, oil/coolant temp at 10–20 Hz, with periodic OBD fallback for remaining channels (speed, load, voltage, intake temp)
-  - ZN/C6 (Gen1): 0x140 (RPM + TPS) + 0x360 (oil + coolant temp)
-  - ZD8 (Gen2): 0x40 (RPM + TPS) + 0x345 (oil + coolant temp)
+- **CAN broadcast frame ATMA monitoring**: only ZN/C6 (Gen1) bypasses standard OBD PID polling — 0x140 (TPS) + 0x360 (oil + coolant temp); all other profiles stay on standard OBD polling
+- **Single-thread ELM327 loop**: no mixed OBD/CAN parallel path; only ZN/C6 CAN uses ATMA, so the adapter is never contended by dual polling
 - **Custom boot logo & boot media playback**: configurable boot logo with multi-block animation, SPIFFS-mounted bootmedia partition for rich startup sequences
 - **Unified vehicle configuration system**: compile-time `vehicle_custom_config.h` for per-vehicle thresholds, warnings, and gauge ranges
 - Real-time display for RPM, speed, coolant/intake/oil temperature, oil pressure, turbo boost, throttle, engine load, battery voltage, gear (prefers CAN-decoded precise gear when available, falls back to RPM/speed estimate), and related values
 - "NO SIGNAL" indicator on the gauge pages when BLE/ESP-NOW data goes stale
-- Vehicle profile selector: per-car gear ratios (up to 8-speed), oil-temp strategy, turbo boost, and per-vehicle protocol lock (e.g. BMW/Porsche force ISO 15765-4 CAN)
-- Manufacturer oil-temp paths beyond standard PID 01 5C: Toyota/Subaru Mode 21, Mazda Mode 22, MINI/BMW Mode 22, BMW F-series Mode 22 44 02, Porsche CAN broadcast 0x441 monitoring
+- Vehicle profile selector: per-car gear ratios (up to 8-speed), oil-temp strategy, turbo boost, and per-vehicle protocol lock when needed
+- Manufacturer oil-temp paths beyond standard PID 01 5C: Toyota/Subaru Mode 21, Mazda Mode 22, MINI/BMW Mode 22, BMW F-series Mode 22 44 02
 - Configurable pointer (needle) gauge page with swipe-down data-source selection
 - **RPM over-limit flash warning**: configurable threshold, background image flashes red when RPM exceeds the limit
+- **Brake-temp / oil-pressure alarm throttle**: those two alarms are rate-limited to once every 30 seconds
 - **Triple-gauge startup animation**: three boards display "RACE / AS / ONE" in sequence over ESP-NOW synchronized intro
 - Robust connection handling: waits for BLE notify subscription, re-initializes on every reconnect, and self-heals (re-init + auto reconnect) when data stalls — no manual reconnect needed after ignition
 - Multi-gauge over ESP-NOW: a master reads OBD and broadcasts; slaves display the same data with no extra OBD load; role is chosen in settings; startup sweep is synchronized; slaves show the master name

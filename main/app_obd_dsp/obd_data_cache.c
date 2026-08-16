@@ -5,42 +5,36 @@
 #include "freertos/task.h"
 #include "esp_timer.h"
 #include "bsp_obd_dsp/nvs_storage.h"
-#include "esp_log.h"
-#include <inttypes.h>
 
 
 // Simple globals protected by a critical section
-static volatile uint16_t s_rpm = 0;
-static volatile uint8_t  s_speed = 0;
-static volatile int16_t  s_coolant_temp = -40;
-static volatile int16_t  s_oil_temp = -100;  // actual oil temp °C, -100=invalid
-static volatile int16_t  s_intake_temp = -40;
-static volatile int16_t  s_load_pct = -1;   // engine load 0~100%, -1=invalid
-static volatile int16_t  s_tps = -1;         // throttle opening 0~100%, -1=invalid
-static volatile int32_t  s_bat_mv = -1;     // battery voltage mV, -1=invalid
-static volatile int16_t  s_oil_pressure_x10 = -1; // oil pressure, 0.1bar, -1=invalid
-static volatile int16_t  s_brake_temp_x10 = -1000; // brake temp, 0.1°C, -1000=invalid
-static volatile int16_t  s_boost_x10 = -32768; // boost gauge pressure, 0.1bar (can be negative = vacuum), -32768=invalid
-static volatile int8_t   s_gear = 127;          // direct gear value: -1=R, 0=N, 1+=forward gear, 127=invalid
-static volatile int16_t  s_afr_x100 = -1;       // air-fuel ratio AFR, ×100 (1470=14.7:1), -1=invalid
-static volatile brake_rs485_status_t s_brake_rs485_status = BRAKE_RS485_IDLE;
+static int16_t  s_coolant_temp = -40;
+static int16_t  s_oil_temp = -100;
+static int16_t  s_intake_temp = -40;
+static int16_t  s_load_pct = -1;
+static int16_t  s_tps = -1;
+static int32_t  s_bat_mv = -1;
+static int16_t  s_oil_pressure_x10 = -1;
+static int16_t  s_brake_temp_x10 = -1000;
+static int16_t  s_boost_x10 = -32768;
+static int8_t   s_gear = 127;
+static int16_t  s_afr_x100 = -1;
+static brake_rs485_status_t s_brake_rs485_status = BRAKE_RS485_IDLE;
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 
-#define RPM_SMOOTH_TIME_MS   30    // deprecated: RPM is passed through raw and needs no smoothing; kept for compatibility with old references
 #define SPEED_SMOOTH_TIME_MS 300   // speed ramp-up/down time constant (ms); the UI side already has anim_step, keep this small
 #define FALL_TO_ZERO_MS      500   // fall-to-zero ramp-down time constant (ms)
 
 // Smoothing state (advanced on the setter side, getters only read; unaffected by the number of callers)
-static volatile uint16_t s_rpm_smooth = 0;
-static volatile uint8_t  s_speed_smooth = 0;
+static uint16_t s_rpm_smooth = 0;
+static uint8_t  s_speed_smooth = 0;
 static TickType_t s_speed_last_tick = 0;
 static float s_speed_smooth_f = 0.f;
 
 // RPM override layer: during multi-gauge linkage tests, the master gauge injects simulated RPM here.
-// When enabled, obd_data_get_rpm() returns the override value (used for both local display and ESP-NOW broadcast);
-// the real OBD RPM keeps being written to s_rpm_smooth and is restored immediately once the override is cleared.
-static volatile bool     s_rpm_override_en = false;
-static volatile uint16_t s_rpm_override_val = 0;
+// When enabled, obd_data_get_rpm() returns the override value (used for both local display and ESP-NOW broadcast).
+static bool     s_rpm_override_en = false;
+static uint16_t s_rpm_override_val = 0;
 
 void obd_data_rpm_override_set(bool en, uint16_t val)
 {
@@ -53,8 +47,23 @@ void obd_data_rpm_override_set(bool en, uint16_t val)
 void obd_data_set_rpm(uint16_t rpm)
 {
     portENTER_CRITICAL(&s_mux);
-    s_rpm = rpm;
     s_rpm_smooth = rpm;  // CAN 100Hz data is already clean, no smoothing needed
+    portEXIT_CRITICAL(&s_mux);
+}
+
+void obd_data_reset_temp_cache(void)
+{
+    portENTER_CRITICAL(&s_mux);
+    s_coolant_temp = -40;
+    s_oil_temp = -100;
+    s_intake_temp = -40;
+    portEXIT_CRITICAL(&s_mux);
+}
+
+void obd_data_set_oil_temp_invalid(void)
+{
+    portENTER_CRITICAL(&s_mux);
+    s_oil_temp = -100;
     portEXIT_CRITICAL(&s_mux);
 }
 
@@ -72,7 +81,6 @@ void obd_data_set_speed(uint8_t kmh)
 
     uint8_t smoothed = (uint8_t)(s_speed_smooth_f + 0.5f);
     portENTER_CRITICAL(&s_mux);
-    s_speed = kmh;
     s_speed_smooth = smoothed;
     portEXIT_CRITICAL(&s_mux);
 }
@@ -86,7 +94,6 @@ void obd_data_set_coolant_temp(int16_t temp)
 
 void obd_data_set_oil_temp(int16_t temp)
 {
-    // Valid range -20~150°C; values outside are treated as parse errors and dropped
     if (temp < -20 || temp > 150) return;
     portENTER_CRITICAL(&s_mux);
     s_oil_temp = temp;
@@ -100,7 +107,6 @@ void obd_data_set_intake_temp(int16_t temp)
     portEXIT_CRITICAL(&s_mux);
 }
 
-// RPM/speed: smoothing is done on the setter side; getters return the smoothed value directly (safe with multiple callers)
 uint16_t obd_data_get_rpm(void)
 {
     uint16_t val;
@@ -196,7 +202,6 @@ int32_t obd_data_get_bat_mv(void)
 
 void obd_data_set_oil_pressure_x10(int16_t pressure_x10)
 {
-    // Plausible range: 0.0bar ~ 20.0bar
     if (pressure_x10 < 0 || pressure_x10 > 200) return;
     portENTER_CRITICAL(&s_mux);
     s_oil_pressure_x10 = pressure_x10;
@@ -214,7 +219,6 @@ int16_t obd_data_get_oil_pressure_x10(void)
 
 void obd_data_set_boost_x10(int16_t boost_x10)
 {
-    // Plausible boost gauge pressure range: -1.5bar (vacuum) ~ +30.0bar
     if (boost_x10 < -15 || boost_x10 > 300) return;
     portENTER_CRITICAL(&s_mux);
     s_boost_x10 = boost_x10;
@@ -232,7 +236,6 @@ int16_t obd_data_get_boost_x10(void)
 
 void obd_data_set_brake_temp_x10(int16_t temp_x10)
 {
-    // Plausible range: -50.0°C ~ 1200.0°C
     if (temp_x10 < -500 || temp_x10 > 12000) return;
     portENTER_CRITICAL(&s_mux);
     s_brake_temp_x10 = temp_x10;
@@ -273,7 +276,6 @@ int8_t obd_data_get_gear(void)
 
 void obd_data_set_afr_x100(int16_t afr_x100)
 {
-    // Plausible range: 8.0:1 ~ 22.0:1 (800~2200 ×100)
     if (afr_x100 < 800 || afr_x100 > 2200) return;
     portENTER_CRITICAL(&s_mux);
     s_afr_x100 = afr_x100;
@@ -287,6 +289,28 @@ int16_t obd_data_get_afr_x100(void)
     val = s_afr_x100;
     portEXIT_CRITICAL(&s_mux);
     return val;
+}
+
+void obd_data_get_snapshot(obd_data_snapshot_t *out)
+{
+    if (!out) return;
+
+    portENTER_CRITICAL(&s_mux);
+    out->rpm = s_rpm_override_en ? s_rpm_override_val : s_rpm_smooth;
+    out->speed = s_speed_smooth;
+    out->coolant_temp = s_coolant_temp;
+    out->oil_temp = s_oil_temp;
+    out->intake_temp = s_intake_temp;
+    out->load_pct = s_load_pct;
+    out->tps = s_tps;
+    out->bat_mv = s_bat_mv;
+    out->oil_pressure_x10 = s_oil_pressure_x10;
+    out->boost_x10 = s_boost_x10;
+    out->brake_temp_x10 = s_brake_temp_x10;
+    out->gear = s_gear;
+    out->afr_x100 = s_afr_x100;
+    out->brake_rs485_status = s_brake_rs485_status;
+    portEXIT_CRITICAL(&s_mux);
 }
 
 /**
@@ -307,7 +331,6 @@ enGear calculate_gear(float rpm, float speed) {
     const vehicle_profile_t *profile = vehicle_profile_get_active();
     float calc_const = vehicle_profile_calc_constant(profile);
     float total_ratio = rpm / (speed * calc_const);
-    ESP_LOGD("gear", "RPM=%.0f Speed=%.1f ratio=%.2f", rpm, speed, total_ratio);
 
     // 3. Compare against each gear's ratio range
     uint8_t range_count = 0;
@@ -340,17 +363,10 @@ enGear calculate_gear(float rpm, float speed) {
  */
 static void mileage_timer_cb(void* arg)
 {
-    static uint16_t usPrintCnt = 0;
-    nvs_stat_update_speed(obd_data_get_speed(), 1000);
-
-    if(obd_data_get_speed() > 0){
-        usPrintCnt++;
-        if(usPrintCnt >= 20){
-            usPrintCnt = 0;
-            nvs_stat_t stat = nvs_stat_get_mileage();
-            ESP_LOGI("MileageStat", " odometer: %" PRIu64 ", trip: %" PRIu64 ", run_time: %" PRIu64 ", max_speed: %d, avg_speed: %d, speed: %d", stat.odometer_m, stat.trip_m, stat.run_time_s, stat.max_speed_kmh, stat.avg_speed_kmh, obd_data_get_speed());
-        }
-    }
+    (void)arg;
+    obd_data_snapshot_t snap;
+    obd_data_get_snapshot(&snap);
+    nvs_stat_update_speed(snap.speed, 1000);
 }
 
 /**
@@ -361,7 +377,6 @@ static void mileage_timer_cb(void* arg)
  */
 void vMileageDataStatisticTask(void)
 {
-    ESP_LOGI("MileageStat", "MileageStatTask Init Start");
     static esp_timer_handle_t s_timer = NULL;
     if(!s_timer){
         const esp_timer_create_args_t args={
@@ -374,4 +389,3 @@ void vMileageDataStatisticTask(void)
         }
     }
 }
-  

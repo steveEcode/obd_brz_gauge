@@ -199,7 +199,7 @@ int16_t oil_formula_parse_resp(const oil_formula_t *f,
 ## 注意事项 / Notes
 
 1. **name 必须完全匹配** — `vehicle_profiles.c` 和 `vehicle_custom_config.h` 中的 `match_name` 必须字符串完全一致。
-2. **OIL_SPECIAL 类型** — 目前用于 Toyota Mode 21 和 Porsche CAN 441，这两种解析逻辑较复杂，仍需 `elm327_ble_client.c` 中的专用代码处理。未来可逐步迁移。
+2. **OIL_SPECIAL 类型** — 目前用于 Toyota Mode 21 及其他少量遗留特殊解析，这类逻辑较复杂，仍需 `elm327_ble_client.c` 中的专用代码处理。未来可逐步迁移。
 3. **CAN 规则中的位偏移** — 采用 SAE J1939 风格的位编号：Byte0 的 LSB = bit 0，Byte1 的 LSB = bit 8。
 4. **双字节公式** — `resp_bytes=2` 时按大端序组合：`value = data[byte] * 256 + data[byte+1]`。
 5. **回退机制** — `oil_primary` 连续失败 5 次后自动切换到 `oil_secondary`。

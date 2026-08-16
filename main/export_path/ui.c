@@ -25,6 +25,8 @@
 #include "esp_idf_version.h"
 #include "esp_timer.h"
 #include <stdio.h>
+#include <stdint.h>
+#include <string.h>
 
 
 static const char *TAG = "ui";
@@ -369,7 +371,7 @@ static void boot_video_timer_cb(lv_timer_t *t)
     uint32_t elapsed_ms = (uint32_t)((now_us - s_boot_video_start_us) / 1000);
     boot_block_player_update(elapsed_ms);
     if (boot_block_player_is_finished()) {
-        ESP_LOGI(TAG, "Boot video finished");
+        ESP_LOGD(TAG, "Boot video finished");
         s_boot_video_active = false;
         s_boot_video_ready = false;
         boot_block_player_destroy();
@@ -403,7 +405,7 @@ void ui_showroom_set_active(bool en) {
     s_showroom_active = en;
     s_showroom_tap_cnt = 0;
     if (en) {
-        ESP_LOGI("showroom", "ENTER role=%d", nvs_cfg_get()->device_role);
+        ESP_LOGD("showroom", "ENTER role=%d", nvs_cfg_get()->device_role);
         s_sweep_step = 0;
         // pick 4 random data pages; the position offset guarantees the three gauges differ
         static const uint8_t pool[] = { 3, 4, 5, 6, 7 };
@@ -416,7 +418,7 @@ void ui_showroom_set_active(bool en) {
         s_showroom_tick = 0;
         showroom_load_slot(0);
     } else {
-        ESP_LOGI("showroom", "EXIT");
+        ESP_LOGD("showroom", "EXIT");
     }
 }
 
@@ -532,12 +534,16 @@ void ui_needle_page_update(float sweep_ratio, int16_t clt, int16_t iat, int16_t 
     if (!ui_ScreenPageNeedle || !ui_NeedleMeter || !ui_NeedleIndic) return;
     uint8_t src = needle_active_source();
     const needle_scale_meta_t *ns = &s_needle_scale_meta[src];
+    static int32_t s_last_needle_meter = INT32_MIN;
 
     // Sweep self-test after connecting: the needle sweeps the full range nmin→nmax→nmin
     if (sweep_ratio >= 0.0f) {
         if (sweep_ratio > 1.0f) sweep_ratio = 1.0f;
         int32_t nval = ns->nmin + (int32_t)((float)(ns->nmax - ns->nmin) * sweep_ratio);
-        lv_meter_set_indicator_value(ui_NeedleMeter, ui_NeedleIndic, nval);
+        if (nval != s_last_needle_meter) {
+            lv_meter_set_indicator_value(ui_NeedleMeter, ui_NeedleIndic, nval);
+            s_last_needle_meter = nval;
+        }
         disp_item_set_text(ui_NeedleValueLabel, src, nval * ns->div, true);
         return;
     }
@@ -562,7 +568,10 @@ void ui_needle_page_update(float sweep_ratio, int16_t clt, int16_t iat, int16_t 
     int32_t nval = (s_disp_needle / ns->div);
     if (nval < ns->nmin) nval = ns->nmin;
     if (nval > ns->nmax) nval = ns->nmax;
-    lv_meter_set_indicator_value(ui_NeedleMeter, ui_NeedleIndic, nval);
+    if (nval != s_last_needle_meter) {
+        lv_meter_set_indicator_value(ui_NeedleMeter, ui_NeedleIndic, nval);
+        s_last_needle_meter = nval;
+    }
 }
 
 static void oil_pressure_trend_init(void)
@@ -702,6 +711,7 @@ static void boot_enter_default_page(void)
 static lv_obj_t *s_no_signal_lbl = NULL;
 static void update_no_signal_overlay(bool signal_ok)
 {
+    static bool s_no_signal_visible = false;
     lv_obj_t *act = lv_scr_act();
     // only warn on the pages that actually display gauge data; settings/scan/boot-animation pages don't need it
     bool on_gauge_page = (act == ui_ScreenPageTemp || act == ui_ScreenPageInfo ||
@@ -724,11 +734,77 @@ static void update_no_signal_overlay(bool signal_ok)
             lv_label_set_text(s_no_signal_lbl, "NO SIGNAL");
             lv_obj_align(s_no_signal_lbl, LV_ALIGN_TOP_MID, 0, 34);
         }
-        lv_obj_move_foreground(s_no_signal_lbl);
-        lv_obj_clear_flag(s_no_signal_lbl, LV_OBJ_FLAG_HIDDEN);
-    } else if (s_no_signal_lbl) {
+        if (!s_no_signal_visible) {
+            lv_obj_clear_flag(s_no_signal_lbl, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_move_foreground(s_no_signal_lbl);
+            s_no_signal_visible = true;
+        }
+    } else if (s_no_signal_lbl && s_no_signal_visible) {
         lv_obj_add_flag(s_no_signal_lbl, LV_OBJ_FLAG_HIDDEN);
+        s_no_signal_visible = false;
     }
+}
+
+static void ui_update_metric_header(lv_obj_t *name_label,
+                                    lv_obj_t *unit_label,
+                                    lv_obj_t *dot_label,
+                                    disp_item_t item)
+{
+    lv_color_t color = lv_color_hex(s_disp_meta[item].color);
+
+    if (name_label) {
+        lv_label_set_text(name_label, s_disp_meta[item].name);
+        lv_obj_set_style_text_color(name_label, color, LV_PART_MAIN);
+    }
+    if (unit_label) {
+        lv_label_set_text(unit_label, s_disp_meta[item].unit);
+    }
+    if (dot_label) {
+        lv_obj_set_style_bg_color(dot_label, color, LV_PART_MAIN);
+    }
+}
+
+static uint32_t ui_refresh_period_ms_for_screen(lv_obj_t *scr,
+                                                bool in_sweep,
+                                                bool rpm_flashing,
+                                                bool rpm_link_ramp)
+{
+    if (in_sweep) {
+        return SWEEP_TICK_MS;
+    }
+    if (rpm_flashing) {
+        return RPM_FLASH_PERIOD_MS;
+    }
+    if (rpm_link_ramp) {
+        return 16;
+    }
+
+    if (scr == ui_ScreenPageGear || scr == ui_ScreenPageRpm ||
+        scr == ui_ScreenPageSpeed || scr == ui_ScreenPageNeedle) {
+        return 16;
+    }
+    if (scr == ui_ScreenPageTemp || scr == ui_ScreenPageInfo ||
+        scr == ui_ScreenPageOilPressure || scr == ui_ScreenPageLogo ||
+        scr == ui_ScreenPageIntro) {
+        return 33;
+    }
+    if (scr == ui_ScreenPageSettings || scr == ui_ScreenPageMultiGauge ||
+        scr == ui_ScreenPageBLEScan || scr == ui_ScreenPageODBProtocal ||
+        scr == ui_ScreenPageTempCustom || scr == ui_ScreenPageInfoCustom ||
+        scr == ui_ScreenPageNeedleConfig || scr == ui_ScreenPageChartConfig ||
+        scr == ui_ScreenPageChartAlarm || scr == ui_ScreenPageOilWarn ||
+        scr == ui_ScreenPageRpmWarn || scr == ui_ScreenPageEasterEgg) {
+        return 200;
+    }
+    return 50;
+}
+
+static bool ui_screen_updates_live_data(lv_obj_t *scr)
+{
+    return scr == ui_ScreenPageGear || scr == ui_ScreenPageRpm ||
+           scr == ui_ScreenPageSpeed || scr == ui_ScreenPageNeedle ||
+           scr == ui_ScreenPageTemp || scr == ui_ScreenPageOilPressure ||
+           scr == ui_ScreenPageInfo;
 }
 
 void my_timerMain(lv_timer_t * timer)
@@ -770,23 +846,22 @@ void my_timerMain(lv_timer_t * timer)
     static uint8_t ucOnlyOnce = 0;
     static uint32_t ulOpenLightTimeCnt = 0;
 
-    /* ---- Read OBD data once, shared by the Temp and Info pages ---- */
-    int16_t clt      = obd_data_get_coolant_temp();
-    int16_t iat      = obd_data_get_intake_temp();
-    int16_t oil      = obd_data_get_oil_temp();      // real oil temperature °C (SSM 22 10 17), -100=invalid
-    int16_t oilp_x10 = obd_data_get_oil_pressure_x10(); // oil pressure 0.1bar, -1=invalid
-    int16_t brake_x10 = obd_data_get_brake_temp_x10(); // brake temperature 0.1°C
-    int16_t load_pct = obd_data_get_load_pct();      // engine load 0~100%, -1=invalid
-    int16_t tps      = obd_data_get_tps();
-    int32_t bat_mv   = obd_data_get_bat_mv();
-    int16_t boost_x10 = obd_data_get_boost_x10(); // boost gauge pressure 0.1bar, -32768=invalid
-    int16_t afr_x100 = obd_data_get_afr_x100();   // air-fuel ratio ×100, -1=invalid
     const nvs_user_cfg_t *user_cfg = nvs_cfg_get();
+    int16_t clt = 0;
+    int16_t iat = 0;
+    int16_t oil = 0;
+    int16_t oilp_x10 = 0;
+    int16_t brake_x10 = 0;
+    int16_t load_pct = 0;
+    int16_t tps = 0;
+    int32_t bat_mv = 0;
+    int16_t boost_x10 = 0;
+    int16_t afr_x100 = 0;
 
     /* ---- Sweep trigger ----
        Master: triggered the instant the ELM327 BLE connects and advances the animation itself;
        Slave: never self-triggers, driven by the master's broadcast sweep_step (espnow recv → app_event queue). */
-    bool is_slave = (nvs_cfg_get()->device_role == ESPNOW_ROLE_SLAVE);
+    bool is_slave = (user_cfg->device_role == ESPNOW_ROLE_SLAVE);
     // "connected" signal: slave=master data being received, master=ELM327 BLE connected (shared by status display and the master's sweep trigger)
     bool ble_now = is_slave ? espnow_link_slave_has_data() : elm327_ble_is_connected();
     if(!is_slave) {
@@ -799,8 +874,6 @@ void my_timerMain(lv_timer_t * timer)
         }
         s_prev_ble_connected = ble_now;
     }
-    if (!s_showroom_active) update_no_signal_overlay(ble_now);   // showroom mode is a fake-data demo, no NO SIGNAL hint
-
     /* ---- Showroom mode: master drives slots, slaves follow ---- */
     // Slave: enter showroom
     if (!s_showroom_active && s_showroom_pending_enter) {
@@ -874,6 +947,33 @@ void my_timerMain(lv_timer_t * timer)
         if (!is_slave) s_sweep_step = 200 + s_showroom_slot;
     }
 
+    lv_obj_t *scr = lv_scr_act();
+    bool live_data_screen = ui_screen_updates_live_data(scr);
+    bool rpm_warn_possible = user_cfg->rpm_warn_anim_en ||
+                             (user_cfg->device_role != ESPNOW_ROLE_STANDALONE &&
+                              (user_cfg->rpm_warn_linked_en || espnow_link_linktest_active()));
+
+    if (!IN_SWEEP && (live_data_screen || rpm_warn_possible || s_rpm_flashing || s_rpm_link_ramp)) {
+        obd_data_snapshot_t obd;
+
+        obd_data_get_snapshot(&obd);
+        clt       = obd.coolant_temp;
+        iat       = obd.intake_temp;
+        oil       = obd.oil_temp;      // real oil temperature °C (SSM 22 10 17), -100=invalid
+        oilp_x10  = obd.oil_pressure_x10; // oil pressure 0.1bar, -1=invalid
+        brake_x10 = obd.brake_temp_x10; // brake temperature 0.1°C
+        load_pct  = obd.load_pct;      // engine load 0~100%, -1=invalid
+        tps       = obd.tps;
+        bat_mv    = obd.bat_mv;
+        boost_x10 = obd.boost_x10; // boost gauge pressure 0.1bar, -32768=invalid
+        afr_x100  = obd.afr_x100;   // air-fuel ratio ×100, -1=invalid
+        usRpm     = obd.rpm;
+        ucSpeed   = obd.speed;
+        int8_t decoded_gear = obd.gear;
+        eGear = (decoded_gear >= 0 && decoded_gear <= GEAR_8) ? (enGear)decoded_gear
+                                                               : calculate_gear(usRpm, ucSpeed);
+    }
+
     /* ---- Data source: sweep or real OBD ---- */
     float sweep_ratio = -1.0f;   // <0 = not sweeping (real-time data)
     if(IN_SWEEP) {
@@ -903,21 +1003,14 @@ void my_timerMain(lv_timer_t * timer)
     } else {
         /* Sweep just ended (both master/slaves on the step→0 tick): restore configured brightness; happens together with switching back to real values, done once */
         if(s_sweep_bl_last >= 0) {
-            uint8_t d = nvs_cfg_get()->brightness_day;
+            uint8_t d = user_cfg->brightness_day;
             if(d < 10) d = 100;   // 0/not configured → 100, same as the boot backlight
             Set_Backlight(d);
             s_sweep_bl_last = -1;
         }
-        usRpm   = obd_data_get_rpm();
-        ucSpeed = obd_data_get_speed();
-        // Prefer the exact gear decoded directly from CAN (supported by some cars, 127=invalid); only fall back
-        // to the RPM/speed-estimated gear when invalid or reverse (-1; the gear page has no "R" slot, same fallback as before).
-        int8_t decoded_gear = obd_data_get_gear();
-        eGear = (decoded_gear >= 0 && decoded_gear <= GEAR_8) ? (enGear)decoded_gear
-                                                               : calculate_gear(usRpm, ucSpeed);
     }
     /*Gear page: refresh only while this page is actually shown, no idle background updates*/
-    if (lv_scr_act() == ui_ScreenPageGear) {
+    if (scr == ui_ScreenPageGear) {
         static const char *pGearNum[] = {"N","1","2","3","4","5","6","7","8"};
         static enGear s_last_gear_disp = GEAR_NEUTRAL;
         enGear g = (eGear <= GEAR_8) ? eGear : GEAR_8;
@@ -930,7 +1023,7 @@ void my_timerMain(lv_timer_t * timer)
         }
     }
     /*RPM page: direct output, no animation delay (CAN 100Hz data is already clean)*/
-    if (lv_scr_act() == ui_ScreenPageRpm) {
+    if (scr == ui_ScreenPageRpm) {
         static int32_t s_last_rpm = -1;
         if ((int32_t)usRpm != s_last_rpm) {
             s_last_rpm = (int32_t)usRpm;
@@ -939,7 +1032,7 @@ void my_timerMain(lv_timer_t * timer)
         }
     }
     /*Speed page: same as above, refresh only while the page is active*/
-    if (lv_scr_act() == ui_ScreenPageSpeed) {
+    if (scr == ui_ScreenPageSpeed) {
         static int32_t s_disp_spd = 0;
         static int32_t s_last_spd = -1;
         if (IN_SWEEP) { s_disp_spd = ucSpeed; }
@@ -952,11 +1045,16 @@ void my_timerMain(lv_timer_t * timer)
     }
 
  /*Needle page (configurable data source, sweeps along during gauge sweep)*/
-    ui_needle_page_update(sweep_ratio, clt, iat, oil, load_pct, tps, bat_mv,
-                          oilp_x10, brake_x10, usRpm, ucSpeed, boost_x10, afr_x100);
+    if (scr == ui_ScreenPageNeedle) {
+        ui_needle_page_update(sweep_ratio, clt, iat, oil, load_pct, tps, bat_mv,
+                              oilp_x10, brake_x10, usRpm, ucSpeed, boost_x10, afr_x100);
+    }
 
- /*Temp page*/
-    if(ui_LabelTempValue[0]) {
+    /*Temp page*/
+    if (scr == ui_ScreenPageTemp && ui_LabelTempValue[0]) {
+        static int32_t s_disp_temp[3] = {0};
+        static uint8_t s_last_temp_map[3] = {0xFF, 0xFF, 0xFF};
+
         if(IN_SWEEP) {
             int step = s_sweep_step - 1; // already incremented
             float r;
@@ -964,28 +1062,28 @@ void my_timerMain(lv_timer_t * timer)
             else r = 1.0f;   // hold at max (hold phase)
 
             for (int i = 0; i < 3; ++i) {
-                disp_item_t item = (disp_item_t)(user_cfg->temp_display_map[i] % DISP_ITEM_COUNT);
-                lv_label_set_text(ui_LabelTempName[i], s_disp_meta[item].name);
-                lv_label_set_text(ui_LabelTempUnit[i], s_disp_meta[item].unit);
-                lv_obj_set_style_text_color(ui_LabelTempName[i], lv_color_hex(s_disp_meta[item].color), LV_PART_MAIN);
-                if (ui_LabelTempDot[i]) lv_obj_set_style_bg_color(ui_LabelTempDot[i], lv_color_hex(s_disp_meta[item].color), LV_PART_MAIN);
+                uint8_t map_idx = user_cfg->temp_display_map[i];
+                disp_item_t item = (disp_item_t)(map_idx % DISP_ITEM_COUNT);
+
+                if (s_last_temp_map[i] != map_idx) {
+                    s_last_temp_map[i] = map_idx;
+                    s_disp_temp[i] = 0;  // reset on source switch, avoiding a ramp from the old source's value
+                    ui_update_metric_header(ui_LabelTempName[i], ui_LabelTempUnit[i], ui_LabelTempDot[i], item);
+                }
 
                 int32_t sw = disp_item_sweep_value(item, r);
                 disp_item_set_text(ui_LabelTempValue[i], item, sw, true);
                 disp_item_set_value_color(ui_LabelTempValue[i], item, sw, true);
             }
         } else {
-            static int32_t s_disp_temp[3] = {0};
-            static uint8_t s_last_temp_map[3] = {0xFF, 0xFF, 0xFF};
             for (int i = 0; i < 3; ++i) {
-                disp_item_t item = (disp_item_t)(user_cfg->temp_display_map[i] % DISP_ITEM_COUNT);
-                if (s_last_temp_map[i] != user_cfg->temp_display_map[i]) {
-                    s_last_temp_map[i] = user_cfg->temp_display_map[i];
+                uint8_t map_idx = user_cfg->temp_display_map[i];
+                disp_item_t item = (disp_item_t)(map_idx % DISP_ITEM_COUNT);
+
+                if (s_last_temp_map[i] != map_idx) {
+                    s_last_temp_map[i] = map_idx;
                     s_disp_temp[i] = 0;  // reset on source switch, avoiding a ramp from the old source's value
-                    lv_label_set_text(ui_LabelTempName[i], s_disp_meta[item].name);
-                    lv_label_set_text(ui_LabelTempUnit[i], s_disp_meta[item].unit);
-                    lv_obj_set_style_text_color(ui_LabelTempName[i], lv_color_hex(s_disp_meta[item].color), LV_PART_MAIN);
-                    if (ui_LabelTempDot[i]) lv_obj_set_style_bg_color(ui_LabelTempDot[i], lv_color_hex(s_disp_meta[item].color), LV_PART_MAIN);
+                    ui_update_metric_header(ui_LabelTempName[i], ui_LabelTempUnit[i], ui_LabelTempDot[i], item);
                 }
 
                 int32_t value = 0;
@@ -996,7 +1094,7 @@ void my_timerMain(lv_timer_t * timer)
     }
 
     /* Generic chart page update: the displayed data item is chosen by chart_source_idx (merges the former oil-pressure/brake-temp pages) */
-    if (ui_LabelOilPressureText) {
+    if (scr == ui_ScreenPageOilPressure && ui_LabelOilPressureText) {
         static int32_t s_disp_chart = 0;
         static uint8_t s_last_chart_src = 0xFF;
         disp_item_t citem = (disp_item_t)(user_cfg->chart_source_idx % DISP_ITEM_COUNT);
@@ -1041,7 +1139,10 @@ void my_timerMain(lv_timer_t * timer)
     }
 
     /* Info page update */
-    if (ui_LabelInfoValue[0]) {
+    if (scr == ui_ScreenPageInfo && ui_LabelInfoValue[0]) {
+        static int32_t s_disp_info[5] = {0};
+        static uint8_t s_last_info_map[5] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+
         if (IN_SWEEP) {
             int step = s_sweep_step - 1; // already incremented above
             float r;
@@ -1049,26 +1150,28 @@ void my_timerMain(lv_timer_t * timer)
             else r = 1.0f;   // hold at max (hold phase)
 
             for (int i = 0; i < 5; ++i) {
-                disp_item_t item = (disp_item_t)(user_cfg->info_display_map[i] % DISP_ITEM_COUNT);
-                lv_label_set_text(ui_LabelInfoName[i], s_disp_meta[item].name);
-                lv_label_set_text(ui_LabelInfoUnit[i], s_disp_meta[item].unit);
-                lv_obj_set_style_text_color(ui_LabelInfoName[i], lv_color_hex(s_disp_meta[item].color), LV_PART_MAIN);
+                uint8_t map_idx = user_cfg->info_display_map[i];
+                disp_item_t item = (disp_item_t)(map_idx % DISP_ITEM_COUNT);
+
+                if (s_last_info_map[i] != map_idx) {
+                    s_last_info_map[i] = map_idx;
+                    s_disp_info[i] = 0;  // reset on source switch, avoiding a ramp from the old source's value
+                    ui_update_metric_header(ui_LabelInfoName[i], ui_LabelInfoUnit[i], NULL, item);
+                }
 
                 int32_t sw = disp_item_sweep_value(item, r);
                 disp_item_set_text(ui_LabelInfoValue[i], item, sw, true);
                 disp_item_set_value_color(ui_LabelInfoValue[i], item, sw, true);
             }
         } else {
-            static int32_t s_disp_info[5] = {0};
-            static uint8_t s_last_info_map[5] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
             for (int i = 0; i < 5; ++i) {
-                disp_item_t item = (disp_item_t)(user_cfg->info_display_map[i] % DISP_ITEM_COUNT);
-                if (s_last_info_map[i] != user_cfg->info_display_map[i]) {
-                    s_last_info_map[i] = user_cfg->info_display_map[i];
+                uint8_t map_idx = user_cfg->info_display_map[i];
+                disp_item_t item = (disp_item_t)(map_idx % DISP_ITEM_COUNT);
+
+                if (s_last_info_map[i] != map_idx) {
+                    s_last_info_map[i] = map_idx;
                     s_disp_info[i] = 0;  // reset on source switch, avoiding a ramp from the old source's value
-                    lv_label_set_text(ui_LabelInfoName[i], s_disp_meta[item].name);
-                    lv_label_set_text(ui_LabelInfoUnit[i], s_disp_meta[item].unit);
-                    lv_obj_set_style_text_color(ui_LabelInfoName[i], lv_color_hex(s_disp_meta[item].color), LV_PART_MAIN);
+                    ui_update_metric_header(ui_LabelInfoName[i], ui_LabelInfoUnit[i], NULL, item);
                 }
 
                 int32_t value = 0;
@@ -1079,9 +1182,12 @@ void my_timerMain(lv_timer_t * timer)
     }
 
     /* Dynamically update the EasterEgg (version page) info: add a MODE line and show BLE or the master link depending on master/slave */
-    if(ui_LabelEasterEggInfo) {
+    if (scr == ui_ScreenPageEasterEgg && ui_LabelEasterEggInfo) {
+        static char s_last_easteregg_info[192];
+        char info_text[192];
         const char *mode_str = is_slave ? "SLAVE" : "MASTER";
         const char *conn_label, *conn_name;
+
         if (is_slave) {
             const char *mname = espnow_link_get_master_name();
             conn_label = "SLAVE";
@@ -1092,7 +1198,8 @@ void my_timerMain(lv_timer_t * timer)
             conn_label = "BLE";
             conn_name  = dev_name;
         }
-        lv_label_set_text_fmt(ui_LabelEasterEggInfo,
+
+        snprintf(info_text, sizeof(info_text),
             "ESP32-S3  IDF %d.%d.%d\n"
             "LVGL %d.%d.%d\n"
             "MODE: %s\n"
@@ -1103,6 +1210,11 @@ void my_timerMain(lv_timer_t * timer)
             mode_str, conn_label, conn_name,
             ble_now ? (is_slave ? "Linked" : "Connected")
                     : (is_slave ? "Waiting" : "Disconnected"));
+        if (strcmp(s_last_easteregg_info, info_text) != 0) {
+            strncpy(s_last_easteregg_info, info_text, sizeof(s_last_easteregg_info));
+            s_last_easteregg_info[sizeof(s_last_easteregg_info) - 1] = '\0';
+            lv_label_set_text(ui_LabelEasterEggInfo, s_last_easteregg_info);
+        }
     }
  
 #if EXAMPLE_PIN_NUM_BK_LIGHT >= 0
@@ -1112,11 +1224,10 @@ void my_timerMain(lv_timer_t * timer)
             ulOpenLightTimeCnt++;
             if(ulOpenLightTimeCnt > 400 / 200)
             {
-                const nvs_user_cfg_t *bl_cfg = nvs_cfg_get();
-                uint8_t bright = bl_cfg->brightness_day;
+                uint8_t bright = user_cfg->brightness_day;
                 if(bright < 10) bright = 100;
                 Set_Backlight(bright);
-                ESP_LOGI(TAG, "Set LCD backlight to %d%%", bright);
+                ESP_LOGD(TAG, "Set LCD backlight to %d%%", bright);
                 ulOpenLightTimeCnt = 0;
                 ucOnlyOnce = 1;//run once only
             }
@@ -1131,7 +1242,6 @@ void my_timerMain(lv_timer_t * timer)
         uint8_t intro_val = nvs_intro_enable_get();
         bool want_video = (intro_val >= 2 && intro_val <= 4);
         if (!s_boot_done && !s_showroom_active && !s_boot_video_done && want_video) {
-            const nvs_user_cfg_t *cfg_vm = nvs_cfg_get();
             // show the Logo for 1 second first, then enter the video
             static int64_t s_video_logo_start_us = 0;
             if (s_video_logo_start_us == 0) s_video_logo_start_us = esp_timer_get_time();
@@ -1157,7 +1267,7 @@ void my_timerMain(lv_timer_t * timer)
                     if (boot_block_player_create(s_boot_video_screen, &canvas)) {
                         // no lv_scr_load yet: keep the Logo screen, switch only when playback starts
                         s_boot_video_ready = true;
-                        ESP_LOGI(TAG, "Boot video ready (logo kept)");
+                        ESP_LOGD(TAG, "Boot video ready (logo kept)");
                     } else {
                         lv_obj_del(s_boot_video_screen);
                         s_boot_video_screen = NULL;
@@ -1170,7 +1280,7 @@ void my_timerMain(lv_timer_t * timer)
             // Phase 2: wait for the sync signal before playing
             if (s_boot_video_ready && !s_boot_video_active) {
                 bool should_start = false;
-                uint8_t role = cfg_vm->device_role;
+                uint8_t role = user_cfg->device_role;
                 if (role == ESPNOW_ROLE_STANDALONE) {
                     // standalone: play directly
                     should_start = true;
@@ -1210,7 +1320,7 @@ void my_timerMain(lv_timer_t * timer)
                     s_boot_video_active = true;
                     s_boot_video_start_us = esp_timer_get_time();
                     s_boot_video_timer = lv_timer_create(boot_video_timer_cb, 33, NULL);
-                    ESP_LOGI(TAG, "Boot video started");
+                    ESP_LOGD(TAG, "Boot video started");
                 }
             }
             if (s_boot_video_active || s_boot_video_ready) return;
@@ -1251,7 +1361,10 @@ void my_timerMain(lv_timer_t * timer)
 
         // Rendering + screen switch
         if (s_intro_step >= 1 && s_intro_step <= 5) {
+            static int8_t s_last_intro_word = -1;
+
             if (!s_intro_shown) {
+                s_last_intro_word = -1;
                 if (ui_ScreenPageIntro == NULL) ui_ScreenPageIntro_screen_init();
                 if (!in_showroom_intro) {
                     lv_scr_load_anim(ui_ScreenPageIntro, LV_SCR_LOAD_ANIM_FADE_ON, 150, 0, false);
@@ -1263,7 +1376,11 @@ void my_timerMain(lv_timer_t * timer)
                 static const char *words[] = {"", "RACE", "AS", "ONE"};
                 uint8_t pos = nvs_device_position_get();
                 if (pos < 1 || pos > 3) pos = 1;
-                lv_label_set_text(ui_LabelIntroWord, (s_intro_step >= pos + 1) ? words[pos] : "");
+                int8_t word_idx = (s_intro_step >= pos + 1) ? (int8_t)pos : 0;
+                if (word_idx != s_last_intro_word) {
+                    s_last_intro_word = word_idx;
+                    lv_label_set_text(ui_LabelIntroWord, words[word_idx]);
+                }
             }
         } else if (s_intro_step == 255 && !in_showroom_intro) {
             boot_enter_default_page();   // enter the default page only at boot; showroom doesn't jump away
@@ -1383,30 +1500,16 @@ void my_timerMain(lv_timer_t * timer)
         }
     }
 
-    /* ---- Adaptive refresh rate: slow config/static pages down to save redraws, everything else stays at 200ms ----
-       Only this UI timer's period changes (pure redraw pacing); no OBD/RS485/ESP-NOW query or broadcast is affected.
-       Data is OBD-rate-limited, so faster redraws on data pages gain nothing; slowing only static pages is pure CPU/power savings. */
+    if (!s_showroom_active) {
+        update_no_signal_overlay(ble_now);   // showroom mode is a fake-data demo, no NO SIGNAL hint
+    }
+
+    /* ---- Adaptive refresh rate: data pages run fast, static pages stay slow ----
+       Only this UI timer's period changes (pure redraw pacing); no OBD/RS485/ESP-NOW query or broadcast is affected. */
     if (timer) {
         static uint32_t s_refresh_ms = 200;
-        uint32_t want_ms;
-        if (IN_SWEEP) {
-            want_ms = SWEEP_TICK_MS;   // high rate during the sweep animation so digits ramp smoothly
-        } else if (s_rpm_flashing) {
-            want_ms = RPM_FLASH_PERIOD_MS;   // strobe: fixed fast period, symmetric red/black alternation (25ms→20Hz)
-        } else if (s_rpm_link_ramp) {
-            want_ms = 20;   // inside the linked ramp: speed up so the black→red transition stays smooth
-        } else {
-            want_ms = 200;
-            lv_obj_t *scr = lv_scr_act();
-            if (scr == ui_ScreenPageSettings || scr == ui_ScreenPageMultiGauge ||
-                scr == ui_ScreenPageEasterEgg || scr == ui_ScreenPageNeedleConfig ||
-                scr == ui_ScreenPageBLEScan || scr == ui_ScreenPageODBProtocal ||
-                scr == ui_ScreenPageTempCustom || scr == ui_ScreenPageInfoCustom ||
-                scr == ui_ScreenPageOilWarn ||
-                scr == ui_ScreenPageRpmWarn) {
-                want_ms = 400;   // static settings/info/config/warning pages: slow down
-            }
-        }
+        lv_obj_t *refresh_scr = lv_scr_act();
+        uint32_t want_ms = ui_refresh_period_ms_for_screen(refresh_scr, IN_SWEEP, s_rpm_flashing, s_rpm_link_ramp);
         if (want_ms != s_refresh_ms) {
             s_refresh_ms = want_ms;
             lv_timer_set_period(timer, want_ms);
@@ -1742,7 +1845,9 @@ void ui_init(void)
 
     lv_disp_load_scr(ui_ScreenPageLogo);
 
-    lv_timer_create(my_timerMain, 50, NULL);  //50 ms period (20Hz, previously 100ms/10Hz)
+    lv_timer_create(my_timerMain,
+                    ui_refresh_period_ms_for_screen(lv_scr_act(), false, false, false),
+                    NULL);
 }
 
 /* OBD protocol page events */

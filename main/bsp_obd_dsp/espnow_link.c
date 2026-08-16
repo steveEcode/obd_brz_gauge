@@ -118,25 +118,28 @@ static void wifi_espnow_init(void) {
 
 // ========================= Master =========================
 static void master_pack(espnow_obd_packet_t *p) {
+    obd_data_snapshot_t snap;
+
     p->magic   = ESPNOW_MAGIC;
     p->version = ESPNOW_VER;
     // bit0 = ELM connected; bit1 = linked test in progress (slaves use it to force gradient rendering during TEST)
     p->flags   = (elm327_ble_is_connected() ? 0x01 : 0x00) | (s_linktest_active ? 0x02 : 0x00);
     p->seq     = ++s_tx_seq;
-    p->rpm              = obd_data_get_rpm();
-    p->speed            = obd_data_get_speed();
+    obd_data_get_snapshot(&snap);
+    p->rpm              = snap.rpm;
+    p->speed            = snap.speed;
     p->sweep_step       = (uint8_t)ui_sweep_get_step();   // broadcast sweep progress for slave sync
     p->intro_step       = (uint8_t)ui_intro_get_step();   // broadcast boot-animation progress for slave sync
-    p->coolant_temp     = obd_data_get_coolant_temp();
-    p->intake_temp      = obd_data_get_intake_temp();
-    p->oil_temp         = obd_data_get_oil_temp();
-    p->oil_pressure_x10 = obd_data_get_oil_pressure_x10();
-    p->boost_x10        = obd_data_get_boost_x10();
-    p->brake_temp_x10   = obd_data_get_brake_temp_x10();
-    p->load_pct         = obd_data_get_load_pct();
-    p->tps              = obd_data_get_tps();
-    p->bat_mv           = obd_data_get_bat_mv();
-    p->afr_x100         = obd_data_get_afr_x100();
+    p->coolant_temp     = snap.coolant_temp;
+    p->intake_temp      = snap.intake_temp;
+    p->oil_temp         = snap.oil_temp;
+    p->oil_pressure_x10 = snap.oil_pressure_x10;
+    p->boost_x10        = snap.boost_x10;
+    p->brake_temp_x10   = snap.brake_temp_x10;
+    p->load_pct         = snap.load_pct;
+    p->tps              = snap.tps;
+    p->bat_mv           = snap.bat_mv;
+    p->afr_x100         = snap.afr_x100;
     strncpy(p->name, MASTER_NAME, MASTER_NAME_LEN);   // broadcast the master name
 }
 
@@ -171,18 +174,10 @@ static void master_linktest_task(void *arg) {
 
 static void master_task(void *arg) {
     espnow_obd_packet_t pkt;
-    uint32_t n = 0;
     for (;;) {
         master_pack(&pkt);
         esp_err_t r = esp_now_send(s_broadcast_mac, (const uint8_t *)&pkt, sizeof(pkt));
         if (r != ESP_OK) ESP_LOGW(TAG, "esp_now_send err=%d", r);
-        // log a line every ~2s to confirm the broadcast is running (visible even on the bench without a car)
-        if ((++n % (2000 / BROADCAST_INTERVAL_MS)) == 0) {
-            ESP_LOGI(TAG, "TX seq=%u rpm=%u spd=%u clt=%d (obd=%s)",
-                     (unsigned)pkt.seq, pkt.rpm, pkt.speed, pkt.coolant_temp,
-                     (pkt.flags & 0x01) ? "conn" : "--");
-        }
-        // speed up broadcasting during the linked test (100ms -> 20ms) so the slaves' ramped RPM is smooth too
         vTaskDelay(pdMS_TO_TICKS(s_linktest_active ? 20 : BROADCAST_INTERVAL_MS));
     }
 }
@@ -245,10 +240,6 @@ static void handle_presence(const uint8_t *mac, const espnow_presence_t *pr) {
 static void handle_obd(const espnow_obd_packet_t *p) {
     s_last_rx_us = esp_timer_get_time();
     apply_packet(p);
-    static uint32_t rx_n = 0;
-    if ((++rx_n % 20) == 0) {
-        ESP_LOGI(TAG, "RX seq=%u rpm=%u spd=%u clt=%d", (unsigned)p->seq, p->rpm, p->speed, p->coolant_temp);
-    }
 }
 
 // Linked control packet:

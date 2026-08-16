@@ -116,7 +116,6 @@ static void lvgl_touch_cb(lv_indev_drv_t *drv, lv_indev_data_t *data)
         data->point.x = tp_x;
         data->point.y = tp_y;
         data->state = LV_INDEV_STATE_PRESSED;
-        ESP_LOGD(TAG, "Touch: %d,%d", tp_x, tp_y);
     } else {
         data->state = LV_INDEV_STATE_RELEASED;
     }
@@ -146,7 +145,6 @@ static void lvgl_unlock(void)
 
 static void lvgl_port_task(void *arg)
 {
-    ESP_LOGI(TAG, "Starting LVGL task");
     uint32_t task_delay_ms = LVGL_TASK_MAX_DELAY_MS;
     while (1) {
         if (lvgl_lock(-1)) {
@@ -182,20 +180,14 @@ void app_main(void)
     };
     esp_task_wdt_reconfigure(&wdt_cfg);
 
-    uint8_t proto = nvs_cfg_get()->protocol;
-    ESP_LOGI("NVS", "protocol=%d", proto);
-
-    // UI theme index (resolved to a concrete theme in ui_init -> ui_theme_init)
-    ESP_LOGI("NVS", "ui_theme=%d", nvs_cfg_get()->theme_cfg.theme);
-
-    const nvs_stat_t *stat = nvs_stat_get();
-    ESP_LOGI("NVS", "odo=%" PRIu64 " trip=%" PRIu64 " max_spd=%d avg_spd=%d runtime=%" PRIu64,
-             stat->odometer_m, stat->trip_m, stat->max_speed_kmh, stat->avg_speed_kmh, stat->run_time_s);
-
     /* 1.5 Vehicle profile init (loads the saved vehicle index from NVS) */
-    vehicle_profile_set_active(nvs_cfg_get()->vehicle_profile_idx);
-    ESP_LOGI("NVS", "vehicle_profile=%d (%s)",
-             nvs_cfg_get()->vehicle_profile_idx, vehicle_profile_get_active()->name);
+    const nvs_user_cfg_t *user_cfg = nvs_cfg_get();
+    vehicle_profile_set_active(user_cfg->vehicle_profile_idx);
+    const nvs_stat_t *stat = nvs_stat_get();
+    ESP_LOGI("NVS", "cfg: proto=%u theme=%u profile=%u(%s) odo=%" PRIu64 " trip=%" PRIu64 " max=%d avg=%d run=%" PRIu64,
+             user_cfg->protocol, user_cfg->theme_cfg.theme,
+             user_cfg->vehicle_profile_idx, vehicle_profile_get_active()->name,
+             stat->odometer_m, stat->trip_m, stat->max_speed_kmh, stat->avg_speed_kmh, stat->run_time_s);
 
     /* 2. I2C bus 0 init (used by the TCA9554 IO expander, SCL=10 SDA=11) */
     I2C_Init();
@@ -215,7 +207,6 @@ void app_main(void)
     LCD_Init();
 
     /* 5. LVGL init */
-    ESP_LOGI(TAG, "Initialize LVGL");
     lv_init();
 
     /* Allocate double buffers (DMA memory). Larger buffers -> full-screen render strips halved -> higher frame rate.
@@ -231,7 +222,6 @@ void app_main(void)
         buf2 = heap_caps_malloc(buf_px * sizeof(lv_color_t), MALLOC_CAP_DMA);
     }
     assert(buf1 && buf2);
-    ESP_LOGI(TAG, "LVGL draw buffer: %d lines x2", (int)(buf_px / LCD_H_RES));
     lv_disp_draw_buf_init(&disp_buf, buf1, buf2, buf_px);
 
     /* Register display driver */
@@ -272,7 +262,6 @@ void app_main(void)
     g_lvgl_task_handle = s_lvgl_task_handle;
 
     /* 7. Start UI */
-    ESP_LOGI(TAG, "Start UI");
     if (lvgl_lock(-1)) {
         ui_init();
         ui_ext_init();
@@ -284,7 +273,7 @@ void app_main(void)
     boot_media_mount();
 
     /* 8. Branch by role: master (connects to ELM327 for readings + ESP-NOW broadcast) / slave (only receives and displays the master's data) */
-    uint8_t dev_role = nvs_cfg_get()->device_role;
+    uint8_t dev_role = user_cfg->device_role;
 #ifdef ESPNOW_FORCE_SLAVE
     dev_role = ESPNOW_ROLE_SLAVE;   // step 1 test: force slave
 #endif
@@ -297,7 +286,7 @@ void app_main(void)
         espnow_link_start_slave();
         {
             const uint8_t *bm = espnow_link_get_bound_master_mac();
-            ESP_LOGI(TAG, "Bound master MAC at boot: %02x:%02x:%02x:%02x:%02x:%02x (0=unbound)",
+            ESP_LOGD(TAG, "Bound master MAC at boot: %02x:%02x:%02x:%02x:%02x:%02x (0=unbound)",
                      bm[0], bm[1], bm[2], bm[3], bm[4], bm[5]);
         }
     } else {
@@ -311,25 +300,24 @@ void app_main(void)
         /* 8.1 Start BLE OBD - auto-connect only when a MAC is already bound in NVS (exact MAC match only, no fuzzy name matching);
                legacy configs with a name but no MAC no longer auto-connect; the user must re-select on the scan page to bind the MAC.
                MASTER starts the Bluetooth stack even without a configured OBD device, so it can broadcast the SkyGauge pairing signal. */
-        const nvs_user_cfg_t *user_cfg = nvs_cfg_get();
         bool has_obd_mac = (user_cfg->ble_obd_mac[0] | user_cfg->ble_obd_mac[1] |
                             user_cfg->ble_obd_mac[2] | user_cfg->ble_obd_mac[3] |
                             user_cfg->ble_obd_mac[4] | user_cfg->ble_obd_mac[5]) != 0;
         if (has_obd_mac) {
-            ESP_LOGI(TAG, "BLE target device: %s (mac=%02x:%02x:%02x:%02x:%02x:%02x, MAC-only match)",
+            ESP_LOGD(TAG, "BLE target device: %s (mac=%02x:%02x:%02x:%02x:%02x:%02x, MAC-only match)",
                      user_cfg->ble_device_name,
                      user_cfg->ble_obd_mac[0], user_cfg->ble_obd_mac[1], user_cfg->ble_obd_mac[2],
                      user_cfg->ble_obd_mac[3], user_cfg->ble_obd_mac[4], user_cfg->ble_obd_mac[5]);
             elm327_ble_start_default(user_cfg->ble_device_name, user_cfg->ble_obd_mac);
         } else if (user_cfg->ble_device_name[0] != '\0') {
-            ESP_LOGI(TAG, "Saved device '%s' has no bound MAC, auto-connect disabled; re-select it on BLE SCAN page to bind MAC",
+            ESP_LOGD(TAG, "Saved device '%s' has no bound MAC, auto-connect disabled; re-select it on BLE SCAN page to bind MAC",
                      user_cfg->ble_device_name);
             elm327_ble_ensure_stack_init();   // the stack must still be started for RaceChrono/the scan page
         } else if (espnow_on) {
-            ESP_LOGI(TAG, "No saved BLE device, but MASTER needs BLE stack for SkyGauge pairing broadcast");
+            ESP_LOGD(TAG, "No saved BLE device, but MASTER needs BLE stack for SkyGauge pairing broadcast");
             elm327_ble_ensure_stack_init();
         } else {
-            ESP_LOGI(TAG, "No saved BLE device, waiting for user selection");
+            ESP_LOGD(TAG, "No saved BLE device, waiting for user selection");
         }
 
         /* 8.5 Start RaceChrono BLE DIY service (only when the BT stack is already initialized) --
@@ -355,4 +343,3 @@ void app_main(void)
         vMileageDataStatisticTask();
     }
 }
-

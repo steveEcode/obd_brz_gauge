@@ -68,6 +68,7 @@ static int64_t s_last_send_err_log_us = 0;
 
 static TaskHandle_t s_stream_task = NULL;
 static int64_t s_last_all_sent_us[RC_CH_MAX] = {0};
+static obd_data_snapshot_t s_stream_snapshot;
 
 // Stable virtual CAN IDs: keep backward compatibility for RaceChrono formulas.
 #define RC_PID_RPM          0x0000F101u
@@ -235,63 +236,63 @@ static const esp_gatts_attr_db_t s_gatt_db_pair[IDX_PAIR_NB] = {
 
 static int32_t read_rpm(bool *valid)
 {
-    uint16_t v = obd_data_get_rpm();
+    uint16_t v = s_stream_snapshot.rpm;
     *valid = (v > 0);
     return (int32_t)v;
 }
 
 static int32_t read_speed(bool *valid)
 {
-    uint8_t v = obd_data_get_speed();
+    uint8_t v = s_stream_snapshot.speed;
     *valid = true;
     return (int32_t)v;
 }
 
 static int32_t read_clt(bool *valid)
 {
-    int16_t v = obd_data_get_coolant_temp();
+    int16_t v = s_stream_snapshot.coolant_temp;
     *valid = (v > -100);
     return (int32_t)v;
 }
 
 static int32_t read_iat(bool *valid)
 {
-    int16_t v = obd_data_get_intake_temp();
+    int16_t v = s_stream_snapshot.intake_temp;
     *valid = (v > -100);
     return (int32_t)v;
 }
 
 static int32_t read_oil(bool *valid)
 {
-    int16_t v = obd_data_get_oil_temp();
+    int16_t v = s_stream_snapshot.oil_temp;
     *valid = (v > -100);
     return (int32_t)v;
 }
 
 static int32_t read_load_x10(bool *valid)
 {
-    int16_t v = obd_data_get_load_pct();
+    int16_t v = s_stream_snapshot.load_pct;
     *valid = (v >= 0);
     return (int32_t)(v * 10);
 }
 
 static int32_t read_tps_x10(bool *valid)
 {
-    int16_t v = obd_data_get_tps();
+    int16_t v = s_stream_snapshot.tps;
     *valid = (v >= 0);
     return (int32_t)(v * 10);
 }
 
 static int32_t read_bat_mv(bool *valid)
 {
-    int32_t v = obd_data_get_bat_mv();
+    int32_t v = s_stream_snapshot.bat_mv;
     *valid = (v > 0);
     return v;
 }
 
 static int32_t read_brake_x10(bool *valid)
 {
-    int16_t v = obd_data_get_brake_temp_x10();
+    int16_t v = s_stream_snapshot.brake_temp_x10;
     *valid = (v > -1000);
     return (int32_t)v;
 }
@@ -453,7 +454,7 @@ static void process_filter_write(const uint8_t *buf, uint16_t len)
     if (cmd == 0) {
         s_allow_all = false;
         s_rule_count = 0;
-        ESP_LOGI(RC_TAG, "Filter: deny all");
+        ESP_LOGD(RC_TAG, "Filter: deny all");
         return;
     }
 
@@ -466,7 +467,7 @@ static void process_filter_write(const uint8_t *buf, uint16_t len)
         }
         s_allow_all = true;
         s_rule_count = 0;
-        ESP_LOGI(RC_TAG, "Filter: allow all, interval=%u ms", s_allow_all_interval_ms);
+        ESP_LOGD(RC_TAG, "Filter: allow all, interval=%u ms", s_allow_all_interval_ms);
         return;
     }
 
@@ -490,7 +491,7 @@ static void process_filter_write(const uint8_t *buf, uint16_t len)
         for (uint8_t i = 0; i < s_rule_count; i++) {
             if (s_rules[i].pid == pid) {
                 s_rules[i].interval_ms = interval_ms;
-                ESP_LOGI(RC_TAG, "Filter: update PID=0x%08" PRIX32 " interval=%u", pid, interval_ms);
+                ESP_LOGD(RC_TAG, "Filter: update PID=0x%08" PRIX32 " interval=%u", pid, interval_ms);
                 return;
             }
         }
@@ -500,7 +501,7 @@ static void process_filter_write(const uint8_t *buf, uint16_t len)
             s_rules[s_rule_count].interval_ms = interval_ms;
             s_rules[s_rule_count].last_sent_us = 0;
             s_rule_count++;
-            ESP_LOGI(RC_TAG, "Filter: allow PID=0x%08" PRIX32 " interval=%u", pid, interval_ms);
+            ESP_LOGD(RC_TAG, "Filter: allow PID=0x%08" PRIX32 " interval=%u", pid, interval_ms);
         }
     }
 }
@@ -511,6 +512,7 @@ static void stream_task(void *arg)
     while (1) {
         if (s_connected && s_notify_enabled && s_attr_ready) {
             int64_t now_us = esp_timer_get_time();
+            obd_data_get_snapshot(&s_stream_snapshot);
             for (int i = 0; i < RC_CH_MAX; i++) {
                 bool valid = false;
                 int32_t val = s_channels[i].read_scaled(&valid);
@@ -558,7 +560,7 @@ static void gatts_cb(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble
         }
         request_adv_config();
         esp_ble_gatts_create_attr_tab(s_gatt_db, gatts_if, IDX_NB, 0);
-        ESP_LOGI(RC_TAG, "GATTS registered (adv name=%s), waiting for adv+attr table", s_adv_name);
+        ESP_LOGD(RC_TAG, "GATTS registered (adv name=%s), waiting for adv+attr table", s_adv_name);
         break;
 
     case ESP_GATTS_CREAT_ATTR_TAB_EVT:
@@ -571,7 +573,7 @@ static void gatts_cb(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble
             s_handle_filter = h[IDX_CHAR_VAL_FILTER];
             esp_ble_gatts_start_service(h[IDX_SVC]);
             s_attr_ready = true;
-            ESP_LOGI(RC_TAG, "RC attr table ready, CAN main handle=0x%04X", s_handle_can_main);
+            ESP_LOGD(RC_TAG, "RC attr table ready, CAN main handle=0x%04X", s_handle_can_main);
             // After the RC service table is created, create the pairing service attribute table separately
             // (independent create_attr_tab calls, so both services are independently discoverable Primary Services in the peer's GATT database).
             esp_ble_gatts_create_attr_tab(s_gatt_db_pair, gatts_if, IDX_PAIR_NB, 1);
@@ -580,7 +582,7 @@ static void gatts_cb(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble
                    param->add_attr_tab.svc_uuid.uuid.uuid16 == GAUGE_PAIR_SERVICE_UUID) {
             uint16_t *h = param->add_attr_tab.handles;
             esp_ble_gatts_start_service(h[IDX_PAIR_SVC]);
-            ESP_LOGI(RC_TAG, "Pair attr table ready, service handle=0x%04X", h[IDX_PAIR_SVC]);
+            ESP_LOGD(RC_TAG, "Pair attr table ready, service handle=0x%04X", h[IDX_PAIR_SVC]);
         } else {
             ESP_LOGE(RC_TAG, "Create attr table failed, status=%d uuid=0x%04X num_handle=%d",
                      param->add_attr_tab.status, param->add_attr_tab.svc_uuid.uuid.uuid16,
@@ -597,13 +599,13 @@ static void gatts_cb(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble
         s_rule_count = 0;
         memset(s_last_all_sent_us, 0, sizeof(s_last_all_sent_us));
         s_last_send_err_log_us = 0;
-        ESP_LOGI(RC_TAG, "RaceChrono connected");
+        ESP_LOGD(RC_TAG, "RaceChrono connected");
         break;
 
     case ESP_GATTS_DISCONNECT_EVT:
         s_connected = false;
         s_notify_enabled = false;
-        ESP_LOGI(RC_TAG, "RaceChrono disconnected");
+        ESP_LOGD(RC_TAG, "RaceChrono disconnected");
         start_advertising_if_ready();
         break;
 
@@ -611,7 +613,7 @@ static void gatts_cb(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble
         if (param->write.handle == s_handle_can_cccd && param->write.len >= 2) {
             uint16_t cccd = (uint16_t)param->write.value[0] | ((uint16_t)param->write.value[1] << 8);
             s_notify_enabled = ((cccd & 0x0003u) != 0);
-            ESP_LOGI(RC_TAG, "CAN main cccd=0x%04X stream %s", cccd, s_notify_enabled ? "EN" : "DIS");
+            ESP_LOGD(RC_TAG, "CAN main cccd=0x%04X stream %s", cccd, s_notify_enabled ? "EN" : "DIS");
         } else if (s_attr_ready && param->write.handle == s_handle_filter) {
             process_filter_write(param->write.value, param->write.len);
         }
@@ -632,7 +634,7 @@ void racechrono_ble_diy_handle_gap_event(esp_gap_ble_cb_event_t event, esp_ble_g
             s_adv_config_done = true;
             s_adv_cfg_pending = false;
             start_advertising_if_ready();
-            ESP_LOGI(RC_TAG, "Advertising configured (raw)");
+            ESP_LOGD(RC_TAG, "Advertising configured (raw)");
         }
         break;
     case ESP_GAP_BLE_SCAN_RSP_DATA_RAW_SET_COMPLETE_EVT:
@@ -641,7 +643,7 @@ void racechrono_ble_diy_handle_gap_event(esp_gap_ble_cb_event_t event, esp_ble_g
             s_adv_config_done = true;
             s_adv_cfg_pending = false;
             start_advertising_if_ready();
-            ESP_LOGI(RC_TAG, "Advertising configured (raw)");
+            ESP_LOGD(RC_TAG, "Advertising configured (raw)");
         }
         break;
     case ESP_GAP_BLE_SCAN_STOP_COMPLETE_EVT:
@@ -653,7 +655,7 @@ void racechrono_ble_diy_handle_gap_event(esp_gap_ble_cb_event_t event, esp_ble_g
         }
         break;
     case ESP_GAP_BLE_ADV_START_COMPLETE_EVT:
-        ESP_LOGI(RC_TAG, "Advertising start status=%d", param->adv_start_cmpl.status);
+        ESP_LOGD(RC_TAG, "Advertising start status=%d", param->adv_start_cmpl.status);
         if (param->adv_start_cmpl.status == ESP_BT_STATUS_SUCCESS) {
             s_adv_start_pending = false;
         }
@@ -692,8 +694,8 @@ void racechrono_ble_diy_start(void)
     }
 
     s_started = true;
-    ESP_LOGI(RC_TAG, "RaceChrono BLE DIY started");
-    ESP_LOGI(RC_TAG, "PID map: RPM=0x%08X SPD=0x%08X CLT=0x%08X IAT=0x%08X OIL=0x%08X LOADx10=0x%08X TPSx10=0x%08X BATmV=0x%08X BRKx10=0x%08X",
+    ESP_LOGD(RC_TAG, "RaceChrono BLE DIY started");
+    ESP_LOGD(RC_TAG, "PID map: RPM=0x%08X SPD=0x%08X CLT=0x%08X IAT=0x%08X OIL=0x%08X LOADx10=0x%08X TPSx10=0x%08X BATmV=0x%08X BRKx10=0x%08X",
              RC_PID_RPM, RC_PID_SPEED_KMH, RC_PID_CLT_C, RC_PID_IAT_C, RC_PID_OIL_C,
              RC_PID_LOAD_X10, RC_PID_TPS_X10, RC_PID_BAT_MV, RC_PID_BRAKE_X10);
 }

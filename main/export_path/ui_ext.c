@@ -24,17 +24,13 @@
 #include "app_obd_dsp/boot_block_player.h"
 #include "app_obd_dsp/boot_media_mount.h"
 #include "esp_timer.h"
-#include "esp_log.h"
 #include "esp_random.h"
 #include "lvgl.h"
 #include <string.h>
 #include <stdio.h>
 
-static const char *TAG = "ui_ext";
-
 void ui_ext_init(void)
 {
-    ESP_LOGI(TAG, "ui_ext initialized");
 }
 
 void ui_ext_tick(void)

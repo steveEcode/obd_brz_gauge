@@ -28,9 +28,28 @@ typedef enum {
     BRAKE_RS485_PARSE_FAIL,
 } brake_rs485_status_t;
 
+typedef struct {
+    uint16_t rpm;
+    uint8_t  speed;
+    int16_t  coolant_temp;
+    int16_t  oil_temp;
+    int16_t  intake_temp;
+    int16_t  load_pct;
+    int16_t  tps;
+    int32_t  bat_mv;
+    int16_t  oil_pressure_x10;
+    int16_t  boost_x10;
+    int16_t  brake_temp_x10;
+    int8_t   gear;
+    int16_t  afr_x100;
+    brake_rs485_status_t brake_rs485_status;
+} obd_data_snapshot_t;
+
 void obd_data_set_rpm(uint16_t rpm);
 // RPM override layer: for multi-gauge linkage tests. When enabled, get_rpm returns val; disabling restores the real value.
 void obd_data_rpm_override_set(bool en, uint16_t val);
+void obd_data_reset_temp_cache(void);
+void obd_data_set_oil_temp_invalid(void);
 void obd_data_set_speed(uint8_t kmh);
 void obd_data_set_coolant_temp(int16_t temp);
 void obd_data_set_oil_temp(int16_t temp);   // actual oil temp °C (SSM 22 10 17, A-40)
@@ -57,6 +76,7 @@ int16_t  obd_data_get_boost_x10(void); // -32768 = invalid
 int16_t  obd_data_get_brake_temp_x10(void); // -1000 = invalid
 int8_t   obd_data_get_gear(void);            // 127 = invalid (falls back to the computed gear)
 int16_t  obd_data_get_afr_x100(void);        // -1 = invalid
+void     obd_data_get_snapshot(obd_data_snapshot_t *out);
 enGear calculate_gear(float rpm, float speed);
 void vMileageDataStatisticTask(void);
 

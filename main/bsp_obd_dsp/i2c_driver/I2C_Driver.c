@@ -63,7 +63,7 @@ void I2C_Init(void)
 {
     /********************* I2C *********************/
     ESP_ERROR_CHECK(i2c_master_init());
-    ESP_LOGI(I2C_TAG, "I2C initialized successfully");
+    ESP_LOGD(I2C_TAG, "I2C initialized successfully");
 }
 
 i2c_master_bus_handle_t I2C_GetBusHandle(void)

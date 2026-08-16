@@ -38,7 +38,7 @@ typedef struct {
 enum {
     OIL_STD_PID = 0,   // Standard Mode 01 PID (single byte, value + offset)
     OIL_UDS_22,        // UDS Mode 22 (1-2 bytes, value * scale + offset)
-    OIL_SPECIAL,       // Special parsing (Toyota Mode21 / Porsche CAN441 etc.)
+    OIL_SPECIAL,       // Special parsing (Toyota Mode21 and other legacy cases)
 };
 
 // ---- Oil temp formula ----
@@ -50,7 +50,7 @@ typedef struct {
     uint8_t  resp_bytes;   // 1=single byte, 2=two bytes big-endian
     float    scale;        // multiplier
     float    offset;       // offset
-    uint8_t  special_id;   // for OIL_SPECIAL: 0=Toyota21, 1=Porsche441
+    uint8_t  special_id;   // for OIL_SPECIAL: 0=Toyota21, reserved for future special cases
 } oil_formula_t;
 
 // ---- Vehicle override configuration ----
@@ -73,38 +73,12 @@ typedef struct {
 // ================================================================
 
 // BRZ ZC6 Gen1 (2013-2020)
+// TPS + oil temp/coolant temp use CAN broadcast frames; RPM stays on OBD.
 // Ref: https://github.com/timurrrr/ft86/blob/main/can_bus/gen1.md
 static const can_rule_t can_rules_zc6[] = {
-    { 0x140, 16, 14, 1.0f,        0.0f, CH_RPM },       // RPM
-    { 0x140, 48,  8, 100.0f/255,  0.0f, CH_TPS },       // throttle byte6
+    { 0x140, 48,  8, 100.0f/255, 0.0f, CH_TPS },       // throttle byte6
     { 0x360, 16,  8, 1.0f,      -40.0f, CH_OIL_TEMP },  // oil temp byte2
     { 0x360, 24,  8, 1.0f,      -40.0f, CH_COOLANT },   // coolant temp byte3
-    // Speed goes through OBD PID 01 0D, not CAN 0x0D1 (avoids non-zero creep caused by stationary noise)
-};
-
-// BMW G-series (G20/G21/G22/G80/G82) PT-CAN
-// Ref: racechrono-canbus decoder_bmwg8x.cpp, thesecretingredient.neocities.org/bmw/can/g29/
-// PT-CAN 500kbps, 11-bit standard frames.
-// 0x0A5 (100Hz): RPM byte5-6 LE (raw×4)
-// 0x254 (50Hz):  wheel speeds byte 0/2/4/6 LE (raw×0.015625−511.98 km/h)
-// 0x3F9 (1Hz):   coolant byte4 (raw−48), oil byte5 (raw−48), gear byte6 nibble (raw−4)
-// 0x0D9 (100Hz): throttle byte2-3 12-bit
-static const can_rule_t can_rules_bmw_g[] = {
-    { 0x0A5, 40, 16, 0.25f,         0.0f, CH_RPM },       // RPM byte5-6 LE, raw÷4 (1/min)
-    { 0x0A5, 16, 16, 1.0f,          0.0f, CH_TPS },       // engine torque (backup, not wired to the UI yet)
-    { 0x254, 32, 16, 0.015625f, -511.98f, CH_SPEED },     // front-left wheel speed byte4-5 LE
-    { 0x3F9, 32,  8, 1.0f,        -48.0f, CH_COOLANT },   // coolant temp byte4, raw−48
-    { 0x3F9, 40,  8, 1.0f,        -48.0f, CH_OIL_TEMP },  // oil temp byte5, raw−48
-    { 0x3F9, 48,  4, 1.0f,         -4.0f, CH_GEAR },   // gear byte6 low nibble, raw−4 (0=P, 1=R, 2=N, 3=D, 4+=M1…)
-};
-
-// BRZ ZD8 Gen2 (2022+)
-// Ref: https://github.com/timurrrr/ft86/blob/main/can_bus/gen2.md
-static const can_rule_t can_rules_zd8[] = {
-    { 0x040, 16, 14, 1.0f,        0.0f, CH_RPM },       // RPM
-    { 0x040, 32,  8, 100.0f/255,  0.0f, CH_TPS },       // throttle byte4
-    { 0x345, 24,  8, 1.0f,      -40.0f, CH_OIL_TEMP },  // oil temp byte3
-    { 0x345, 32,  8, 1.0f,      -40.0f, CH_COOLANT },   // coolant temp byte4
 };
 
 // ================================================================
@@ -168,26 +142,19 @@ static const oil_formula_t oil_bmw_111f = {
     OIL_UDS_22, {0x11,0x1F}, 2, 0, 1, 1.0f, -50.0f, 0
 };
 
-// Porsche CAN 0x441 Gen2 (byte5: x - 60)
-static const oil_formula_t oil_porsche_9972 = {
-    OIL_SPECIAL, {0}, 0, 5, 1, 1.0f, -60.0f, 1  // special_id=1
-};
-
-// Porsche CAN 0x441 Gen1 (byte5: x*3/4 - 48)
-static const oil_formula_t oil_porsche_9971 = {
-    OIL_SPECIAL, {0}, 0, 5, 1, 0.75f, -48.0f, 1  // special_id=1
-};
-
 // ================================================================
 //  Override table — vehicles not listed here = pure OBD2 standard protocol
 // ================================================================
 static const vehicle_override_t s_vehicle_overrides[] = {
     {
+        // BRZ ZC6 Gen1 (2013-2020, FA20 NA, Gen1)
+        // RPM stays on OBD; TPS/coolant/oil come from CAN broadcast frames.
         .match_name      = "ZN/C6 CAN",
         .can_rules       = can_rules_zc6,
-        .can_rule_count  = 4,   // RPM/TPS/oil temp/coolant temp, speed via OBD
+        .can_rule_count  = 3,   // TPS/oil temp/coolant temp from CAN; RPM stays on OBD
         .oil_primary     = &oil_toyota_21,
         .forced_protocol = 6,
+        .obd_timeout     = 0x0A,
         .poll_gap_ms     = 1,
     },
     {
@@ -196,14 +163,14 @@ static const vehicle_override_t s_vehicle_overrides[] = {
         .match_name      = "ZN/C6 PID",
         .oil_primary     = &oil_toyota_21,
         .forced_protocol = 6,
+        .obd_timeout     = 0x0A,
         .poll_gap_ms     = 1,
     },
     {
-        .match_name      = "ZD8 CAN",
-        .can_rules       = can_rules_zd8,
-        .can_rule_count  = 4,
+        .match_name      = "ZD8 OBD",
         .oil_primary     = &oil_std_5c,
         .forced_protocol = 6,
+        .obd_timeout     = 0x0A,
         .poll_gap_ms     = 1,
     },
     {
@@ -211,6 +178,7 @@ static const vehicle_override_t s_vehicle_overrides[] = {
         .match_name      = "ZD8",
         .oil_primary     = &oil_std_5c,
         .forced_protocol = 6,
+        .obd_timeout     = 0x0A,
         .poll_gap_ms     = 1,
     },
     {
@@ -221,10 +189,9 @@ static const vehicle_override_t s_vehicle_overrides[] = {
         .poll_gap_ms     = 1,
     },
     {
-        .match_name      = "BMW G CAN",
-        .can_rules       = can_rules_bmw_g,
-        .can_rule_count  = 6,
-        .oil_primary     = &oil_std_5c,       // CAN 0x3F9 provides oil temp directly; standard 01 5C as the OBD fallback
+        .match_name      = "BMW G OBD",
+        .oil_primary     = &oil_std_5c,
+        .oil_secondary   = &oil_std_5c,
         .forced_protocol = 6,
         .functional_addr = true,
         .obd_timeout     = 0x0A,
@@ -247,13 +214,13 @@ static const vehicle_override_t s_vehicle_overrides[] = {
     },
     {
         .match_name      = "POS 997.2",
-        .oil_primary     = &oil_porsche_9972,
+        .oil_primary     = &oil_std_5c,
         .oil_secondary   = &oil_std_5c,
         .forced_protocol = 6,
     },
     {
         .match_name      = "POS 997.1",
-        .oil_primary     = &oil_porsche_9971,
+        .oil_primary     = &oil_std_5c,
         .oil_secondary   = &oil_std_5c,
         .forced_protocol = 6,
     },

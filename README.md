@@ -58,21 +58,25 @@ Repository layout is in [this README](#repository-layout--目录结构) below.
 |---|---|
 | Hardware / 硬件 | Waveshare ESP32-S3-Touch-LCD-1.85 (360×360 round, 16 MB flash, 8 MB PSRAM) |
 | Stack / 软件栈 | ESP-IDF 5.5.3, LVGL 8 |
-| Link / 通信链路 | BLE + ELM327 — standard OBD PID plus CAN broadcast (ATMA) monitoring |
+| Link / 通信链路 | BLE + ELM327 — standard OBD PID; only ZN/C6 CAN keeps ATMA monitoring |
 | Multi-gauge / 三连表 | One master + multiple slaves over ESP-NOW / 一主多从，ESP-NOW 联动 |
-| Verified on / 已验证 | Subaru BRZ ZN/C6 (fully) — other profiles are configured but may still need on-car verification / 其余车型已配置，部分仍需上车验证 |
+| Verified on / 已验证 | Subaru BRZ ZN/C6 (fully) — ZN/C6 CAN is the only CAN-backed profile; other profiles are OBD-only / 其余车型已配置，部分仍需上车验证 |
 
 **Vehicle profiles / 内置车型** (12) — full list in
 [vehicle_profiles.c](main/app_obd_dsp/vehicle_profiles.c), selectable in Settings:
 
-`OBD2 Generic` · `ZN/C6 CAN` · `ZN/C6 PID` · `ZD8 CAN` · `ZD8` · `MX-5 ND` ·
-`BMW F/G` · `BMW G CAN` · `JCW F56` · `POS 997.2` · `POS 997.1` · `GIULIA 2.0T`
+`OBD2 Generic` · `ZN/C6 CAN` · `ZN/C6 PID` · `ZD8 OBD` · `ZD8` · `MX-5 ND` ·
+`BMW F/G` · `BMW G OBD` · `JCW F56` · `POS 997.2` · `POS 997.1` · `GIULIA 2.0T`
 
 ## Highlights / 主要特性
 
-- **CAN broadcast monitoring** — bypasses PID polling for high-rate channels:
-  RPM at 100 Hz, oil/coolant temp at 10–20 Hz, with periodic OBD fallback for
-  the rest. / **CAN 广播帧监听** —— 高频通道绕过 PID 轮询直读。
+- **CAN broadcast monitoring** — only `ZN/C6 CAN` bypasses PID polling for
+  high-rate channels; the rest stay on OBD-only polling. / **CAN 广播帧监听** —— 仅 `ZN/C6 CAN` 使用高速监听，其余车型保持 OBD 轮询。
+- **Single-thread ELM327 loop** — no mixed OBD/CAN parallel path; only `ZN/C6 CAN`
+  uses ATMA, so the adapter does not get contended by dual polling. /
+  **ELM327 单线程轮询** —— 不再混跑 OBD/CAN；只有 `ZN/C6 CAN` 走 ATMA，避免适配器抢占和数据延迟。
+- **Brake-temp / oil-pressure alarm throttle** — these two alarms are rate-limited
+  to once every 30 seconds. / **刹车温度 / 油压报警节流** —— 两项报警限制为 30 秒一次，减少刷屏。
 - **Multi-gauge over ESP-NOW** — one board reads OBD and broadcasts; the others
   display with zero extra OBD load, paired over real BLE. /
   **三连表** —— 主表读 OBD 广播，从表零额外负载显示，走真蓝牙配对。
@@ -80,7 +84,7 @@ Repository layout is in [this README](#repository-layout--目录结构) below.
   artwork; no C code. / **配置驱动主题** —— 一个文件夹 + 一份清单，不用写 C。
 - **RPM warning, incl. linked mode** — three gauges light up in sequence as revs
   climb. / **转速报警（含联动模式）** —— 三块表随转速依次亮起。
-- Manufacturer oil-temp paths beyond PID 01 5C (Mode 21/22, Porsche CAN 0x441),
+- Manufacturer oil-temp paths beyond PID 01 5C (Mode 21/22, Mazda, MINI/BMW),
   per-vehicle protocol lock, gear from CAN when available.
 - Self-healing BLE: re-initializes on reconnect and recovers when data stalls —
   no manual reconnect after ignition. / 数据中断自愈，上车通电无需手动重连。

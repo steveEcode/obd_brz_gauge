@@ -269,7 +269,7 @@ static void rs485_temp_task(void *arg)
     s_uart_stop_bits_cur = (int)s_cfg.stop_bits;
     obd_data_set_brake_rs485_status(BRAKE_RS485_PROBE);
 
-    ESP_LOGI(TAG, "RS485 brake temp started: UART%d, TX=%d RX=%d DE/RE=%d",
+    ESP_LOGD(TAG, "RS485 brake temp started: UART%d, TX=%d RX=%d DE/RE=%d",
              BRAKE_TEMP_UART_PORT,
              s_tx_pin,
              s_rx_pin,

@@ -3,8 +3,13 @@
 // ================================================================
 
 #include "ui_disp_item.h"
-#include "ui.h"   // ui_font_FontTypoderSize40
 #include "bsp_obd_dsp/nvs_storage.h"
+
+#include <stdio.h>
+#include <string.h>
+
+#define DISP_ITEM_ALARM_COOLDOWN_MS 30000U
+#define DISP_ITEM_ALARM_OFF         32767
 
 const disp_item_meta_t s_disp_meta[DISP_ITEM_COUNT] = {
     {"CLT", "'C", 0x44AAFF},
@@ -95,39 +100,79 @@ int32_t disp_item_sweep_value(disp_item_t item, float r)
 
 void disp_item_set_text(lv_obj_t *label, disp_item_t item, int32_t value, bool valid)
 {
+    char text[32];
+
     if (!label) return;
-    lv_obj_set_style_text_font(label, &ui_font_FontTypoderSize40, LV_PART_MAIN);
-
     if (!valid) {
-        lv_label_set_text(label, "--");
-        return;
-    }
-
-    if (item == DISP_ITEM_BAT) {
-        lv_label_set_text_fmt(label, "%d.%d", (int)(value / 1000), (int)((value % 1000) / 100));
+        snprintf(text, sizeof(text), "--");
+    } else if (item == DISP_ITEM_BAT) {
+        snprintf(text, sizeof(text), "%d.%d", (int)(value / 1000), (int)((value % 1000) / 100));
     } else if (item == DISP_ITEM_OILP) {
         int32_t abs_val = (value < 0) ? -value : value;
-        lv_label_set_text_fmt(label, "%d.%d", (int)(value / 10), (int)(abs_val % 10));
+        snprintf(text, sizeof(text), "%d.%d", (int)(value / 10), (int)(abs_val % 10));
     } else if (item == DISP_ITEM_BKT) {
-        lv_label_set_text_fmt(label, "%ld", (long)(value / 10));
+        snprintf(text, sizeof(text), "%ld", (long)(value / 10));
     } else if (item == DISP_ITEM_BOOST) {
         // gauge pressure can be negative (vacuum); show signed with one decimal, e.g. -0.6 / 1.2
         int32_t a = (value < 0) ? -value : value;
-        lv_label_set_text_fmt(label, "%s%d.%d", (value < 0) ? "-" : "", (int)(a / 10), (int)(a % 10));
+        snprintf(text, sizeof(text), "%s%d.%d", (value < 0) ? "-" : "", (int)(a / 10), (int)(a % 10));
     } else if (item == DISP_ITEM_AFR) {
         // AFR: raw value ×100, displayed as 14.7 (one decimal, same width as BAT/BOOST)
-        lv_label_set_text_fmt(label, "%d.%d", (int)(value / 100), (int)((value % 100) / 10));
+        snprintf(text, sizeof(text), "%d.%d", (int)(value / 100), (int)((value % 100) / 10));
     } else {
-        lv_label_set_text_fmt(label, "%ld", (long)value);
+        snprintf(text, sizeof(text), "%ld", (long)value);
+    }
+
+    if (strcmp(lv_label_get_text(label), text) != 0) {
+        lv_label_set_text(label, text);
     }
 }
 
 void disp_item_set_value_color(lv_obj_t *label, disp_item_t item, int32_t value, bool valid)
 {
     if (!label) return;
+
     int16_t thr = nvs_chart_alarm_get((uint8_t)item);   // raw-value units; 32767=disabled
     lv_color_t color = (valid && value >= (int32_t)thr) ? lv_color_hex(0xFF4D4D) : lv_color_hex(0xFFFFFF);
-    lv_obj_set_style_text_color(label, color, LV_PART_MAIN);
+    if (lv_color_to32(lv_obj_get_style_text_color(label, LV_PART_MAIN)) != lv_color_to32(color)) {
+        lv_obj_set_style_text_color(label, color, LV_PART_MAIN);
+    }
+}
+
+static void disp_item_set_value_color_throttled(lv_obj_t *label, disp_item_t item, int32_t value, bool valid)
+{
+    static uint32_t s_last_alarm_ms[DISP_ITEM_COUNT] = {0};
+
+    if (!label) return;
+
+    int16_t thr = nvs_chart_alarm_get((uint8_t)item);   // raw-value units; 32767=disabled
+    bool over_threshold = valid && thr < DISP_ITEM_ALARM_OFF && value >= (int32_t)thr;
+    bool use_cooldown = (item == DISP_ITEM_OILP || item == DISP_ITEM_BKT);
+    lv_color_t color = lv_color_hex(0xFFFFFF);
+
+    if (over_threshold) {
+        color = lv_color_hex(0xFF4D4D);
+        if (use_cooldown) {
+            uint32_t now_ms = lv_tick_get();
+            lv_color_t current_color = lv_obj_get_style_text_color(label, LV_PART_MAIN);
+            bool already_red = lv_color_to32(current_color) == lv_color_to32(lv_color_hex(0xFF4D4D));
+
+            if (already_red) {
+                if (s_last_alarm_ms[item] == 0) s_last_alarm_ms[item] = now_ms;
+            } else {
+                uint32_t last_ms = s_last_alarm_ms[item];
+                if (last_ms != 0 && (uint32_t)(now_ms - last_ms) < DISP_ITEM_ALARM_COOLDOWN_MS) {
+                    color = current_color;
+                } else {
+                    s_last_alarm_ms[item] = now_ms;
+                }
+            }
+        }
+    }
+
+    if (lv_color_to32(lv_obj_get_style_text_color(label, LV_PART_MAIN)) != lv_color_to32(color)) {
+        lv_obj_set_style_text_color(label, color, LV_PART_MAIN);
+    }
 }
 
 // Adaptive step: diff ≤ threshold steps by ±1, diff > threshold approaches proportionally
@@ -150,14 +195,31 @@ static int32_t anim_step_i32(int32_t displayed, int32_t target, int32_t threshol
 void disp_item_update(int32_t *state, lv_obj_t *label, disp_item_t item,
                       int32_t raw, bool valid, int32_t threshold)
 {
+    bool was_placeholder;
+    bool color_dirty = false;
+
     if (!state || !label) return;
+    int32_t previous = *state;
+    was_placeholder = (strcmp(lv_label_get_text(label), "--") == 0);
     if (valid) {
         // RPM is output directly, without the +1/+1 stepping animation: large range and fast changes — smoothing would just look "stuck"
         *state = (item == DISP_ITEM_RPM) ? raw : anim_step_i32(*state, raw, threshold);
     }
     // invalid: keep *state unchanged, avoiding a climb from 0 when data returns
-    disp_item_set_text(label, item, *state, valid);
-    disp_item_set_value_color(label, item, *state, valid);
+    // Only rebuild the label text when the rendered value actually changed; color follows
+    // the same dirty path to avoid redundant style invalidations.
+    if (!valid) {
+        if (!was_placeholder) {
+            disp_item_set_text(label, item, *state, false);
+            color_dirty = true;
+        }
+    } else if (was_placeholder || *state != previous) {
+        disp_item_set_text(label, item, *state, valid);
+        color_dirty = true;
+    }
+    if (color_dirty || (valid && (item == DISP_ITEM_OILP || item == DISP_ITEM_BKT))) {
+        disp_item_set_value_color_throttled(label, item, *state, valid);
+    }
 }
 
 const char *ui_disp_item_name(uint8_t item)

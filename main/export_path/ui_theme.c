@@ -25,7 +25,7 @@ void ui_theme_init(void)
     // Reuses the (previously unused) theme_cfg.theme byte — no NVS layout change.
     uint8_t idx = nvs_cfg_get()->theme_cfg.theme;
     s_active = (idx < ui_theme_count()) ? idx : 0;
-    ESP_LOGI(TAG, "active slot=%u id=%s name=%s (%u registered)",
+    ESP_LOGD(TAG, "active slot=%u id=%s name=%s (%u registered)",
              s_active, g_ui_themes[s_active]->id, g_ui_themes[s_active]->name,
              ui_theme_count());
 }

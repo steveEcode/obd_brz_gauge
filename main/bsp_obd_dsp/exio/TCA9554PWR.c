@@ -1,6 +1,9 @@
 #include "bsp_obd_dsp/exio/TCA9554PWR.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_log.h"
+
+static const char *TAG = "TCA9554PWR";
 
 /* TCA9554 sits on the main I2C bus (NUM_0, new API) */
 static i2c_master_dev_handle_t get_dev(void)
@@ -71,7 +74,7 @@ void Set_EXIO(uint8_t Pin,bool State)                  // Sets the level state o
         Write_REG(TCA9554_OUTPUT_REG,Data);
     }
     else
-        printf("Parameter error, please enter the correct parameter!\r\n");
+        ESP_LOGW(TAG, "Parameter error, please enter the correct parameter!");
 
 }
 void Set_EXIOS(uint8_t PinState)                     // Set 7 pins to the PinState state such as :PinState=0x23, 0010 0011 state (the highest bit is not used)
