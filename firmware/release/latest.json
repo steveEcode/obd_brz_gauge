@@ -3,7 +3,11 @@
     "board": "Waveshare ESP32-S3-Touch-LCD-1.85",
     "variant": "obd_brz_gauge",
     "lcd": "ST77916",
-    "screen": { "w": 360, "h": 360, "bpp": 16 },
+    "screen": {
+      "w": 360,
+      "h": 360,
+      "bpp": 16
+    },
     "flash_mb": 16,
     "psram_mb": 8,
     "ota_slots": 2,
@@ -13,19 +17,19 @@
   "firmware": {
     "project": "obd_brz_gauge",
     "version": "1",
-    "build_tag": "main-38-1f58c25c2a42",
-    "git": "1f58c25c2a42",
+    "build_tag": "main-40-0f0beff18eda",
+    "git": "0f0beff18eda",
     "branch": "main",
-    "count": 38,
-    "built": "Aug 20 2026 20:53:06",
+    "count": 40,
+    "built": "Aug 20 2026 21:32:58",
     "idf": "v5.5.3",
     "slot": "ota_0"
   },
   "files": {
     "firmware": {
       "path": "obd_brz_gauge.bin",
-      "size": 2046432,
-      "sha256": "0e3d41b645ccedaaeed3a48faf790394b4c4103641f7baac1002b9ed04467583"
+      "size": 2046576,
+      "sha256": "5e3d92b740a61ce2ef3f820868ef52cd58e7d7f892f83451715fb99938ec4639"
     },
     "bootmedia": {
       "path": "bootmedia.bin",
@@ -40,7 +44,7 @@
     "bootloader": {
       "path": "bootloader/bootloader.bin",
       "size": 20832,
-      "sha256": "5fe4707732100c0bf1ec3a957a4212f228a2485c7ff10593ce31c6d9828a6d3c"
+      "sha256": "98715bc7b0023018f9c2137e89f37080316f6053efc3a6945b8b18a68a4f381f"
     },
     "ota_data_initial": {
       "path": "ota_data_initial.bin",
