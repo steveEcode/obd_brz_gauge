@@ -266,9 +266,9 @@ void ui_ScreenPageBLEScan_screen_init(void)
     // Title
     lv_obj_t *label_title = lv_label_create(ui_ScreenPageBLEScan);
     lv_label_set_text(label_title, s_slave_mode ? "FIND MASTER" : "BLE SCAN");
-    lv_obj_set_style_text_font(label_title, &ui_font_FontTypoderSize24, LV_PART_MAIN);
+    lv_obj_set_style_text_font(label_title, &ui_font_FontTypoderSize20, LV_PART_MAIN);
     lv_obj_set_style_text_color(label_title, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-    lv_obj_align(label_title, LV_ALIGN_TOP_MID, 0, 18);
+    lv_obj_align(label_title, LV_ALIGN_TOP_MID, 0, 30);
 
     // Scanning spinner (animated)
     s_spinner = lv_spinner_create(ui_ScreenPageBLEScan, 1000, 60);
@@ -324,6 +324,7 @@ void ui_ScreenPageBLEScan_screen_init(void)
 
     // Delete button inside panel
     lv_obj_t *del_btn = lv_btn_create(s_saved_panel);
+    lv_obj_set_style_clip_corner(del_btn, true, 0);
     lv_obj_set_size(del_btn, 30, 24);
     lv_obj_align(del_btn, LV_ALIGN_RIGHT_MID, -2, 0);
     lv_obj_set_style_bg_color(del_btn, lv_color_hex(0xBB2222), LV_PART_MAIN);

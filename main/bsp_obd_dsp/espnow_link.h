@@ -17,6 +17,10 @@ void espnow_link_start_master(void);
 // Slave: init WiFi + ESP-NOW, receive the master's broadcast and write it into the local OBD data cache (no ELM327 link).
 void espnow_link_start_slave(void);
 
+// Stop ESP-NOW and release WiFi resources (for OTA mode).
+// After calling this, espnow_link_start_master/slave can be called again to restart.
+void espnow_link_stop(void);
+
 // Slave: whether master data was received within the last ~2s (for the "waiting for master" hint).
 bool espnow_link_slave_has_data(void);
 

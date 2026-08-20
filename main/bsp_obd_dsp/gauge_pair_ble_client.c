@@ -4,8 +4,11 @@
 // notification subscription, no auto-reconnect on disconnect (this is a user-initiated
 // one-shot pairing action, not a long-lived connection).
 //
-// Runs only on slave gauge devices; the slave never initializes elm327_ble_client.c, so this
-// file registers its own GAP/GATTC callbacks independently — no callback table conflicts.
+// Bluedroid has exactly ONE global GAP callback and ONE global GATTC callback; registering
+// here replaces the handlers installed by elm327_ble_client.c (the BLE stack is brought up
+// for every role at boot). The previous callbacks are captured on init and events are
+// forwarded to them, so the elm327 → racechrono event chain keeps working while this
+// one-shot pairing client is registered.
 
 #include "gauge_pair_ble_client.h"
 
@@ -30,6 +33,11 @@ static const char *TAG = "gauge_pair_ble";
 #define GAUGE_PAIR_TIMEOUT_US  (8 * 1000 * 1000)
 
 static bool s_ble_inited = false;
+
+// Previously registered GAP/GATTC callbacks (elm327 client chain); events are forwarded to
+// them so replacing the global callbacks doesn't break the rest of the BLE stack.
+static esp_gap_ble_cb_t s_prev_gap_cb = NULL;
+static esp_gattc_cb_t s_prev_gattc_cb = NULL;
 
 // ---- Scan state ----
 static bool s_scanning = false;
@@ -106,6 +114,10 @@ static void ble_ensure_init(void) {
         ESP_ERROR_CHECK(esp_bluedroid_enable());
     }
 
+    // Capture the currently registered callbacks BEFORE replacing them (registration is a
+    // silent overwrite), then chain our handlers in front.
+    s_prev_gap_cb = esp_ble_gap_get_callback();
+    s_prev_gattc_cb = esp_ble_gattc_get_callback();
     ESP_ERROR_CHECK(esp_ble_gap_register_callback(gap_cb));
     ESP_ERROR_CHECK(esp_ble_gattc_register_callback(gattc_cb));
     ESP_ERROR_CHECK(esp_ble_gattc_app_register(GAUGE_PAIR_APP_ID));
@@ -147,14 +159,34 @@ static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param) 
     default:
         break;
     }
+
+    // Forward to the previously registered GAP handler (elm327 → racechrono chain) so
+    // advertising config/completion events keep reaching the other modules.
+    if (s_prev_gap_cb) {
+        s_prev_gap_cb(event, param);
+    }
 }
 
 static void gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp_ble_gattc_cb_param_t *param) {
-    switch (event) {
-    case ESP_GATTC_REG_EVT:
-        s_gattc_if = gattc_if;
-        break;
+    // One global GATTC callback serves every registered app: route events by app.
+    if (event == ESP_GATTC_REG_EVT) {
+        if (param->reg.app_id == GAUGE_PAIR_APP_ID) {
+            s_gattc_if = gattc_if;
+        } else if (s_prev_gattc_cb) {
+            s_prev_gattc_cb(event, gattc_if, param);
+        }
+        return;
+    }
 
+    if (gattc_if != ESP_GATT_IF_NONE && s_gattc_if != ESP_GATT_IF_NONE && gattc_if != s_gattc_if) {
+        // Event belongs to the other registered GATTC app (elm327 client): forward it.
+        if (s_prev_gattc_cb) {
+            s_prev_gattc_cb(event, gattc_if, param);
+        }
+        return;
+    }
+
+    switch (event) {
     case ESP_GATTC_CONNECT_EVT: {
         s_gattc_connected = true;
         s_conn_id = param->connect.conn_id;

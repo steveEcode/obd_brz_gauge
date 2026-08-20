@@ -101,6 +101,7 @@ extern lv_obj_t * ArcPageEasterEggBack;
 extern lv_obj_t * imageEasterEgg;
 extern lv_obj_t * ui_ImageEggBlackEar;
 extern lv_obj_t * ui_LabelEasterEggInfo;  // dynamically updated device info label
+void ui_event_easter_egg_ota_button(lv_event_t * e);  // OTA mode button handler
 // CUSTOM VARIABLES
 
 // SCREEN: ui_ScreenPageBLEScan
@@ -108,6 +109,13 @@ void ui_ScreenPageBLEScan_screen_init(void);
 extern lv_obj_t * ui_ScreenPageBLEScan;
 void ui_event_ble_scan_background(lv_event_t * e);
 // CUSTOM VARIABLES
+
+// SCREEN: ui_ScreenPageOTAMode
+void ui_ScreenPageOTAMode_screen_init(void);
+extern lv_obj_t * ui_ScreenPageOTAMode;
+extern lv_obj_t * ui_LabelOTAModeStatus;
+extern lv_obj_t * ui_LabelOTAModeVersion;
+void ui_ota_mode_refresh(void);  // called from timer to update OTA status
 
 // SCREEN: ui_ScreenPageTemp
 void ui_ScreenPageTemp_screen_init(void);

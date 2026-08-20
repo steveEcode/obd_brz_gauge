@@ -1,0 +1,51 @@
+{
+  "device": {
+    "board": "Waveshare ESP32-S3-Touch-LCD-1.85",
+    "variant": "obd_brz_gauge",
+    "lcd": "ST77916",
+    "screen": { "w": 360, "h": 360, "bpp": 16 },
+    "flash_mb": 16,
+    "psram_mb": 8,
+    "ota_slots": 2,
+    "bootmedia_slots": 1,
+    "bootmedia_format": 1
+  },
+  "firmware": {
+    "project": "obd_brz_gauge",
+    "version": "1",
+    "build_tag": "main-38-1f58c25c2a42",
+    "git": "1f58c25c2a42",
+    "branch": "main",
+    "count": 38,
+    "built": "Aug 20 2026 20:53:06",
+    "idf": "v5.5.3",
+    "slot": "ota_0"
+  },
+  "files": {
+    "firmware": {
+      "path": "obd_brz_gauge.bin",
+      "size": 2046432,
+      "sha256": "0e3d41b645ccedaaeed3a48faf790394b4c4103641f7baac1002b9ed04467583"
+    },
+    "bootmedia": {
+      "path": "bootmedia.bin",
+      "size": 10354688,
+      "sha256": "cf6a6b80a6d6619fe23e8ca546f3b43ff729679e289907c431f68802e7aabe98"
+    },
+    "partition_table": {
+      "path": "partition_table/partition-table.bin",
+      "size": 3072,
+      "sha256": "d3046d2fe045142ae83d2c8f10ee693d6b5bcc4e08346c8c87f4a293cb80243c"
+    },
+    "bootloader": {
+      "path": "bootloader/bootloader.bin",
+      "size": 20832,
+      "sha256": "5fe4707732100c0bf1ec3a957a4212f228a2485c7ff10593ce31c6d9828a6d3c"
+    },
+    "ota_data_initial": {
+      "path": "ota_data_initial.bin",
+      "size": 8192,
+      "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f"
+    }
+  }
+}

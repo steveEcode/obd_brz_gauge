@@ -150,6 +150,8 @@ void ui_ScreenPageNeedleConfig_screen_init(void)
     lv_obj_set_style_pad_all(ui_ScreenPageNeedleConfig, 0, LV_PART_MAIN);
     lv_obj_set_style_outline_width(ui_ScreenPageNeedleConfig, 0, LV_PART_MAIN);
 
+    lv_obj_t *ring = ui_helpers_create_ring(ui_ScreenPageNeedleConfig, 10);   // white ring: static circular border, consistent with the other pages
+
     // Title
     lv_obj_t *title = lv_label_create(ui_ScreenPageNeedleConfig);
     lv_label_set_text(title, "DATA SOURCE");
@@ -168,6 +170,7 @@ void ui_ScreenPageNeedleConfig_screen_init(void)
     const nvs_user_cfg_t *cfg = nvs_cfg_get();
 
     s_roller_source = lv_roller_create(ui_ScreenPageNeedleConfig);
+    lv_obj_set_style_clip_corner(s_roller_source, true, 0);
     lv_obj_clear_flag(s_roller_source, LV_OBJ_FLAG_GESTURE_BUBBLE); // scrolling the selection must not trigger the page gesture (back)
     lv_roller_set_options(s_roller_source, options, LV_ROLLER_MODE_NORMAL);
     lv_roller_set_visible_row_count(s_roller_source, 3);
@@ -184,5 +187,6 @@ void ui_ScreenPageNeedleConfig_screen_init(void)
     lv_obj_set_style_text_color(hint, lv_color_hex(0x555555), LV_PART_MAIN);
     lv_obj_align(hint, LV_ALIGN_CENTER, 0, 120);
 
+    lv_obj_move_foreground(ring);   // bring the ring to the front
     lv_obj_add_event_cb(ui_ScreenPageNeedleConfig, ui_event_needle_config_background, LV_EVENT_GESTURE, NULL);
 }

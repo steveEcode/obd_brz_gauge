@@ -16,9 +16,11 @@
 #include "bsp_obd_dsp/elm327_ble_client.h"
 #include "bsp_obd_dsp/espnow_link.h"
 #include "bsp_obd_dsp/gauge_pair_ble_client.h"
+#include "bsp_obd_dsp/racechrono_ble_diy.h"
 #include "app_obd_dsp/vehicle_profiles.h"
 #include "app_obd_dsp/boot_block_player.h"
 #include "app_obd_dsp/boot_media_mount.h"
+#include "app_obd_dsp/ota_wifi_server.h"
 #include "esp_system.h"
 #include "esp_random.h"
 #include "esp_log.h"
@@ -99,6 +101,10 @@ lv_obj_t * ui_LabelEasterEggInfo;
 void ui_ScreenPageBLEScan_screen_init(void);
 lv_obj_t * ui_ScreenPageBLEScan;
 // CUSTOM VARIABLES
+
+// SCREEN: ui_ScreenPageOTAMode
+void ui_ScreenPageOTAMode_screen_init(void);
+void ui_ota_mode_refresh(void);
 
 // SCREEN: ui_ScreenPageTemp
 void ui_ScreenPageTemp_screen_init(void);
@@ -184,27 +190,10 @@ static uint16_t usSaveProtTimeCnt = 0; //OBD protocol save timer
  
 ///////////////////// TEST LVGL SETTINGS ////////////////////
 /* ---- Gauge sweep animation ----
-   Values ramp from min to max (~1s) → hold at max (0.5s) → backlight flashes once (max 0.2s → min 0.2s);
-   on the same tick after the flash, the configured brightness is restored and real values are switched back in. Backlight stays at minimum (SWEEP_BL_MIN) for the whole sweep.
-   Backlight is exported via sweep_step; master and slaves derive the same brightness from the same step → the triple-gauge flash stays in sync. */
-#define SWEEP_RPM_PEAK   8000   // sweep peak RPM
-#define SWEEP_SPEED_PEAK 999    // sweep peak speed
-#define SWEEP_TICK_MS    40     // refresh period during sweep (high rate keeps digits ramping smoothly)
-#define SWEEP_STEPS_UP   25     // 25×40ms ≈ 1s to ramp from min to max
-#define SWEEP_STEPS_HOLD 13     // 13×40ms ≈ 0.5s hold at max
-#define SWEEP_STEPS_FLASH 5     // 5×40ms ≈ 0.2s per flash segment (one high and one low segment)
-#define SWEEP_BL_MIN     3      // backlight during sweep & the low flash segment (%), tunable
-#define SWEEP_BL_MAX     100    // backlight for the high flash segment (%)
-#define SWEEP_TOTAL      (SWEEP_STEPS_UP + SWEEP_STEPS_HOLD + 2*SWEEP_STEPS_FLASH)
+   Moved to ui_ext.c; the SWEEP_* constants live in ui_ext.h and the sweep state
+   machine is driven via ui_ext_sweep_active()/ui_ext_sweep_get_step()/ui_ext_sweep_tick(). */
 #define OIL_PRESS_TREND_POINTS 30
 #define OIL_PRESS_TREND_SAMPLE_MS 1000
-// Sweep progress only advances inside the LVGL task; the master's espnow TX task broadcasts it read-only via ui_sweep_get_step().
-// Values: 0=off, 1~SWEEP_TOTAL=sweep animation running (slaves mirror it as-is, see ui_showroom_set_page_from_sync),
-// 200~209=current showroom-mode slot (showroom mode reuses this variable to encode the broadcast value instead of a separate one).
-static volatile int  s_sweep_step = 0;
-static int  s_sweep_bl_last = -1;       // backlight (%) already applied during sweep, -1=not sweeping; write LEDC only on change, restore configured brightness at the end
-static bool s_sweep_pending = false;    // BLE connected while the Logo was showing; trigger after the Logo goes away
-static bool s_prev_ble_connected = false;
 
 /* ---- Digit-ramp animation thresholds (used by disp_item_update) ---- */
 #define ANIM_THRESH_RPM   50   // RPM diff ≤50 steps by ±1
@@ -229,273 +218,17 @@ static inline int32_t anim_step_i32(int32_t displayed, int32_t target, int32_t t
     return displayed + step;
 }
 
-// RPM warning test mode
-volatile int s_rpm_flash_test_ticks = 0;
-void ui_rpm_flash_test_start(void) { s_rpm_flash_test_ticks = 60; }  // ~2s test flash
-// Note: the RPM ramp for the multi-gauge linked test is driven centrally by the master (espnow_link.c writes the RPM override layer and broadcasts it);
-//     this unit only renders per its own position, no local simulation, keeping all three gauges in sync.
-
-// Flash period (ms per phase): red and black each last this long; toggle frequency = 1000/(2×period). 25ms → 20Hz fast flash.
-// Lower it if not fast enough (e.g. 15→33Hz), raise it if too dazzling.
-#define RPM_FLASH_PERIOD_MS 25
+// RPM warning flash (test ticks, strobe, linked ramp) migrated to ui_ext.c — see ui_ext_rpm_flash_tick()
 
 // LVGL task handle (set by app_main); priority is temporarily raised to own the CPU while flashing
 TaskHandle_t g_lvgl_task_handle = NULL;
 
-// ===== Showroom mode =====
-// Minimal design: each gauge runs a fixed-timing loop independently, no per-page ESP-NOW sync needed
-// On entering showroom each gauge picks 4 random data pages with esp_random(), then switches pages on a local timer
-static volatile bool s_showroom_active = false;
-static uint8_t s_showroom_tap_cnt = 0;
-static uint32_t s_showroom_last_tap_ms = 0;
-#define SHOWROOM_TAP_TIMEOUT_MS  1500
-#define SHOWROOM_TAP_NEED        10
-#define SHOWROOM_SLOT_COUNT      8
-#define SHOWROOM_DATA_PAGES      4   // number of random data pages
+// ===== Showroom mode / boot-video state =====
+// Moved to ui_ext.c (see ui_ext_showroom_* / ui_ext_boot_video_tick / ui_ext_intro_tick).
 
-// Fixed loop: Logo → animation → rand0 → Needle → rand1 → Chart → rand2 → rand3
-// Ticks per slot (1 tick = 100ms), 0 = wait for the animation to finish
-static const uint8_t s_showroom_slot_ticks[SHOWROOM_SLOT_COUNT] = {
-    20,  // 0: Logo 2s
-    0,   // 1: animation (wait until played)
-    30,  // 2: random[0] 3s
-    30,  // 3: Needle 3s
-    30,  // 4: random[1] 3s
-    30,  // 5: Chart 3s
-    30,  // 6: random[2] 3s
-    30,  // 7: random[3] 3s
-};
-static uint8_t  s_showroom_slot = 0;
-static uint16_t s_showroom_tick = 0;
-static uint8_t  s_showroom_rand_pages[SHOWROOM_DATA_PAGES];  // randomly chosen at startup
-static lv_obj_t *s_showroom_video_scr = NULL;
+// (showroom_load_slot / boot_video_timer_cb moved to ui_ext.c)
 
-// Boot/video state (moved up; needed by showroom_load_slot)
-static volatile int s_intro_step = 0;
-static int64_t s_boot_start_us = 0;
-static int64_t s_intro_start_us = 0;
-static bool    s_intro_shown = false;
-static volatile bool s_boot_video_active = false;
-static volatile bool s_boot_video_done = false;
-static volatile bool s_boot_video_ready = false;
-static int64_t s_boot_video_start_us = 0;
-static lv_obj_t *s_boot_video_screen = NULL;
-static lv_timer_t *s_boot_video_timer = NULL;
-
-// slot → page index
-static uint8_t showroom_slot_to_page(uint8_t slot)
-{
-    switch (slot) {
-        case 0: return 1;  // Logo
-        case 1: {          // animation: depends on settings
-            uint8_t ie = nvs_intro_enable_get();
-            return (ie >= 2) ? 0 : (ie == 1) ? 2 : 3;
-        }
-        case 3: return 8;  // Needle
-        case 5: return 9;  // Chart
-        default: {         // random data page
-            uint8_t ri = (slot == 2) ? 0 : (slot == 4) ? 1 : (slot == 6) ? 2 : 3;
-            return s_showroom_rand_pages[ri];
-        }
-    }
-}
-
-static void showroom_load_slot(uint8_t slot)
-{
-    uint8_t page = showroom_slot_to_page(slot);
-    if (page == 0) {
-        // Video page
-        if (s_boot_video_ready || s_boot_video_active) return;  // already loaded
-        uint8_t iv = nvs_intro_enable_get();
-        const char *pfx = (iv == 3) ? "b" : (iv == 4) ? "c" : "a";
-        char mp[64], dp[64];
-        snprintf(mp, sizeof(mp), "/bootmedia/%s_block.txt", pfx);
-        snprintf(dp, sizeof(dp), "/bootmedia/%s_block.bin", pfx);
-        boot_block_player_set_paths(mp, dp);
-        if (boot_media_mount()) {
-            if (s_showroom_video_scr) { lv_obj_del(s_showroom_video_scr); s_showroom_video_scr = NULL; }
-            s_showroom_video_scr = lv_obj_create(NULL);
-            lv_obj_set_style_bg_color(s_showroom_video_scr, lv_color_black(), LV_PART_MAIN);
-            lv_obj_set_style_bg_opa(s_showroom_video_scr, 255, LV_PART_MAIN);
-            lv_obj_set_style_border_width(s_showroom_video_scr, 0, LV_PART_MAIN);
-            lv_obj_set_style_radius(s_showroom_video_scr, 360, LV_PART_MAIN);
-            lv_obj_clear_flag(s_showroom_video_scr, LV_OBJ_FLAG_SCROLLABLE);
-            lv_obj_t *canvas = NULL;
-            if (boot_block_player_create(s_showroom_video_scr, &canvas)) {
-                s_boot_video_ready = true;
-            } else {
-                lv_obj_del(s_showroom_video_scr);
-                s_showroom_video_scr = NULL;
-            }
-        }
-    } else if (page == 2) {
-        // RACE/AS/ONE: start the animation directly
-        s_intro_step = 1;
-        s_intro_shown = false;
-        s_intro_start_us = esp_timer_get_time();
-        if (ui_ScreenPageIntro == NULL) ui_ScreenPageIntro_screen_init();
-        lv_scr_load_anim(ui_ScreenPageIntro, LV_SCR_LOAD_ANIM_FADE_ON, 300, 0, false);
-    } else {
-        // Regular pages
-        static const struct { lv_obj_t **scr; void (*init)(void); } pages[] = {
-            { NULL, NULL },  // 0 unused
-            { &ui_ScreenPageLogo,       ui_ScreenPageLogo_screen_init },
-            { NULL, NULL },  // 2 handled above
-            { &ui_ScreenPageGear,       ui_ScreenPageGear_screen_init },
-            { &ui_ScreenPageRpm,        ui_ScreenPageRpm_screen_init },
-            { &ui_ScreenPageSpeed,      ui_ScreenPageSpeed_screen_init },
-            { &ui_ScreenPageTemp,       ui_ScreenPageTemp_screen_init },
-            { &ui_ScreenPageInfo,       ui_ScreenPageInfo_screen_init },
-            { &ui_ScreenPageNeedle,     ui_ScreenPageNeedle_screen_init },
-            { &ui_ScreenPageOilPressure,ui_ScreenPageOilPressure_screen_init },
-        };
-        if (page < 10 && pages[page].init) {
-            if (*pages[page].scr == NULL) pages[page].init();
-            lv_scr_load_anim(*pages[page].scr, LV_SCR_LOAD_ANIM_FADE_ON, 300, 0, false);
-        }
-    }
-}
-
-// Video sync signals (reuses intro_step; values >5 never trigger RACE/AS/ONE rendering)
-#define VIDEO_SYNC_READY  250
-#define VIDEO_SYNC_PLAY   251
-
-// Forward declaration
-static void boot_enter_default_page(void);
-
-// Dedicated high-rate timer for video (33ms ≈ 30fps)
-static void boot_video_timer_cb(lv_timer_t *t)
-{
-    if (!s_boot_video_active) return;
-    int64_t now_us = esp_timer_get_time();
-    uint32_t elapsed_ms = (uint32_t)((now_us - s_boot_video_start_us) / 1000);
-    boot_block_player_update(elapsed_ms);
-    if (boot_block_player_is_finished()) {
-        ESP_LOGD(TAG, "Boot video finished");
-        s_boot_video_active = false;
-        s_boot_video_ready = false;
-        boot_block_player_destroy();
-        if (s_boot_video_timer) { lv_timer_del(s_boot_video_timer); s_boot_video_timer = NULL; }
-
-        if (s_showroom_active) {
-            // showroom mode: don't switch pages, keep the last frame, let the carousel move on
-            boot_media_unmount();
-        } else {
-            // normal boot: go straight to the default page
-            s_boot_video_done = true;
-            boot_enter_default_page();
-            boot_media_unmount();
-            // lv_scr_load_anim(..., true) in boot_enter_default_page already sets auto_del;
-            // LVGL frees the old screen automatically once the transition ends. Do NOT lv_obj_del
-            // manually here — touching the freed object mid-animation crashes (LoadProhibited).
-            s_boot_video_screen = NULL;
-        }
-    }
-}
-
-// Forward declaration (ui_showroom_set_active/ui_showroom_set_page_from_sync are already declared in ui.h, no need to repeat)
-static void showroom_handle_tap(void);
-
-// The master's espnow TX task broadcasts sweep progress read-only; slaves no longer write back (the sweep naturally follows the OBD cache values).
-int  ui_sweep_get_step(void) { return s_sweep_step; }
-
-bool ui_showroom_is_active(void) { return s_showroom_active; }
-
-void ui_showroom_set_active(bool en) {
-    s_showroom_active = en;
-    s_showroom_tap_cnt = 0;
-    if (en) {
-        ESP_LOGD("showroom", "ENTER role=%d", nvs_cfg_get()->device_role);
-        s_sweep_step = 0;
-        // pick 4 random data pages; the position offset guarantees the three gauges differ
-        static const uint8_t pool[] = { 3, 4, 5, 6, 7 };
-        uint8_t pos = nvs_device_position_get();
-        if (pos < 1 || pos > 3) pos = 1;
-        for (int i = 0; i < SHOWROOM_DATA_PAGES; i++)
-            s_showroom_rand_pages[i] = pool[(i * 3 + pos - 1) % 5];
-        // start from slot 0
-        s_showroom_slot = 0;
-        s_showroom_tick = 0;
-        showroom_load_slot(0);
-    } else {
-        ESP_LOGD("showroom", "EXIT");
-    }
-}
-
-// Slave: enter showroom or follow the slot after receiving the master's signal.
-// Only the LVGL task reads/writes these (espnow recv goes through the app_event queue and is handled inside my_timerMain), so volatile is not needed.
-static int s_showroom_pending_slot = -1;  // -1=none, 0-7=slot to follow
-static bool s_showroom_pending_enter = false;
-
-void ui_showroom_set_page_from_sync(int sweep_step) {
-    if (sweep_step >= 200 && sweep_step < 210) {
-        // follow the master's slot
-        s_showroom_pending_slot = sweep_step - 200;
-        if (!s_showroom_active) {
-            // Joining showroom mode mid-way: enter via slot 0 (Logo) first; the next real slot
-            // broadcast by the master corrects it shortly (~100ms). That one switch is an expected brief transition, not a bug.
-            s_showroom_pending_slot = -1;
-            s_showroom_pending_enter = true;
-            s_sweep_step = 0;
-        }
-    } else if (sweep_step >= 100 && sweep_step < 200 && !s_showroom_active) {
-        s_showroom_pending_enter = true;
-        s_sweep_step = 0;
-    } else if (!s_showroom_active) {
-        // 0~SWEEP_TOTAL: the master's real sweep progress (triggered the moment OBD connects). Slaves mirror it as-is
-        // (no self-increment; driven by the master's per-frame broadcast), keeping the backlight flash ("three gauges in one car flashing together") in sync with the master.
-        s_sweep_step = (sweep_step > 0 && sweep_step <= SWEEP_TOTAL) ? sweep_step : 0;
-    }
-}
-
-// Tap counting (shared by the version page / any page)
-static void showroom_handle_tap(void) {
-    if (s_showroom_active) return;  // already inside, ignore taps
-    uint32_t now = lv_tick_get();
-    if (now - s_showroom_last_tap_ms > SHOWROOM_TAP_TIMEOUT_MS) s_showroom_tap_cnt = 0;
-    s_showroom_last_tap_ms = now;
-    s_showroom_tap_cnt++;
-    if (s_showroom_tap_cnt >= SHOWROOM_TAP_NEED) {
-        s_showroom_tap_cnt = 0;
-        ui_showroom_set_active(true);  // enter only, never exit; leave via power cycle
-    }
-}
-
-// Fake data generation (random walk)
-static void showroom_fake_data(void) {
-    static float fake_rpm = 2500, fake_spd = 60, fake_clt = 90, fake_oil = 95;
-    static float fake_iat = 35, fake_load = 65, fake_tps = 40, fake_boost = 5;
-    static float fake_afr = 14.7;
-    fake_rpm  += ((float)(esp_random() % 200) - 100) * 2;  if (fake_rpm < 800) fake_rpm = 800; if (fake_rpm > 7500) fake_rpm = 7500;
-    fake_spd  += ((float)(esp_random() % 20) - 10) * 0.5f; if (fake_spd < 0) fake_spd = 0; if (fake_spd > 200) fake_spd = 200;
-    fake_clt  += ((float)(esp_random() % 4) - 2) * 0.1f;   if (fake_clt < 80) fake_clt = 80; if (fake_clt > 105) fake_clt = 105;
-    fake_oil  += ((float)(esp_random() % 6) - 3) * 0.2f;   if (fake_oil < 80) fake_oil = 80; if (fake_oil > 130) fake_oil = 130;
-    fake_iat  += ((float)(esp_random() % 4) - 2) * 0.1f;   if (fake_iat < 20) fake_iat = 20; if (fake_iat > 50) fake_iat = 50;
-    fake_load += ((float)(esp_random() % 20) - 10);         if (fake_load < 10) fake_load = 10; if (fake_load > 100) fake_load = 100;
-    fake_tps  += ((float)(esp_random() % 16) - 8);          if (fake_tps < 0) fake_tps = 0; if (fake_tps > 100) fake_tps = 100;
-    fake_boost+= ((float)(esp_random() % 10) - 5) * 0.1f;  if (fake_boost < -5) fake_boost = -5; if (fake_boost > 20) fake_boost = 20;
-    fake_afr  += ((float)(esp_random() % 10) - 5) * 0.04f; if (fake_afr < 10.0) fake_afr = 10.0; if (fake_afr > 18.0) fake_afr = 18.0;
-    obd_data_set_rpm((uint16_t)fake_rpm);
-    obd_data_set_speed((uint8_t)fake_spd);
-    obd_data_set_coolant_temp((int16_t)fake_clt);
-    obd_data_set_oil_temp((int16_t)fake_oil);
-    obd_data_set_intake_temp((int16_t)fake_iat);
-    obd_data_set_load_pct((int16_t)fake_load);
-    obd_data_set_tps((int16_t)fake_tps);
-    obd_data_set_boost_x10((int16_t)(fake_boost * 10));
-    obd_data_set_oil_pressure_x10((int16_t)(30 + (esp_random() % 40)));
-    obd_data_set_brake_temp_x10((int16_t)(200 + (esp_random() % 300)));
-    obd_data_set_afr_x100((int16_t)(fake_afr * 100));
-}
-
-// Triple-gauge boot animation sync: the master drives s_intro_step along the timeline and broadcasts it; slaves follow via espnow recv writes.
-//   0=not started/still on logo, 1=TC, 2=+-, 3=+OFF, 4=all shown (hold), 255=done→enter page
-int  ui_intro_get_step(void) { return s_intro_step; }
-void ui_intro_set_step(int step) {
-    // In showroom mode each gauge self-drives its intro animation and ignores master overrides
-    if (s_showroom_active) return;
-    s_intro_step = step;
-}
+// (ui_sweep_get_step / ui_showroom_* / ui_intro_* accessors moved to ui_ext.c)
 static int16_t s_oil_pressure_trend[OIL_PRESS_TREND_POINTS];
 static bool s_oil_pressure_trend_ready = false;
 static uint32_t s_oil_pressure_trend_tick = 0;
@@ -652,98 +385,8 @@ void ui_chart_apply_source(void)
     s_oil_pressure_trend_tick = 0;
 }
 
-// ===== Boot flow state =====
-static bool    s_boot_done = false;
-
-// Jump to the BLE scan page and mark the boot flow done (shared by slaves not bound to a master, and masters/standalone units with no OBD device configured)
-static void boot_goto_ble_scan(void)
-{
-    if (ui_ScreenPageBLEScan == NULL) ui_ScreenPageBLEScan_screen_init();
-    lv_scr_load_anim(ui_ScreenPageBLEScan, LV_SCR_LOAD_ANIM_FADE_ON, 300, 0, true);
-    ui_ScreenPageLogo = NULL;
-    imageLogo = NULL;
-    s_boot_done = true;
-}
-
-// Enter the default page when boot finishes (called on Logo timeout or after the boot animation completes)
-static void boot_enter_default_page(void)
-{
-    const nvs_user_cfg_t *pg_cfg = nvs_cfg_get();
-
-    if (pg_cfg->device_role == ESPNOW_ROLE_SLAVE) {
-        // Slave: not yet bound to a master → go to the BLE page to pair (ui_ScreenPageBLEScan enters "FIND MASTER" mode automatically per role);
-        // if already bound, do nothing and fall through to the same default_page branch as the master, showing gauge data directly.
-        const uint8_t *bound_mac = espnow_link_get_bound_master_mac();
-        bool bound = (bound_mac[0] | bound_mac[1] | bound_mac[2] | bound_mac[3] | bound_mac[4] | bound_mac[5]) != 0;
-        if (!bound) {
-            boot_goto_ble_scan();
-            return;
-        }
-    } else if (pg_cfg->ble_device_name[0] == '\0') {
-        // First flash with no saved device: go straight to the BLE scan page and let the user pick manually
-        boot_goto_ble_scan();
-        return;
-    }
-
-    lv_obj_t **target_scr = NULL;
-    void (*target_init)(void) = NULL;
-    // Default page: 0=Temp,1=Info,2=Chart,3=Needle,4=Gear,5=Rpm,6=Speed
-    switch(pg_cfg->default_page) {
-        case 0: target_scr = &ui_ScreenPageTemp;  target_init = ui_ScreenPageTemp_screen_init;  break;
-        case 1: target_scr = &ui_ScreenPageInfo;  target_init = ui_ScreenPageInfo_screen_init;  break;
-        case 2: target_scr = &ui_ScreenPageOilPressure; target_init = ui_ScreenPageOilPressure_screen_init;  break;
-        case 3: target_scr = &ui_ScreenPageNeedle; target_init = ui_ScreenPageNeedle_screen_init;  break;
-        case 4: target_scr = &ui_ScreenPageGear;  target_init = ui_ScreenPageGear_screen_init;  break;
-        case 5: target_scr = &ui_ScreenPageRpm;   target_init = ui_ScreenPageRpm_screen_init;   break;
-        case 6: target_scr = &ui_ScreenPageSpeed; target_init = ui_ScreenPageSpeed_screen_init; break;
-        default: target_scr = &ui_ScreenPageTemp; target_init = ui_ScreenPageTemp_screen_init;  break;
-    }
-    if(*target_scr == NULL) target_init();
-    lv_scr_load_anim(*target_scr, LV_SCR_LOAD_ANIM_FADE_ON, 300, 0, true);
-    ui_ScreenPageLogo = NULL;
-    imageLogo = NULL;
-    s_boot_done = true;
-    if(s_sweep_pending) { s_sweep_pending = false; s_sweep_step = 1; }  // a sweep deferred while the boot animation played fires now, as the default page loads
-}
-
-// ---- "NO SIGNAL" overlay: shown on top of gauge pages when the master's OBD BLE disconnects / a slave receives no master data ----
-// Disconnection is reflected instantly (ble_now already means "connected"/"data within the last ~2s"), no extra timing needed.
-static lv_obj_t *s_no_signal_lbl = NULL;
-static void update_no_signal_overlay(bool signal_ok)
-{
-    static bool s_no_signal_visible = false;
-    lv_obj_t *act = lv_scr_act();
-    // only warn on the pages that actually display gauge data; settings/scan/boot-animation pages don't need it
-    bool on_gauge_page = (act == ui_ScreenPageTemp || act == ui_ScreenPageInfo ||
-                           act == ui_ScreenPageOilPressure || act == ui_ScreenPageNeedle ||
-                           act == ui_ScreenPageGear || act == ui_ScreenPageRpm ||
-                           act == ui_ScreenPageSpeed);
-    bool show = s_boot_done && on_gauge_page && !signal_ok;
-
-    if (show) {
-        if (!s_no_signal_lbl) {
-            s_no_signal_lbl = lv_label_create(lv_layer_top());
-            lv_obj_clear_flag(s_no_signal_lbl, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_set_style_text_font(s_no_signal_lbl, &ui_font_FontTypoderSize16, LV_PART_MAIN);
-            lv_obj_set_style_text_color(s_no_signal_lbl, lv_color_hex(0xFF4D4D), LV_PART_MAIN);
-            lv_obj_set_style_bg_color(s_no_signal_lbl, lv_color_hex(0x000000), LV_PART_MAIN);
-            lv_obj_set_style_bg_opa(s_no_signal_lbl, 160, LV_PART_MAIN);
-            lv_obj_set_style_pad_hor(s_no_signal_lbl, 10, LV_PART_MAIN);
-            lv_obj_set_style_pad_ver(s_no_signal_lbl, 4, LV_PART_MAIN);
-            lv_obj_set_style_radius(s_no_signal_lbl, 6, LV_PART_MAIN);
-            lv_label_set_text(s_no_signal_lbl, "NO SIGNAL");
-            lv_obj_align(s_no_signal_lbl, LV_ALIGN_TOP_MID, 0, 34);
-        }
-        if (!s_no_signal_visible) {
-            lv_obj_clear_flag(s_no_signal_lbl, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_move_foreground(s_no_signal_lbl);
-            s_no_signal_visible = true;
-        }
-    } else if (s_no_signal_lbl && s_no_signal_visible) {
-        lv_obj_add_flag(s_no_signal_lbl, LV_OBJ_FLAG_HIDDEN);
-        s_no_signal_visible = false;
-    }
-}
+// ===== Boot flow state / "NO SIGNAL" overlay =====
+// (boot_goto_ble_scan / boot_enter_default_page / update_no_signal_overlay moved to ui_ext.c)
 
 static void ui_update_metric_header(lv_obj_t *name_label,
                                     lv_obj_t *unit_label,
@@ -789,7 +432,7 @@ static uint32_t ui_refresh_period_ms_for_screen(lv_obj_t *scr,
         return 33;
     }
     if (scr == ui_ScreenPageSettings || scr == ui_ScreenPageMultiGauge ||
-        scr == ui_ScreenPageBLEScan || scr == ui_ScreenPageODBProtocal ||
+        scr == ui_ScreenPageBLEScan || scr == ui_ScreenPageOTAMode || scr == ui_ScreenPageODBProtocal ||
         scr == ui_ScreenPageTempCustom || scr == ui_ScreenPageInfoCustom ||
         scr == ui_ScreenPageNeedleConfig || scr == ui_ScreenPageChartConfig ||
         scr == ui_ScreenPageChartAlarm || scr == ui_ScreenPageOilWarn ||
@@ -837,12 +480,9 @@ void my_timerMain(lv_timer_t * timer)
     static uint16_t usRpm = 0;
     static uint16_t ucSpeed = 0;  // uint16_t so sweep can reach 999
     static enGear eGear = GEAR_NEUTRAL;
-    static bool s_rpm_flash_red = false;  // RPM warning flash state (red/black toggle, drives the background color)
-    static bool s_rpm_flashing = false;   // whether strobing right now (stable flag, drives the timer's fast flash; does not toggle with red/black)
-    static bool s_rpm_link_ramp = false;  // multi-gauge linked flash: this unit is inside its ramp segment (function scope, lets adaptive refresh speed up)
-    static bool s_rpm_link_bg = false;    // multi-gauge linked flash: background is taken by the linked red (must restore black when leaving)
-    // Sweep animation detection (excludes showroom sync values 200+)
-    #define IN_SWEEP (s_sweep_step > 0 && s_sweep_step <= SWEEP_TOTAL)
+    // rpm flash state (red/black toggle, strobing flag, linked ramp) moved to ui_ext.c
+    // Sweep animation detection (excludes showroom sync values 200+); sweep state lives in ui_ext.c now
+    #define IN_SWEEP (ui_ext_sweep_active())
     static uint8_t ucOnlyOnce = 0;
     static uint32_t ulOpenLightTimeCnt = 0;
 
@@ -864,96 +504,15 @@ void my_timerMain(lv_timer_t * timer)
     bool is_slave = (user_cfg->device_role == ESPNOW_ROLE_SLAVE);
     // "connected" signal: slave=master data being received, master=ELM327 BLE connected (shared by status display and the master's sweep trigger)
     bool ble_now = is_slave ? espnow_link_slave_has_data() : elm327_ble_is_connected();
-    if(!is_slave) {
-        if(ble_now && !s_prev_ble_connected) {
-            if(s_boot_done) {
-                s_sweep_step = 1;       // boot animations (Logo/SKY GAUGE/RACE AS ONE) all finished, sweep immediately
-            } else {
-                s_sweep_pending = true; // boot animation still playing; defer and fire when the default page loads
-            }
-        }
-        s_prev_ble_connected = ble_now;
-    }
-    /* ---- Showroom mode: master drives slots, slaves follow ---- */
-    // Slave: enter showroom
-    if (!s_showroom_active && s_showroom_pending_enter) {
-        s_showroom_pending_enter = false;
-        s_boot_done = true;
-        ui_showroom_set_active(true);
-    }
-    // Slave: follow the master's slot
-    if (s_showroom_active && is_slave && s_showroom_pending_slot >= 0) {
-        uint8_t new_slot = (uint8_t)s_showroom_pending_slot;
-        s_showroom_pending_slot = -1;
-        if (new_slot != s_showroom_slot) {
-            // clean up the current slot
-            uint8_t old_page = showroom_slot_to_page(s_showroom_slot);
-            if (old_page == 0 && s_boot_video_active) {
-                s_boot_video_active = false; s_boot_video_ready = false;
-                boot_block_player_destroy(); boot_media_unmount();
-                if (s_boot_video_timer) { lv_timer_del(s_boot_video_timer); s_boot_video_timer = NULL; }
-            }
-            if (old_page == 2) { s_intro_step = 0; s_intro_shown = false; }
-            // jump to the master's slot
-            s_showroom_slot = new_slot;
-            s_showroom_tick = 0;
-            showroom_load_slot(s_showroom_slot);
-        }
-    }
-    if (s_showroom_active && !IN_SWEEP) {
-        if (!is_slave) showroom_fake_data();
-
-        // animation slot: start playing automatically once the video is ready (runs on both master and slave)
-        uint8_t cur_page = showroom_slot_to_page(s_showroom_slot);
-        if (s_showroom_slot == 1 && cur_page == 0 && s_boot_video_ready && !s_boot_video_active) {
-            lv_scr_load(s_showroom_video_scr);
-            s_boot_video_active = true;
-            s_boot_video_start_us = esp_timer_get_time();
-            if (!s_boot_video_timer)
-                s_boot_video_timer = lv_timer_create(boot_video_timer_cb, 33, NULL);
-        }
-
-        // Local tick page switching:
-        //   master: runs for all slots
-        //   slave: only Logo(0) and animation(1) run local ticks (keeps animation switching in sync);
-        //          other slots purely follow the master's broadcast (avoids flash-through)
-        bool should_tick = !is_slave || s_showroom_slot <= 1;
-        if (should_tick) {
-            bool anim_playing = (cur_page == 0 && s_boot_video_active) ||
-                                (cur_page == 2 && s_intro_step > 0 && s_intro_step < 255);
-            if (!anim_playing) {
-                s_showroom_tick++;
-            }
-            uint8_t max_t = s_showroom_slot_ticks[s_showroom_slot];
-            if (max_t == 0) {
-                max_t = anim_playing ? 255 : 1;
-            }
-            if (s_showroom_tick >= max_t) {
-                // clean up when leaving the current slot
-                if (cur_page == 0 && s_boot_video_active) {
-                    s_boot_video_active = false;
-                    s_boot_video_ready = false;
-                    boot_block_player_destroy();
-                    boot_media_unmount();
-                    if (s_boot_video_timer) { lv_timer_del(s_boot_video_timer); s_boot_video_timer = NULL; }
-                }
-                if (cur_page == 2) { s_intro_step = 0; s_intro_shown = false; }
-                s_showroom_slot = (s_showroom_slot + 1) % SHOWROOM_SLOT_COUNT;
-                s_showroom_tick = 0;
-                showroom_load_slot(s_showroom_slot);
-            }
-        }
-        // master broadcasts the current slot (slaves use it to correct drift)
-        if (!is_slave) s_sweep_step = 200 + s_showroom_slot;
-    }
+    ui_ext_sweep_trigger(ble_now, is_slave);
+    /* ---- Showroom mode: master drives slots, slaves follow (moved to ui_ext.c) ---- */
+    ui_ext_showroom_tick(is_slave);
 
     lv_obj_t *scr = lv_scr_act();
     bool live_data_screen = ui_screen_updates_live_data(scr);
-    bool rpm_warn_possible = user_cfg->rpm_warn_anim_en ||
-                             (user_cfg->device_role != ESPNOW_ROLE_STANDALONE &&
-                              (user_cfg->rpm_warn_linked_en || espnow_link_linktest_active()));
+    bool rpm_warn_possible = ui_ext_rpm_warn_possible();
 
-    if (!IN_SWEEP && (live_data_screen || rpm_warn_possible || s_rpm_flashing || s_rpm_link_ramp)) {
+    if (!IN_SWEEP && (live_data_screen || rpm_warn_possible || ui_ext_rpm_is_flashing() || ui_ext_rpm_link_ramp_active())) {
         obd_data_snapshot_t obd;
 
         obd_data_get_snapshot(&obd);
@@ -974,40 +533,12 @@ void my_timerMain(lv_timer_t * timer)
                                                                : calculate_gear(usRpm, ucSpeed);
     }
 
-    /* ---- Data source: sweep or real OBD ---- */
-    float sweep_ratio = -1.0f;   // <0 = not sweeping (real-time data)
-    if(IN_SWEEP) {
-        int step = s_sweep_step;
-        float ratio;
-        if(step <= SWEEP_STEPS_UP) {
-            ratio = (float)step / (float)SWEEP_STEPS_UP;    // 0→1 ramp
-        } else {
-            ratio = 1.0f;   // hold at max (hold phase)
-        }
-        sweep_ratio = ratio;
-        usRpm   = (uint16_t)(SWEEP_RPM_PEAK * ratio);
-        ucSpeed = (uint16_t)(SWEEP_SPEED_PEAK * ratio); // uint16_t so it can hold 999
-        eGear   = (enGear)((int)(6.0f * ratio + 0.5f)); // up to 6th gear
-
-        /* Backlight: sweep+peak hold = minimum; after the peak, one flash (high 0.2s → low 0.2s). Write LEDC only on the tick where brightness changes. */
-        int bl;
-        if      (step <= SWEEP_STEPS_UP + SWEEP_STEPS_HOLD)                     bl = SWEEP_BL_MIN; // ramp+hold
-        else if (step <= SWEEP_STEPS_UP + SWEEP_STEPS_HOLD + SWEEP_STEPS_FLASH) bl = SWEEP_BL_MAX; // high flash segment
-        else                                                                   bl = SWEEP_BL_MIN; // low flash segment
-        if(bl != s_sweep_bl_last) { Set_Backlight(bl); s_sweep_bl_last = bl; }
-
-        if(!is_slave) {   // master advances itself; the slave's step is set by the master's broadcast, no self-increment (stays in sync)
-            s_sweep_step++;
-            if(s_sweep_step > SWEEP_TOTAL) s_sweep_step = 0; // animation done
-        }
-    } else {
-        /* Sweep just ended (both master/slaves on the step→0 tick): restore configured brightness; happens together with switching back to real values, done once */
-        if(s_sweep_bl_last >= 0) {
-            uint8_t d = user_cfg->brightness_day;
-            if(d < 10) d = 100;   // 0/not configured → 100, same as the boot backlight
-            Set_Backlight(d);
-            s_sweep_bl_last = -1;
-        }
+    /* ---- Data source: sweep or real OBD (sweep state machine moved to ui_ext.c) ---- */
+    float sweep_ratio = ui_ext_sweep_tick(is_slave, user_cfg->brightness_day);
+    if (sweep_ratio >= 0.0f) {
+        usRpm   = (uint16_t)(SWEEP_RPM_PEAK * sweep_ratio);
+        ucSpeed = (uint16_t)(SWEEP_SPEED_PEAK * sweep_ratio); // uint16_t so it can hold 999
+        eGear   = (enGear)((int)(6.0f * sweep_ratio + 0.5f)); // up to 6th gear
     }
     /*Gear page: refresh only while this page is actually shown, no idle background updates*/
     if (scr == ui_ScreenPageGear) {
@@ -1056,7 +587,7 @@ void my_timerMain(lv_timer_t * timer)
         static uint8_t s_last_temp_map[3] = {0xFF, 0xFF, 0xFF};
 
         if(IN_SWEEP) {
-            int step = s_sweep_step - 1; // already incremented
+            int step = ui_ext_sweep_get_step() - 1; // already incremented
             float r;
             if(step <= SWEEP_STEPS_UP) r = (float)step / (float)SWEEP_STEPS_UP;
             else r = 1.0f;   // hold at max (hold phase)
@@ -1105,7 +636,7 @@ void my_timerMain(lv_timer_t * timer)
         int32_t cval = 0;
         bool cvalid;
         if (IN_SWEEP) {
-            int step = s_sweep_step - 1;
+            int step = ui_ext_sweep_get_step() - 1;
             float r;
             if (step <= SWEEP_STEPS_UP) r = (float)step / (float)SWEEP_STEPS_UP;
             else r = 1.0f;   // hold at max (hold phase)
@@ -1144,7 +675,7 @@ void my_timerMain(lv_timer_t * timer)
         static uint8_t s_last_info_map[5] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
         if (IN_SWEEP) {
-            int step = s_sweep_step - 1; // already incremented above
+            int step = ui_ext_sweep_get_step() - 1; // already incremented above
             float r;
             if (step <= SWEEP_STEPS_UP) r = (float)step / (float)SWEEP_STEPS_UP;
             else r = 1.0f;   // hold at max (hold phase)
@@ -1181,11 +712,12 @@ void my_timerMain(lv_timer_t * timer)
         }
     }
 
-    /* Dynamically update the EasterEgg (version page) info: add a MODE line and show BLE or the master link depending on master/slave */
+    /* Dynamically update the EasterEgg (device info) page: role + OBD link state + build tag. */
     if (scr == ui_ScreenPageEasterEgg && ui_LabelEasterEggInfo) {
         static char s_last_easteregg_info[192];
         char info_text[192];
-        const char *mode_str = is_slave ? "SLAVE" : "MASTER";
+        const char *mode_str = is_slave ? "SLAVE"
+                             : (user_cfg->device_role == ESPNOW_ROLE_MASTER) ? "MASTER" : "STANDALONE";
         const char *conn_label, *conn_name;
 
         if (is_slave) {
@@ -1200,23 +732,24 @@ void my_timerMain(lv_timer_t * timer)
         }
 
         snprintf(info_text, sizeof(info_text),
-            "ESP32-S3  IDF %d.%d.%d\n"
-            "LVGL %d.%d.%d\n"
             "MODE: %s\n"
             "%s: %s\n"
-            "Status: %s",
-            ESP_IDF_VERSION_MAJOR, ESP_IDF_VERSION_MINOR, ESP_IDF_VERSION_PATCH,
-            LVGL_VERSION_MAJOR, LVGL_VERSION_MINOR, LVGL_VERSION_PATCH,
+            "Status: %s\n"
+            "BUILD %s",
             mode_str, conn_label, conn_name,
             ble_now ? (is_slave ? "Linked" : "Connected")
-                    : (is_slave ? "Waiting" : "Disconnected"));
+                    : (is_slave ? "Waiting" : "Disconnected"),
+            OBD_GAUGE_BUILD_TAG);
         if (strcmp(s_last_easteregg_info, info_text) != 0) {
             strncpy(s_last_easteregg_info, info_text, sizeof(s_last_easteregg_info));
             s_last_easteregg_info[sizeof(s_last_easteregg_info) - 1] = '\0';
             lv_label_set_text(ui_LabelEasterEggInfo, s_last_easteregg_info);
         }
     }
- 
+
+    /* OTA mode screen: refresh connection status */
+    ui_ota_mode_refresh();
+
 #if EXAMPLE_PIN_NUM_BK_LIGHT >= 0
         //wait 500ms before turning on the backlight, so it isn't enabled before init completes; runs once
         if(ucOnlyOnce == 0)
@@ -1237,271 +770,18 @@ void my_timerMain(lv_timer_t * timer)
     /* The bottom info bar (TRIP/ODO/MAX/AVG/TIME) belonged to the removed Main page and was removed with it.
        Mileage statistics are still accumulated by a background task and can be shown on other pages or re-attached later. */
 
-    /* ===== Video boot mode (INTRO >= 2: REI/SHINJI/ASUKA) ===== */
-    {
-        uint8_t intro_val = nvs_intro_enable_get();
-        bool want_video = (intro_val >= 2 && intro_val <= 4);
-        if (!s_boot_done && !s_showroom_active && !s_boot_video_done && want_video) {
-            // show the Logo for 1 second first, then enter the video
-            static int64_t s_video_logo_start_us = 0;
-            if (s_video_logo_start_us == 0) s_video_logo_start_us = esp_timer_get_time();
-            int64_t logo_el_ms = (esp_timer_get_time() - s_video_logo_start_us) / 1000;
-            if (logo_el_ms < 1000) return;  // Logo still showing, skip
-            // Phase 1: prepare the video (pick files per intro_val)
-            if (!s_boot_video_ready && !s_boot_video_active && s_boot_video_screen == NULL) {
-                // set file paths: 2=a, 3=b, 4=c
-                const char *prefix = (intro_val == 3) ? "b" : (intro_val == 4) ? "c" : "a";
-                char manifest_path[64], data_path[64];
-                snprintf(manifest_path, sizeof(manifest_path), "/bootmedia/%s_block.txt", prefix);
-                snprintf(data_path, sizeof(data_path), "/bootmedia/%s_block.bin", prefix);
-                boot_block_player_set_paths(manifest_path, data_path);
+    /* ===== Video boot mode (INTRO == 2: VIDEO, the boot_block flashed via the phone app) ===== */
+    // Moved to ui_ext.c; returns true while the Logo/video is still showing, so my_timerMain returns early.
+    if (ui_ext_boot_video_tick()) return;
 
-                if (boot_media_mount()) {
-                    s_boot_video_screen = lv_obj_create(NULL);
-                    lv_obj_set_style_bg_color(s_boot_video_screen, lv_color_black(), LV_PART_MAIN);
-                    lv_obj_set_style_bg_opa(s_boot_video_screen, 255, LV_PART_MAIN);
-                    lv_obj_set_style_border_width(s_boot_video_screen, 0, LV_PART_MAIN);
-                    lv_obj_set_style_radius(s_boot_video_screen, 360, LV_PART_MAIN);
-                    lv_obj_clear_flag(s_boot_video_screen, LV_OBJ_FLAG_SCROLLABLE);
-                    lv_obj_t *canvas = NULL;
-                    if (boot_block_player_create(s_boot_video_screen, &canvas)) {
-                        // no lv_scr_load yet: keep the Logo screen, switch only when playback starts
-                        s_boot_video_ready = true;
-                        ESP_LOGD(TAG, "Boot video ready (logo kept)");
-                    } else {
-                        lv_obj_del(s_boot_video_screen);
-                        s_boot_video_screen = NULL;
-                        s_boot_video_done = true;
-                    }
-                } else {
-                    s_boot_video_done = true;
-                }
-            }
-            // Phase 2: wait for the sync signal before playing
-            if (s_boot_video_ready && !s_boot_video_active) {
-                bool should_start = false;
-                uint8_t role = user_cfg->device_role;
-                if (role == ESPNOW_ROLE_STANDALONE) {
-                    // standalone: play directly
-                    should_start = true;
-                } else if (role == ESPNOW_ROLE_MASTER) {
-                    // master: broadcast READY → wait for slaves to come online → wait 800ms prep → broadcast PLAY + play itself
-                    // with no slave after a 5s timeout, play anyway
-                    static int64_t s_master_ready_us = 0;
-                    static bool s_master_slaves_seen = false;
-                    if (s_master_ready_us == 0) {
-                        s_master_ready_us = esp_timer_get_time();
-                        s_intro_step = VIDEO_SYNC_READY;
-                    }
-                    if (!s_master_slaves_seen && espnow_master_online_slaves() > 0) {
-                        s_master_slaves_seen = true;
-                        s_master_ready_us = esp_timer_get_time();  // restart timing, wait 800ms from now
-                    }
-                    int64_t wait_ms = (esp_timer_get_time() - s_master_ready_us) / 1000;
-                    if ((s_master_slaves_seen && wait_ms >= 800) || wait_ms > 5000) {
-                        s_intro_step = VIDEO_SYNC_PLAY;
-                        should_start = true;
-                        s_master_ready_us = 0;
-                        s_master_slaves_seen = false;
-                    }
-                } else {
-                    // slave: wait for the PLAY signal, 5s timeout as fallback
-                    static int64_t s_slave_wait_us = 0;
-                    if (s_slave_wait_us == 0) s_slave_wait_us = esp_timer_get_time();
-                    int64_t wait_ms = (esp_timer_get_time() - s_slave_wait_us) / 1000;
-                    int intro = ui_intro_get_step();
-                    if (intro >= VIDEO_SYNC_PLAY || wait_ms > 5000) {
-                        should_start = true;
-                        s_slave_wait_us = 0;
-                    }
-                }
-                if (should_start) {
-                    lv_scr_load(s_boot_video_screen);  // switch screens only now, keeping the Logo until the last moment
-                    s_boot_video_active = true;
-                    s_boot_video_start_us = esp_timer_get_time();
-                    s_boot_video_timer = lv_timer_create(boot_video_timer_cb, 33, NULL);
-                    ESP_LOGD(TAG, "Boot video started");
-                }
-            }
-            if (s_boot_video_active || s_boot_video_ready) return;
-        }
-    } // end video mode scope
+    /* ===== Boot flow / Showroom Intro playback (moved to ui_ext.c) ===== */
+    ui_ext_intro_tick(is_slave);
 
-    /* ===== Boot flow / Showroom Intro playback ===== */
-    bool run_intro = (!s_boot_done && !s_showroom_active) ||
-                     (s_showroom_active && showroom_slot_to_page(s_showroom_slot) == 2);
-    if (run_intro)
-    {
-        int64_t now_us = esp_timer_get_time();
-        if (s_boot_start_us == 0) s_boot_start_us = now_us;
-        int64_t boot_el = now_us - s_boot_start_us;
-        bool intro_en = nvs_intro_enable_get();
-        bool in_showroom_intro = s_showroom_active && showroom_slot_to_page(s_showroom_slot) == 2;
+    /* ---- RPM over-limit flash warning (migrated to ui_ext.c) ---- */
+    ui_ext_rpm_flash_tick(usRpm, IN_SWEEP);
 
-        if (!is_slave || in_showroom_intro) {
-            if (s_intro_step == 0) {
-                if (in_showroom_intro || (intro_en == 1 && espnow_master_online_slaves() > 0)) {
-                    s_intro_start_us = now_us;
-                    s_intro_step = 1;
-                } else if ((intro_en != 1 && boot_el > 1000000) ||
-                           (intro_en == 1 && boot_el > 3000000)) {
-                    s_intro_step = 255;
-                }
-            } else if (s_intro_step != 255) {
-                int64_t el = now_us - s_intro_start_us;
-                s_intro_step = (el < 500000) ? 1 : (el < 1000000) ? 2 : (el < 1500000) ? 3
-                             : (el < 2000000) ? 4 : (el < 3000000) ? 5 : 255;
-            }
-        } else {
-            // slave: wait for the master's sync signal; only jump to the default page after a 5s timeout
-            if (s_intro_step == 0) {
-                if (boot_el > 5000000) s_intro_step = 255;
-            }
-        }
-
-        // Rendering + screen switch
-        if (s_intro_step >= 1 && s_intro_step <= 5) {
-            static int8_t s_last_intro_word = -1;
-
-            if (!s_intro_shown) {
-                s_last_intro_word = -1;
-                if (ui_ScreenPageIntro == NULL) ui_ScreenPageIntro_screen_init();
-                if (!in_showroom_intro) {
-                    lv_scr_load_anim(ui_ScreenPageIntro, LV_SCR_LOAD_ANIM_FADE_ON, 150, 0, false);
-                    ui_ScreenPageLogo = NULL; imageLogo = NULL;
-                }
-                s_intro_shown = true;
-            }
-            if (ui_LabelIntroWord) {
-                static const char *words[] = {"", "RACE", "AS", "ONE"};
-                uint8_t pos = nvs_device_position_get();
-                if (pos < 1 || pos > 3) pos = 1;
-                int8_t word_idx = (s_intro_step >= pos + 1) ? (int8_t)pos : 0;
-                if (word_idx != s_last_intro_word) {
-                    s_last_intro_word = word_idx;
-                    lv_label_set_text(ui_LabelIntroWord, words[word_idx]);
-                }
-            }
-        } else if (s_intro_step == 255 && !in_showroom_intro) {
-            boot_enter_default_page();   // enter the default page only at boot; showroom doesn't jump away
-        }
-        // s_intro_step==0: still waiting on the Logo
-    }
-
-    /* ---- RPM over-limit flash warning ---- */
-    {
-        uint16_t warn_thresh = user_cfg->rpm_warn_threshold; // already clamped to [1000,...]/default 6000 in nvs_storage_init()
-        // Linked flash and FLASH ANIM are mutually exclusive (the settings page ensures at most one is on); with linked on, the at-threshold strobe does not depend on anim_en.
-        // While a link test is running (linktest_active), this unit renders even if LINKED FLASH is off locally, so the all-gauge sync test works.
-        bool linked_on = (user_cfg->rpm_warn_linked_en || espnow_link_linktest_active()) &&
-                         (user_cfg->device_role != ESPNOW_ROLE_STANDALONE);
-
-        // The linked-test RPM ramp is written by the master into the RPM override layer and broadcast via ESP-NOW; usRpm is the synced value, identical on all three gauges
-        bool over = (!IN_SWEEP && (user_cfg->rpm_warn_anim_en || linked_on) && usRpm >= warn_thresh);
-        // Test mode: force trigger
-        if (s_rpm_flash_test_ticks > 0) { over = true; s_rpm_flash_test_ticks--; }
-
-        // Stable flag: stays true while strobing, driving the timer to flash at RPM_FLASH_PERIOD_MS (independent of the red/black toggle)
-        s_rpm_flashing = over;
-
-        // Background image flash: img1→black→img2→black→img3→black loop; UI widgets keep showing above the image
-#if USE_CUSTOM_RPM_FLASH == 1
-        static int8_t s_flash_step = -1;
-        static const lv_img_dsc_t *s_flash_imgs[3] = { &imgRpmFlash1, &imgRpmFlash2, &imgRpmFlash3 };
-#endif
-
-#if USE_CUSTOM_RPM_FLASH == 1
-        if (over) {
-            if (s_flash_step < 0) s_flash_step = 0;
-            lv_obj_t *scr = lv_scr_act();
-            if (s_flash_step & 1) {
-                lv_obj_set_style_bg_img_src(scr, NULL, LV_PART_MAIN);
-                lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), LV_PART_MAIN);
-                lv_obj_set_style_bg_opa(scr, 255, LV_PART_MAIN);
-            } else {
-                lv_obj_set_style_bg_img_src(scr, s_flash_imgs[(s_flash_step / 2) % 3], LV_PART_MAIN);
-                lv_obj_set_style_bg_opa(scr, 255, LV_PART_MAIN);
-            }
-            s_flash_step = (s_flash_step + 1) % 6;
-            s_rpm_flash_red = true;
-        } else {
-            if (s_flash_step >= 0) {
-                lv_obj_t *scr = lv_scr_act();
-                // Restore the theme background (and its dial-face artwork, if any).
-                // Hardcoding black here would blank a themed dial face for good.
-                ui_helpers_style_screen_bg(scr);
-                lv_obj_set_style_bg_opa(scr, 255, LV_PART_MAIN);
-                s_flash_step = -1;
-            }
-            s_rpm_flash_red = false;
-        }
-#else
-        if (over) {
-            s_rpm_flash_red = !s_rpm_flash_red;
-            lv_obj_t *scr = lv_scr_act();
-            // Drop the dial-face artwork while strobing — a background image
-            // covers bg_color, so the flash would otherwise be invisible.
-            lv_obj_set_style_bg_img_src(scr, NULL, LV_PART_MAIN);
-            lv_obj_set_style_bg_color(scr, s_rpm_flash_red ? lv_color_hex(UI_SEM_FLASH) : lv_color_hex(0x000000), LV_PART_MAIN);
-            lv_obj_set_style_bg_opa(scr, 255, LV_PART_MAIN);
-        } else {
-            if (s_rpm_flash_red) {
-                lv_obj_t *scr = lv_scr_act();
-                ui_helpers_style_screen_bg(scr);   // restore theme bg + dial face
-                lv_obj_set_style_bg_opa(scr, 255, LV_PART_MAIN);
-                s_rpm_flash_red = false;
-            }
-        }
-#endif
-
-        // ---- Multi-gauge linked strobe (triple-gauge mode): the band [threshold-1000, threshold] is split into thirds;
-        //      gauges 1/2/3, per their positions, ramp black→red in turn → solid red; at the threshold all three strobe together (the over branch above).
-        //      Each gauge computes locally from its own position + the same ESP-NOW-synced RPM, so no extra inter-gauge communication is needed and they stay in sync naturally.
-        {
-            bool linked_drawn = false;
-            if (linked_on && !over && !IN_SWEEP && warn_thresh > 1000 && usRpm < warn_thresh) {
-                uint32_t base = (uint32_t)warn_thresh - 1000;   // start RPM = threshold minus 1000 rpm
-                uint8_t pos = nvs_device_position_get();        // this unit's position 1/2/3
-                if (pos >= 1 && pos <= 3) {
-                    uint32_t seg_start = base + 1000u * (pos - 1) / 3;
-                    uint32_t seg_end   = base + 1000u * pos / 3;
-                    lv_obj_t *scr = lv_scr_act();
-                    if (usRpm >= seg_end) {
-                        // this unit's segment completed: solid red
-                        lv_obj_set_style_bg_img_src(scr, NULL, LV_PART_MAIN);
-                        lv_obj_set_style_bg_color(scr, lv_color_hex(0xFF0000), LV_PART_MAIN);
-                        lv_obj_set_style_bg_opa(scr, 255, LV_PART_MAIN);
-                        s_rpm_link_ramp = false;
-                        linked_drawn = true;
-                    } else if (usRpm > seg_start && seg_end > seg_start) {
-                        // inside this unit's segment: full-screen black→red ramp, alpha rising linearly with RPM
-                        uint8_t alpha = (uint8_t)(((uint32_t)usRpm - seg_start) * 255 / (seg_end - seg_start));
-                        lv_obj_set_style_bg_img_src(scr, NULL, LV_PART_MAIN);
-                        lv_obj_set_style_bg_color(scr,
-                            lv_color_mix(lv_color_hex(0xFF0000), lv_color_hex(0x000000), alpha), LV_PART_MAIN);
-                        lv_obj_set_style_bg_opa(scr, 255, LV_PART_MAIN);
-                        s_rpm_link_ramp = true;
-                        linked_drawn = true;
-                    }
-                }
-            }
-            if (linked_drawn) {
-                s_rpm_link_bg = true;
-            } else if (!over) {
-                // during over (strobe) the flash logic owns the background, don't touch it here; otherwise, leaving the linked red must restore black
-                s_rpm_link_ramp = false;
-                if (s_rpm_link_bg) {
-                    lv_obj_t *scr = lv_scr_act();
-                    ui_helpers_style_screen_bg(scr);   // restore theme bg + dial face
-                    lv_obj_set_style_bg_opa(scr, 255, LV_PART_MAIN);
-                    s_rpm_link_bg = false;
-                }
-            }
-        }
-    }
-
-    if (!s_showroom_active) {
-        update_no_signal_overlay(ble_now);   // showroom mode is a fake-data demo, no NO SIGNAL hint
+    if (!ui_ext_showroom_is_active()) {
+        ui_ext_no_signal_update(ble_now);   // showroom mode is a fake-data demo, no NO SIGNAL hint
     }
 
     /* ---- Adaptive refresh rate: data pages run fast, static pages stay slow ----
@@ -1509,7 +789,7 @@ void my_timerMain(lv_timer_t * timer)
     if (timer) {
         static uint32_t s_refresh_ms = 200;
         lv_obj_t *refresh_scr = lv_scr_act();
-        uint32_t want_ms = ui_refresh_period_ms_for_screen(refresh_scr, IN_SWEEP, s_rpm_flashing, s_rpm_link_ramp);
+        uint32_t want_ms = ui_refresh_period_ms_for_screen(refresh_scr, IN_SWEEP, ui_ext_rpm_is_flashing(), ui_ext_rpm_link_ramp_active());
         if (want_ms != s_refresh_ms) {
             s_refresh_ms = want_ms;
             lv_timer_set_period(timer, want_ms);
@@ -1773,8 +1053,8 @@ void ui_event_info_custom_background(lv_event_t * e)
 void ui_event_easter_egg_background(lv_event_t * e)
 {
     lv_event_code_t event_code = lv_event_get_code(e);
-    if(event_code == LV_EVENT_CLICKED && !s_showroom_active) {
-        showroom_handle_tap();  // 10 rapid taps on the version page enter showroom
+    if(event_code == LV_EVENT_CLICKED && !ui_ext_showroom_is_active()) {
+        ui_ext_showroom_handle_tap();  // 10 rapid taps on the version page enter showroom
         return;
     }
     if(event_code == LV_EVENT_GESTURE) {
@@ -1803,6 +1083,35 @@ void ui_event_easter_egg_background(lv_event_t * e)
     // ---- hand-written extension logic hook (ui_ext.c, not overwritten by SquareLine) ----
     ui_ext_tick();
 }
+
+// OTA button: enter OTA mode screen (WiFi SoftAP + HTTP server, no BLE)
+void ui_event_easter_egg_ota_button(lv_event_t *e)
+{
+    (void)e;
+    _ui_screen_change(&ui_ScreenPageOTAMode, LV_SCR_LOAD_ANIM_FADE_ON, 300, 0, &ui_ScreenPageOTAMode_screen_init);
+}
+
+// OTA mode screen: refresh status from the LVGL timer (called every 500ms)
+void ui_ota_mode_refresh(void)
+{
+    if (ui_ScreenPageOTAMode == NULL) return;
+    if (ui_LabelOTAModeStatus == NULL) return;
+
+    if (ota_wifi_server_is_busy()) {
+        lv_label_set_text(ui_LabelOTAModeStatus, "Receiving update...");
+        lv_obj_set_style_text_color(ui_LabelOTAModeStatus, lv_color_hex(0x00CC66), LV_PART_MAIN | LV_STATE_DEFAULT);
+    } else if (ota_wifi_server_get_state() == OTA_WIFI_STATE_READY) {
+        lv_label_set_text(ui_LabelOTAModeStatus, "WiFi ready — connect your phone");
+        lv_obj_set_style_text_color(ui_LabelOTAModeStatus, lv_color_hex(0x00CC66), LV_PART_MAIN | LV_STATE_DEFAULT);
+    } else if (ota_wifi_server_get_state() == OTA_WIFI_STATE_IDLE) {
+        lv_label_set_text(ui_LabelOTAModeStatus, "Starting WiFi...");
+        lv_obj_set_style_text_color(ui_LabelOTAModeStatus, lv_color_hex(0xAAAAAA), LV_PART_MAIN | LV_STATE_DEFAULT);
+    } else if (ota_wifi_server_get_state() == OTA_WIFI_STATE_ERROR) {
+        lv_label_set_text(ui_LabelOTAModeStatus, "WiFi error");
+        lv_obj_set_style_text_color(ui_LabelOTAModeStatus, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
+    }
+}
+
 ///////////////////// SCREENS ////////////////////
 
 void ui_init(void)

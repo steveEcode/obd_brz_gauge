@@ -8,6 +8,34 @@ comment cleanups are left to the git history.
 
 ## English
 
+### On-device OTA: BLE service + WiFi transfer
+
+- A new **OTA Mode** screen (reached from the device-info page) turns the gauge into an update target: it publishes the OTA BLE service (`0x1FFB`) and starts a WiFi SoftAP (`OBD-Gauge-OTA-XXXX`) whose HTTP endpoint accepts SHA256-verified firmware and boot-animation uploads.
+- Firmware is written to the inactive OTA slot and marked valid only after a 15 s post-boot self-check, so a crash during early boot rolls back to the previous build automatically.
+- Boot animation now updates transactionally: the incoming `boot_block` pair is staged, committed, and the previous animation recovered if an update is interrupted. RS485 and ESP-NOW are paused during the transfer to free the CPU.
+- The device-info page now shows the firmware build tag instead of the ESP-IDF/LVGL version numbers.
+
+### RaceChrono toggle and boot-animation modes
+
+- New **RACECHRONO** toggle in Settings: off leaves the device in a minimal BLE mode (Info + OTA services only, no advertising), on restores the full RaceChrono + pairing + OTA service set.
+- Boot-animation modes simplified to **OFF / RACE / VIDEO**; VIDEO plays the `boot_block` flashed from the phone app (replacing the old REI/SHINJI/ASUKA slots).
+
+### UI consistency fixes
+
+- A white ring border and rounded roller/slider corners are now applied consistently across the config pages.
+- Removed the redundant titles on the INFO CUSTOM / TEMP CUSTOM pages and fixed the settings-page title overlapping the notch image.
+
+### OBD data fixes
+
+- The ELM327 client now runs single-threaded, ZC6 CAN debug logging was removed, and brake/oil warning alerts are throttled.
+
+### OTA-ready layout and device manifest
+
+- Partition layout now uses `ota_0` + `ota_1` + `bootmedia`, so the firmware can roll back after a bad update.
+- The bootmedia partition is back at `0x620000` in the current layout.
+- A read-only BLE device-manifest service (`0x1FFA`) now exposes board/build info for the companion app's hardware compatibility check.
+- Build metadata now includes git branch, commit count, and short hash so release manifests can compare versions by build number.
+
 ### Themes are now data, not code
 
 Adding a UI theme no longer touches a single C file. A theme is a folder under `themes/` holding a `theme.toml` manifest — eight decorative colors plus optional artwork — and one appended line in `themes/registry.txt`. `tools/gen_themes.py` runs at CMake configure time: it validates every manifest, converts PNG artwork into LVGL image arrays, and emits `ui_theme_generated.c`.
@@ -69,6 +97,34 @@ Root-caused a board reboot seen during testing: the blocking wait for an ELM327 
 ---
 
 ## 中文
+
+### 设备端 OTA：BLE 服务 + WiFi 传输
+
+- 新增 **OTA Mode** 页面（从设备信息页进入），把仪表切换为升级目标：发布 OTA BLE 服务（`0x1FFB`）并启动 WiFi SoftAP（`OBD-Gauge-OTA-XXXX`），其 HTTP 端点接收带 SHA256 校验的固件与开机动画上传。
+- 固件写入未运行的 OTA 槽位，且开机 15 秒自检通过后才标记有效；早期启动崩溃会自动回滚到上一个版本。
+- 开机动画改为事务式更新：先把 `boot_block` 暂存、再提交，更新中断时自动恢复上一次的动画。传输期间暂停 RS485 与 ESP-NOW 以释放 CPU。
+- 设备信息页现在显示固件 build tag，取代原来的 ESP-IDF/LVGL 版本号。
+
+### RaceChrono 开关与开机动画模式
+
+- 设置页新增 **RACECHRONO** 开关：关闭时设备进入最小 BLE 模式（仅 Info + OTA 服务，不广播），打开时恢复完整的 RaceChrono + 配对 + OTA 服务集。
+- 开机动画模式简化为 **OFF / RACE / VIDEO**；VIDEO 播放手机 App 刷入的 `boot_block`（取代原来的 REI/SHINJI/ASUKA 槽位）。
+
+### 界面一致性修复
+
+- 白色圆环边框和圆角滚轮/滑杆在各配置页统一应用。
+- 移除 INFO CUSTOM / TEMP CUSTOM 页多余的标题，并修复设置页标题与顶部缺口图重叠的问题。
+
+### OBD 数据修复
+
+- ELM327 客户端改为单线程，移除 ZC6 CAN 调试日志，并对刹车/机油报警进行节流。
+
+### OTA 就绪分区与设备清单
+
+- 分区布局已改为 `ota_0` + `ota_1` + `bootmedia`，坏包后可由 bootloader 自动回滚。
+- 当前布局下 bootmedia 分区地址回到了 `0x620000`。
+- 新增只读 BLE 设备清单服务（`0x1FFA`），供配套 App 在刷写前做硬件兼容性校验。
+- 构建信息现在包含 git 分支、提交数和短 hash，release 清单可以按 build number 做版本比较。
 
 ### 主题变成配置，不再是代码
 

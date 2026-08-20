@@ -52,6 +52,7 @@ void ui_ScreenPageODBProtocal_screen_init(void)
     lv_obj_set_style_bg_opa(ui_ArcPageODBProtocalBack, 0, LV_PART_KNOB | LV_STATE_DEFAULT);
 
     ui_RollerODBProtocalChoose = lv_roller_create(ui_ScreenPageODBProtocal);
+    lv_obj_set_style_clip_corner(ui_RollerODBProtocalChoose, true, 0);
     lv_obj_clear_flag(ui_RollerODBProtocalChoose, LV_OBJ_FLAG_GESTURE_BUBBLE); // scrolling the selection must not trigger the page gesture
     lv_roller_set_options(ui_RollerODBProtocalChoose,
                           "0 - Automatic     \n1 - SAE J1850 PWM\n2 - SAE J1850 VPW\n3 - ISO 9141-2(10.4 k)	\n4 - ISO KWP2000(5 b) 	\n5 - ISO KWP2000(fast) 	\n6 - ISO 15765-4(11b 500)\n7 - ISO 15765-4(29b 500)\n8 - ISO 15765-4(11b 250)\n9 - ISO 15765-4(29b 250)",

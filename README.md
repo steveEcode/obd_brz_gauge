@@ -28,6 +28,7 @@ touch UI with LVGL.
 |----------|----------------------|
 | [docs/README.zh-CN.md](docs/README.zh-CN.md) | **完整中文说明** — 功能、依赖、编译烧录、适配要点 |
 | [docs/README.en.md](docs/README.en.md) | **Full English guide** — features, requirements, build and flash |
+| [docs/APP_INTEGRATION.md](docs/APP_INTEGRATION.md) | App/device manifest, firmware validation, single-slot boot animation / App 对接、硬件校验、单槽开机动画 |
 | [firmware/README.md](firmware/README.md) | Pre-built binaries and flash addresses / 预编译固件与烧录地址 |
 | [CHANGELOG.md](CHANGELOG.md) | Changelog / 更新日志（中英双语） |
 
@@ -82,6 +83,7 @@ Repository layout is in [this README](#repository-layout--目录结构) below.
   **三连表** —— 主表读 OBD 广播，从表零额外负载显示，走真蓝牙配对。
 - **Data-driven themes** — a theme is a folder with a manifest plus optional
   artwork; no C code. / **配置驱动主题** —— 一个文件夹 + 一份清单，不用写 C。
+- **BLE device manifest** — a read-only GATT service exposes hardware/build info so the App can reject mismatched firmware before flashing. / **BLE 设备清单** —— 只读 GATT 服务暴露硬件/构建信息，App 刷写前先做硬件匹配校验。
 - **RPM warning, incl. linked mode** — three gauges light up in sequence as revs
   climb. / **转速报警（含联动模式）** —— 三块表随转速依次亮起。
 - Manufacturer oil-temp paths beyond PID 01 5C (Mode 21/22, Mazda, MINI/BMW),
@@ -104,7 +106,7 @@ Requires ESP-IDF 5.1+. Flashing pre-built binaries instead:
 [firmware/README.md](firmware/README.md).
 需要 ESP-IDF 5.1 以上。想直接烧预编译固件见 [firmware/README.md](firmware/README.md)。
 
-> ⚠️ The bootmedia flash address changed from `0x620000` to **`0x420000`**.
+> ⚠️ The bootmedia flash address changed from `0x420000` to **`0x620000`**.
 > Update older scripts. / 烧录地址已变更，旧脚本需同步修改。
 
 ## Repository Layout / 目录结构

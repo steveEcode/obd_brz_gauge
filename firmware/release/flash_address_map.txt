@@ -2,4 +2,4 @@
 0x008000 partition_table/partition-table.bin
 0x00F000 ota_data_initial.bin
 0x020000 obd_brz_gauge.bin
-0x420000 bootmedia.bin
+0x620000 bootmedia.bin

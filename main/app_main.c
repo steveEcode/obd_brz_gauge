@@ -17,6 +17,7 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_task_wdt.h"
+#include "esp_ota_ops.h"
 
 #include "lvgl.h"
 
@@ -44,6 +45,22 @@
 // #define ESPNOW_FORCE_SLAVE
 
 static const char *TAG = "obd_dsp";
+
+static void mark_app_valid_task(void *arg)
+{
+    (void)arg;
+
+    vTaskDelay(pdMS_TO_TICKS(15000));
+
+    esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Current firmware marked valid");
+    } else if (err != ESP_ERR_OTA_ROLLBACK_INVALID_STATE) {
+        ESP_LOGW(TAG, "Failed to mark firmware valid: %s", esp_err_to_name(err));
+    }
+
+    vTaskDelete(NULL);
+}
 
 extern void ui_init(void);
 SemaphoreHandle_t lvgl_mux = NULL; // non-static: used by BLE scan page
@@ -271,6 +288,8 @@ void app_main(void)
 
     /* 7.5 Mount bootmedia SPIFFS early (saves ~300ms of black screen) */
     boot_media_mount();
+    boot_media_recover_previous_if_needed();
+    elm327_ble_ensure_stack_init();
 
     /* 8. Branch by role: master (connects to ELM327 for readings + ESP-NOW broadcast) / slave (only receives and displays the master's data) */
     uint8_t dev_role = user_cfg->device_role;
@@ -320,13 +339,6 @@ void app_main(void)
             ESP_LOGD(TAG, "No saved BLE device, waiting for user selection");
         }
 
-        /* 8.5 Start RaceChrono BLE DIY service (only when the BT stack is already initialized) --
-               On MASTER this service also carries the SkyGauge pairing broadcast, regardless of whether an OBD device is configured. */
-        if (user_cfg->ble_device_name[0] != '\0' || espnow_on) {
-            vTaskDelay(pdMS_TO_TICKS(500));
-            racechrono_ble_diy_start();
-        }
-
         /* 9. Start RS485 brake temperature acquisition */
         rs485_brake_temp_start();
 
@@ -341,5 +353,13 @@ void app_main(void)
 
         /* 10. Mileage statistics task (only the master counts, to avoid double counting by the slave) */
         vMileageDataStatisticTask();
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(500));
+    racechrono_ble_diy_start(user_cfg->rc_enabled);
+
+    BaseType_t valid_task_started = xTaskCreate(mark_app_valid_task, "ota_valid", 4096, NULL, tskIDLE_PRIORITY + 1, NULL);
+    if (valid_task_started != pdPASS) {
+        ESP_LOGW(TAG, "Failed to create OTA validity task");
     }
 }

@@ -62,6 +62,8 @@ void ui_ScreenPageChartConfig_screen_init(void)
     lv_obj_set_style_pad_all(ui_ScreenPageChartConfig, 0, LV_PART_MAIN);
     lv_obj_set_style_outline_width(ui_ScreenPageChartConfig, 0, LV_PART_MAIN);
 
+    lv_obj_t *ring = ui_helpers_create_ring(ui_ScreenPageChartConfig, 10);   // white ring: static circular border, consistent with the other pages
+
     lv_obj_t *title = lv_label_create(ui_ScreenPageChartConfig);
     lv_label_set_text(title, "CHART SOURCE");
     lv_obj_set_style_text_font(title, &ui_font_FontTypoderSize24, LV_PART_MAIN);
@@ -78,6 +80,7 @@ void ui_ScreenPageChartConfig_screen_init(void)
     const nvs_user_cfg_t *cfg = nvs_cfg_get();
 
     s_roller_chart_src = lv_roller_create(ui_ScreenPageChartConfig);
+    lv_obj_set_style_clip_corner(s_roller_chart_src, true, 0);
     lv_obj_clear_flag(s_roller_chart_src, LV_OBJ_FLAG_GESTURE_BUBBLE);
     lv_roller_set_options(s_roller_chart_src, options, LV_ROLLER_MODE_NORMAL);
     lv_roller_set_visible_row_count(s_roller_chart_src, 3);
@@ -93,5 +96,6 @@ void ui_ScreenPageChartConfig_screen_init(void)
     lv_obj_set_style_text_color(hint, lv_color_hex(0x555555), LV_PART_MAIN);
     lv_obj_align(hint, LV_ALIGN_CENTER, 0, 120);
 
+    lv_obj_move_foreground(ring);   // bring the ring to the front
     lv_obj_add_event_cb(ui_ScreenPageChartConfig, ui_event_chart_config_background, LV_EVENT_GESTURE, NULL);
 }

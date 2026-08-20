@@ -35,6 +35,9 @@ typedef struct {
                                  // see the load_blob grow logic comment in nvs_storage.c.
     uint8_t rpm_warn_linked_en;  // multi-gauge linked flash: 0=off 1=on (gauges turn red in sequence by
                                  // position, then all flash at threshold; logic in ui.c)
+    uint8_t rc_enabled;          // RaceChrono BLE service: 0=off (minimal mode), 1=on (full RC+Pair+Info+OTA)
+                                 // NOTE: new fields MUST be appended at the END of this struct;
+                                 // see the load_blob grow logic comment in nvs_storage.c.
 } nvs_user_cfg_t;
 
 /*------------------ Runtime statistics (persisted periodically) ------------------*/
@@ -59,7 +62,7 @@ int16_t nvs_chart_alarm_get(uint8_t item);
 void    nvs_chart_alarm_set(uint8_t item, int16_t raw_threshold);
 
 // Multi-gauge boot animation: 0=OFF, 1=RACE AS ONE, 2=VIDEO. Stored as a separate blob, not in the cfg struct.
-uint8_t nvs_intro_enable_get(void);           // 0=OFF 1=RACE 2=VIDEO
+uint8_t nvs_intro_enable_get(void);           // 0=OFF 1=RACE 2=VIDEO (boot_block flashed via the phone app)
 void    nvs_intro_enable_set(uint8_t en);
 uint8_t nvs_device_position_get(void);        // 1/2/3
 void    nvs_device_position_set(uint8_t pos);

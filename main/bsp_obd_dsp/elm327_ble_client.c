@@ -5,6 +5,7 @@
 #include "esp_bt_main.h"
 #include "esp_gap_ble_api.h"
 #include "esp_gattc_api.h"
+#include "esp_gatt_common_api.h"
 #include "esp_bt_defs.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -379,16 +380,21 @@ static int elm327_auto_detect_protocol(void) {
         "ATAT1\r",      // adaptive timing
         "ATST 19\r",    // set timeout
     };
-    
+
     for (size_t i = 0; i < sizeof(init_cmds) / sizeof(init_cmds[0]); ++i) {
+        if (!s_connected) { ESP_LOGW(TAG, "[DETECT] BLE disconnected, aborting"); s_protocol_detect_idx = -1; return 0; }
         elm327_ble_send_ascii_blocking(init_cmds[i]);
         vTaskDelay(pdMS_TO_TICKS(30));
     }
-    
+
     vTaskDelay(pdMS_TO_TICKS(200));
-    
+
     // Try protocols 1-11
     for (int proto = 1; proto <= 11; proto++) {
+        // Abort immediately on BLE disconnect — without this check, a disconnect mid-detect
+        // would blindly cycle 11 protocols × 2s = up to 22s without feeding the watchdog → TWDT reboot.
+        if (!s_connected) { ESP_LOGW(TAG, "[DETECT] BLE disconnected, aborting"); s_protocol_detect_idx = -1; return 0; }
+        esp_task_wdt_reset();  // feed watchdog between protocols (the 2s wait below also feeds)
         ESP_LOGD(TAG, "[DETECT] Trying protocol %d...", proto);
 
         // Set the protocol
@@ -408,10 +414,12 @@ static int elm327_auto_detect_protocol(void) {
         esp_log_level_set(TAG, ESP_LOG_INFO);
         ESP_LOGD(TAG, "[DETECT] Sent 01 0C, waiting...");
         esp_log_level_set(TAG, prev_level);
-        
+
         // Wait for a response, up to 2 seconds
         uint32_t wait_ms = 0;
         while (wait_ms < 2000) {
+            if (!s_connected) { ESP_LOGW(TAG, "[DETECT] BLE disconnected, aborting"); s_protocol_detect_idx = -1; return 0; }
+            esp_task_wdt_reset();  // feed the watchdog in the 2s wait loop (11 protocols × 2s could otherwise exceed TWDT)
             vTaskDelay(pdMS_TO_TICKS(50));
             wait_ms += 50;
 
@@ -422,10 +430,10 @@ static int elm327_auto_detect_protocol(void) {
                 return proto;
             }
         }
-        
+
         ESP_LOGW(TAG, "[DETECT] Protocol %d: No valid response (timeout)", proto);
     }
-    
+
     s_protocol_detect_idx = -1;  // exit detection mode
     ESP_LOGW(TAG, "=== Protocol auto-detect FAILED ===");
     return 0;  // 0 means detection failed; the default protocol 6 will be used
@@ -835,9 +843,13 @@ static void do_elm_init(void) {
         protocol_to_use = vp_proto->forced_protocol;
         ESP_LOGD(TAG, "Vehicle '%s' forces protocol %d (skip auto-detect)", vp_proto->name, protocol_to_use);
     } else if (protocol_to_use == 0) {
-        // Auto protocol detection
+        // Auto protocol detection — abort immediately if BLE dropped during detection
         ESP_LOGD(TAG, "Protocol auto-detect enabled (current NVS: 0-auto)");
         int detected_proto = elm327_auto_detect_protocol();
+        if (!s_connected) {
+            ESP_LOGW(TAG, "BLE disconnected during protocol auto-detect, aborting init");
+            return;
+        }
         if (detected_proto > 0) {
             protocol_to_use = (uint8_t)detected_proto;
             nvs_user_cfg_t new_cfg = *cfg;
@@ -863,11 +875,13 @@ static void do_elm_init(void) {
         atsp_cmd, fixed_header_cmd,
     };
     for (size_t i = 0; i < (sizeof(init_cmds) / sizeof(init_cmds[0])); ++i) {
+        if (!s_connected) { ESP_LOGW(TAG, "BLE disconnected during ELM init seq, aborting"); return; }
         elm327_ble_send_ascii_blocking(init_cmds[i]);
         vTaskDelay(pdMS_TO_TICKS(30));
     }
     // Bus warm-up: send 01 00 a few extra times to give the vehicle CAN/ELM protocol time to handshake (the bus may not be awake on a cold start)
     for (int probe = 0; probe < 3; ++probe) {
+        if (!s_connected) { ESP_LOGW(TAG, "BLE disconnected during bus warm-up, aborting"); return; }
         elm327_ble_send_ascii_blocking("01 00\r");
         vTaskDelay(pdMS_TO_TICKS(150));
     }
@@ -907,7 +921,10 @@ static void obd_poll_task(void *arg) {
         // Init only after the notify subscription is ready following a (re)connect; re-runs on every reconnect (fixes "must disconnect/reconnect to get readings")
         if (!inited) {
             vTaskDelay(pdMS_TO_TICKS(300));   // give the subscription a bit more time to settle
+            if (!s_connected || !s_notify_ready) continue;  // dropped again while waiting — re-check before init
             do_elm_init();
+            // do_elm_init may have aborted early due to disconnect; don't mark inited in that case
+            if (!s_connected) continue;
             inited = true;
             tick_count = 0;
             continue;
@@ -1361,6 +1378,10 @@ void elm327_ble_init_and_start(const char *target_name, const elm327_ble_callbac
         ESP_ERROR_CHECK(esp_bt_controller_enable(ESP_BT_MODE_BLE));
     }
     if (!esp_bluedroid_get_status()) {
+        // Raise the local ATT MTU from the 23-byte default: the phone OTA app requests
+        // 517 and the negotiated MTU is min(both). 23 bytes would cripple OTA throughput
+        // (20-byte writes) and force long-read fragmentation for the manifest.
+        esp_ble_gatt_set_local_mtu(517);
         ESP_ERROR_CHECK(esp_bluedroid_init());
         ESP_ERROR_CHECK(esp_bluedroid_enable());
     } else if (esp_bluedroid_get_status() != ESP_BLUEDROID_STATUS_ENABLED) {
@@ -1390,9 +1411,17 @@ bool elm327_ble_send_command(const uint8_t *data, size_t len) {
 // Uses FreeRTOS task notifications instead of 10ms polling: xTaskNotify wakes immediately on '>', zero wait overhead.
 bool elm327_ble_send_ascii_blocking(const char *ascii_cmd)
 {
+    // Fast-exit when disconnected: no point waiting for a '>' that will never arrive.
+    // Prevents up to 3s of pointless blocking per command after a BLE drop.
+    if (!s_connected) {
+        s_elm_ready = true;
+        return false;
+    }
     if (!s_elm_ready) {
         uint32_t waited_ms = 0;
         while (!s_elm_ready && waited_ms < 3000) {
+            // Disconnect mid-wait → abort immediately instead of waiting up to 3s
+            if (!s_connected) { s_elm_ready = true; return false; }
             // Wait at most 10ms (as a fallback); xTaskNotify wakes early when '>' arrives
             ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10));
             waited_ms += 10;
@@ -1435,7 +1464,12 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
 
     switch (event) {
     case ESP_GAP_BLE_SCAN_PARAM_SET_COMPLETE_EVT: {
-        start_scan();
+        // Only auto-start scanning when a target MAC is actually bound. Stack-only inits
+        // (no OBD device bound) must not scan: scanning duty-cycles the radio and degrades
+        // the SkyGauge pairing advert on MASTER devices.
+        if (s_target_bda_valid && !s_scan_only_mode) {
+            start_scan();
+        }
         break;
     }
     case ESP_GAP_BLE_SCAN_RESULT_EVT: {
@@ -1477,6 +1511,11 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
                     esp_ble_gap_stop_scanning();
                     esp_ble_gattc_open(s_gattc_if, pr->scan_rst.bda, pr->scan_rst.ble_addr_type, true);
                 }
+            }
+        } else if (pr->scan_rst.search_evt == ESP_GAP_SEARCH_INQ_CMPL_EVT) {
+            // Scan window expired without a connection: keep auto-reconnect alive.
+            if (!s_scan_only_mode && s_target_bda_valid && !s_connected) {
+                start_scan();
             }
         }
         break;
@@ -2081,6 +2120,8 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
     case ESP_GATTC_DISCONNECT_EVT: {
         s_connected = false;
         s_notify_ready = false;   // disconnect → notifications invalid; must re-subscribe + re-init after reconnect
+        s_elm_ready = true;       // release any blocking send wait immediately (no '>' will ever arrive)
+        if (s_poll_task_handle) xTaskNotify(s_poll_task_handle, 0, eNoAction); // wake the poll task so it sees the disconnect without waiting up to 3s
         s_conn_id = 0xFFFF;
         s_have_service = false;
         s_service_start = 0x0001;
@@ -2108,10 +2149,14 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
         s_protocol_detect_rpm = -1;
         s_oil_query_mode = 0;  // reset the oil-temp query counter
         if (s_cbs.on_disconnected) s_cbs.on_disconnected();
-        // Always resume scanning after disconnect:
+        // Resume scanning after disconnect only when there is something to scan for:
         //  - Scan mode: keep listing devices
-        //  - Normal mode: auto-reconnect to the target (auto-recovers after a drop / self-heal forced disconnect, no manual reconnect needed)
-        start_scan();
+        //  - Normal mode with a bound MAC: auto-reconnect to the target (auto-recovers after
+        //    a drop / self-heal forced disconnect, no manual reconnect needed)
+        // Stack-only inits (no bound target) stay off the radio so advertising isn't duty-cycled.
+        if (s_target_bda_valid || s_scan_only_mode) {
+            start_scan();
+        }
         break;
     }
     default:

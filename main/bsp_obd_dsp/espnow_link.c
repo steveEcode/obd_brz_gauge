@@ -35,6 +35,8 @@ static const char MASTER_NAME[] = "SkyGauge";   // name the master broadcasts (s
 #define MG_SLAVE_TIMEOUT_US     2000000 // a slave is considered online if it reported within 2s
 
 static bool s_is_master = false;
+static bool s_espnow_started = false;  // Track if ESP-NOW was actually started
+static bool s_wifi_initialized = false;  // Track if WiFi was initialized
 
 // Slave -> master "presence" packet (small; distinguished from the OBD packet by length)
 typedef struct __attribute__((packed)) {
@@ -108,12 +110,14 @@ static void wifi_espnow_init(void) {
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    s_wifi_initialized = true;
     ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
     ESP_ERROR_CHECK(esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE));
     esp_wifi_set_ps(WIFI_PS_NONE);   // disable power save, otherwise ESP-NOW RX drops/lags
     ESP_ERROR_CHECK(esp_now_init());
+    s_espnow_started = true;
 }
 
 // ========================= Master =========================
@@ -421,4 +425,45 @@ void espnow_link_apply_synced_threshold(uint16_t thresh) {
     if (s_is_master) {
         espnow_link_broadcast_threshold(thresh);
     }
+}
+
+// Stop ESP-NOW and release WiFi resources (for OTA mode).
+// After calling this, espnow_link_start_master/slave can be called again to restart.
+void espnow_link_stop(void) {
+    if (!s_espnow_started && !s_wifi_initialized) {
+        ESP_LOGI(TAG, "ESP-NOW not started, nothing to stop");
+        return;
+    }
+
+    ESP_LOGI(TAG, "Stopping ESP-NOW...");
+
+    // Unregister callbacks first
+    esp_now_unregister_recv_cb();
+    esp_now_unregister_send_cb();
+
+    // Deinit ESP-NOW before stopping WiFi
+    if (s_espnow_started) {
+        esp_err_t err = esp_now_deinit();
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "esp_now_deinit failed: %s", esp_err_to_name(err));
+        }
+        s_espnow_started = false;
+    }
+
+    // Stop and deinit WiFi
+    if (s_wifi_initialized) {
+        esp_err_t err = esp_wifi_stop();
+        if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_STARTED) {
+            ESP_LOGW(TAG, "esp_wifi_stop failed: %s", esp_err_to_name(err));
+        }
+
+        err = esp_wifi_deinit();
+        if (err != ESP_OK && err != ESP_ERR_WIFI_NOT_INIT) {
+            ESP_LOGW(TAG, "esp_wifi_deinit failed: %s", esp_err_to_name(err));
+        }
+        s_wifi_initialized = false;
+    }
+
+    s_is_master = false;
+    ESP_LOGI(TAG, "ESP-NOW stopped");
 }

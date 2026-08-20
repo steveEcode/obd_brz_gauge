@@ -135,6 +135,7 @@ void ui_ScreenPageRpmWarn_screen_init(void)
 
     // Slider (1000~8000)
     s_slider_rpm_warn = lv_slider_create(ui_ScreenPageRpmWarn);
+    lv_obj_set_style_clip_corner(s_slider_rpm_warn, true, 0);
     lv_slider_set_range(s_slider_rpm_warn, 1000, 8000);
     lv_slider_set_value(s_slider_rpm_warn, thresh, LV_ANIM_OFF);
     lv_obj_set_width(s_slider_rpm_warn, 220);
@@ -165,6 +166,7 @@ void ui_ScreenPageRpmWarn_screen_init(void)
     lv_obj_align(anim_label, LV_ALIGN_CENTER, -50, 70);
 
     s_btn_anim_toggle = lv_btn_create(ui_ScreenPageRpmWarn);
+    lv_obj_set_style_clip_corner(s_btn_anim_toggle, true, 0);
     lv_obj_set_size(s_btn_anim_toggle, 70, 32);
     lv_obj_align(s_btn_anim_toggle, LV_ALIGN_CENTER, 60, 70);
     lv_obj_set_style_bg_color(s_btn_anim_toggle, lv_color_hex(0x333333), LV_PART_MAIN);
@@ -190,6 +192,7 @@ void ui_ScreenPageRpmWarn_screen_init(void)
         lv_obj_align(linked_label, LV_ALIGN_CENTER, -50, 102);
 
         lv_obj_t *btn_linked = lv_btn_create(ui_ScreenPageRpmWarn);
+    lv_obj_set_style_clip_corner(btn_linked, true, 0);
         lv_obj_set_size(btn_linked, 70, 32);
         lv_obj_align(btn_linked, LV_ALIGN_CENTER, 60, 102);
         lv_obj_set_style_bg_color(btn_linked, lv_color_hex(0x333333), LV_PART_MAIN);
@@ -209,6 +212,7 @@ void ui_ScreenPageRpmWarn_screen_init(void)
 
     // TEST button: one tap triggers the ~2s flash test
     lv_obj_t *btn_test = lv_btn_create(ui_ScreenPageRpmWarn);
+    lv_obj_set_style_clip_corner(btn_test, true, 0);
     lv_obj_set_size(btn_test, 100, 32);
     lv_obj_align(btn_test, LV_ALIGN_CENTER, 0, is_standalone ? 118 : 134);
     lv_obj_set_style_bg_color(btn_test, lv_color_hex(0xFF4D4D), LV_PART_MAIN);

@@ -34,8 +34,46 @@ if(THEME_GEN_STDERR)
 endif()
 message(STATUS "${THEME_GEN_STDOUT}")
 
+# Build metadata for app-side compatibility checks and on-device manifests.
+set(OBD_GAUGE_GIT_HASH "unknown")
+set(OBD_GAUGE_GIT_BRANCH "unknown")
+set(OBD_GAUGE_GIT_COUNT 0)
+
+execute_process(
+    COMMAND git -C "${CMAKE_CURRENT_SOURCE_DIR}/.." rev-parse --short=12 HEAD
+    RESULT_VARIABLE OBD_GAUGE_GIT_HASH_RESULT
+    OUTPUT_VARIABLE OBD_GAUGE_GIT_HASH
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+if(NOT OBD_GAUGE_GIT_HASH_RESULT EQUAL 0 OR OBD_GAUGE_GIT_HASH STREQUAL "")
+    set(OBD_GAUGE_GIT_HASH "unknown")
+endif()
+
+execute_process(
+    COMMAND git -C "${CMAKE_CURRENT_SOURCE_DIR}/.." rev-parse --abbrev-ref HEAD
+    RESULT_VARIABLE OBD_GAUGE_GIT_BRANCH_RESULT
+    OUTPUT_VARIABLE OBD_GAUGE_GIT_BRANCH
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+if(NOT OBD_GAUGE_GIT_BRANCH_RESULT EQUAL 0 OR OBD_GAUGE_GIT_BRANCH STREQUAL "")
+    set(OBD_GAUGE_GIT_BRANCH "unknown")
+endif()
+
+execute_process(
+    COMMAND git -C "${CMAKE_CURRENT_SOURCE_DIR}/.." rev-list --count HEAD
+    RESULT_VARIABLE OBD_GAUGE_GIT_COUNT_RESULT
+    OUTPUT_VARIABLE OBD_GAUGE_GIT_COUNT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET)
+if(NOT OBD_GAUGE_GIT_COUNT_RESULT EQUAL 0 OR OBD_GAUGE_GIT_COUNT STREQUAL "")
+    set(OBD_GAUGE_GIT_COUNT 0)
+endif()
+
+string(REGEX REPLACE "[^A-Za-z0-9._-]" "_" OBD_GAUGE_GIT_BRANCH_SAFE "${OBD_GAUGE_GIT_BRANCH}")
+set(OBD_GAUGE_BUILD_TAG "${OBD_GAUGE_GIT_BRANCH_SAFE}-${OBD_GAUGE_GIT_COUNT}-${OBD_GAUGE_GIT_HASH}")
+
 idf_component_register(SRC_DIRS
-                    "." 
+                    "."
                     "export_path/components"
                     "export_path/fonts"
                     "export_path/images"
@@ -50,8 +88,21 @@ idf_component_register(SRC_DIRS
                     "bsp_obd_dsp/i2c_driver"
                     "bsp_obd_dsp/touch_driver"
                     INCLUDE_DIRS
-                    ".")
+                    "."
+                    REQUIRES
+                    esp_http_server
+                    esp_wifi
+                    bt
+                    spiffs
+                    mbedtls
+                    nvs_flash
+                    app_update)
 
 # Auto-generate the bootmedia SPIFFS image; flashed together via idf.py flash
 spiffs_create_partition_image(bootmedia ${CMAKE_CURRENT_SOURCE_DIR}/../bootmedia/slot_a FLASH_IN_PROJECT)
 
+target_compile_definitions(${COMPONENT_LIB} PRIVATE
+    OBD_GAUGE_GIT_HASH="${OBD_GAUGE_GIT_HASH}"
+    OBD_GAUGE_GIT_BRANCH="${OBD_GAUGE_GIT_BRANCH_SAFE}"
+    OBD_GAUGE_GIT_COUNT=${OBD_GAUGE_GIT_COUNT}
+    OBD_GAUGE_BUILD_TAG="${OBD_GAUGE_BUILD_TAG}")

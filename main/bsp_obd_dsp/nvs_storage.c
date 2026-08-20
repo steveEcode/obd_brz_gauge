@@ -18,7 +18,7 @@
 #define CHART_ALARM_OFF       32767 // "off" sentinel for alarm thresholds (unreachable, avoids false alarms)
 #define KEY_MG_EXTRA          "mgextra"   // multi-gauge boot animation settings
 #define KEY_CFG_VERSION       "cfgver"    // config version (missing = v0)
-#define CFG_VERSION_CURRENT   2           // current version; bump on field add/semantic change (migration in nvs_storage_init)
+#define CFG_VERSION_CURRENT   3           // current version; bump on field add/semantic change (migration in nvs_storage_init)
 
 static nvs_user_cfg_t s_cfg =   {
                         .protocol = 0, // OBD protocol select: 0=auto, 1~9=fixed, default auto
@@ -46,12 +46,13 @@ static int16_t s_chart_alarm[CHART_ALARM_N] = {
     80, 6000, CHART_ALARM_OFF
 };
 
-// Multi-gauge boot animation settings (separate blob): default off, position 1
+// Multi-gauge boot animation settings (separate blob):
+// intro_enable 0=OFF 1=RACE 2=VIDEO (the single boot_block flashed via the phone app; default)
 static struct __attribute__((packed)) {
-    uint8_t intro_enable;   // 0/1
+    uint8_t intro_enable;   // 0=OFF 1=RACE 2=VIDEO
     uint8_t device_position; // 1/2/3
     uint8_t boot_mode;      // 0=default animation, 1=custom image, 2=video
-} s_mg = { 0, 1, 0 };
+} s_mg = { 2, 1, 0 };
 
 /* Forward declarations */
 static esp_err_t load_blob(const char *ns,const char *key,void *out,size_t len);
@@ -83,7 +84,7 @@ esp_err_t nvs_storage_init(void)
             nvs_close(h);
         }
         if (s_mg.device_position < 1 || s_mg.device_position > 3) s_mg.device_position = 1;
-        if (s_mg.intro_enable > 4) s_mg.intro_enable = 0;
+        if (s_mg.intro_enable > 2) s_mg.intro_enable = 2;   // legacy REI/SHINJI/ASUKA (3/4) map to VIDEO (2)
         if (s_mg.boot_mode > 2) s_mg.boot_mode = 0;
         ESP_LOGD("nvs", "mg loaded: intro=%u pos=%u boot=%u (blob_sz=%u)", s_mg.intro_enable, s_mg.device_position, s_mg.boot_mode, (unsigned)sz);
     }
@@ -121,7 +122,17 @@ esp_err_t nvs_storage_init(void)
                     save_blob(NS_CFG, KEY_CFG, &s_cfg, sizeof(s_cfg));
                 }
             }
-            // Future: if (stored_ver < 3) { ... migrate v2→v3 fields ... }
+            // v2 → v3: the three built-in boot videos (REI/SHINJI/ASUKA = intro 2/3/4) were
+            // replaced by a single app-flashed animation (VIDEO = 2). Old 3/4 map to 2; old 2
+            // keeps its value but now plays /bootmedia/boot_block.*. Persist so the roller
+            // never shows a stale selection again.
+            if (stored_ver < 3) {
+                if (s_mg.intro_enable > 2) {
+                    s_mg.intro_enable = 2;
+                }
+                save_blob(NS_CFG, KEY_MG_EXTRA, &s_mg, sizeof(s_mg));
+            }
+            // Future: if (stored_ver < 4) { ... migrate v3→v4 fields ... }
             // Write the new version number
             if (nvs_open(NS_CFG, NVS_READWRITE, &h) == ESP_OK) {
                 nvs_set_u8(h, KEY_CFG_VERSION, CFG_VERSION_CURRENT);

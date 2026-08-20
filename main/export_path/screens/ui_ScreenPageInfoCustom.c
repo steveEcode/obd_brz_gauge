@@ -49,6 +49,8 @@ static void create_row(lv_obj_t *parent, int idx, const char *title, lv_coord_t 
     lv_obj_set_style_text_color(s_info_rollers[idx], lv_color_hex(0xFFFFFF), LV_PART_MAIN);
     lv_obj_set_style_bg_color(s_info_rollers[idx], lv_color_hex(0xFFFFFF), LV_PART_SELECTED);
     lv_obj_set_style_text_color(s_info_rollers[idx], lv_color_hex(0x000000), LV_PART_SELECTED);
+    lv_obj_set_style_radius(s_info_rollers[idx], 8, LV_PART_MAIN);
+    lv_obj_set_style_radius(s_info_rollers[idx], 8, LV_PART_SELECTED);   // round the white selected band too, it was spilling square past the corners
     lv_obj_align(s_info_rollers[idx], LV_ALIGN_CENTER, 30, y);
     lv_obj_add_event_cb(s_info_rollers[idx], on_info_map_changed, LV_EVENT_VALUE_CHANGED, (void *)idx);
 }
@@ -64,12 +66,6 @@ void ui_ScreenPageInfoCustom_screen_init(void)
     lv_obj_set_style_bg_opa(ui_ScreenPageInfoCustom, 255, LV_PART_MAIN);
 
     lv_obj_t *ring = ui_helpers_create_ring(ui_ScreenPageInfoCustom, 10);   // white ring: static circular border, replaces the rotating spinner, removes the arc seam gap
-
-    lv_obj_t *title = lv_label_create(ui_ScreenPageInfoCustom);
-    lv_label_set_text(title, "INFO CUSTOM");
-    lv_obj_set_style_text_font(title, &ui_font_FontTypoderSize24, LV_PART_MAIN);
-    lv_obj_set_style_text_color(title, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-    lv_obj_align(title, LV_ALIGN_CENTER, 0, -132);
 
     create_row(ui_ScreenPageInfoCustom, 0, "SLOT 1", -82);
     create_row(ui_ScreenPageInfoCustom, 1, "SLOT 2", -38);

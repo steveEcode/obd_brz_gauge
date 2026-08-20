@@ -53,6 +53,7 @@ void ui_ScreenPageOilWarn_screen_init(void)
     lv_obj_align(s_label_oil_warn_val, LV_ALIGN_CENTER, 0, -24);
 
     s_slider_oil_warn = lv_slider_create(ui_ScreenPageOilWarn);
+    lv_obj_set_style_clip_corner(s_slider_oil_warn, true, 0);
     lv_slider_set_range(s_slider_oil_warn, 0, 100);
     lv_slider_set_value(s_slider_oil_warn, cfg->oil_pressure_warn_x10, LV_ANIM_OFF);
     lv_obj_set_width(s_slider_oil_warn, 220);

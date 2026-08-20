@@ -99,7 +99,7 @@ esptool.py --chip esp32s3 -p PORT -b 460800 write_flash \
   0x8000 firmware/release/partition_table/partition-table.bin \
   0xf000 firmware/release/ota_data_initial.bin \
   0x20000 firmware/release/obd_brz_gauge.bin \
-  0x420000 firmware/release/bootmedia.bin
+  0x620000 firmware/release/bootmedia.bin
 ```
 
 ## 开发与适配说明

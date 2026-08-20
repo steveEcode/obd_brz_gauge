@@ -18,6 +18,7 @@
 
 static const char *TAG = "brake_temp";
 static bool s_started = false;
+static volatile bool s_paused = false;
 static int s_uart_baud_cur = -1;
 static int s_uart_parity_cur = -1;
 static int s_uart_stop_bits_cur = -1;
@@ -276,6 +277,10 @@ static void rs485_temp_task(void *arg)
              (int)CONFIG_OBD_RS485_DE_RE_GPIO);
 
     while (1) {
+        if (s_paused) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
+        }
         int16_t temp_x10 = -1000;
         query_status_t st = query_with_cfg(&s_cfg, &temp_x10);
         if (st == QUERY_OK) {
@@ -303,5 +308,15 @@ void rs485_brake_temp_start(void)
 {
     if (s_started) return;
     s_started = true;
-    xTaskCreate(rs485_temp_task, "brake_temp", 3072, NULL, 4, NULL);
+    xTaskCreatePinnedToCore(rs485_temp_task, "brake_temp", 3072, NULL, 4, NULL, 1);
+}
+
+void rs485_brake_temp_pause(void)
+{
+    s_paused = true;
+}
+
+void rs485_brake_temp_resume(void)
+{
+    s_paused = false;
 }

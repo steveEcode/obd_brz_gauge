@@ -48,6 +48,8 @@ void ui_ScreenPageChartAlarm_screen_init(void)
     lv_obj_set_style_pad_all(ui_ScreenPageChartAlarm, 0, LV_PART_MAIN);
     lv_obj_set_style_outline_width(ui_ScreenPageChartAlarm, 0, LV_PART_MAIN);
 
+    lv_obj_t *ring = ui_helpers_create_ring(ui_ScreenPageChartAlarm, 10);   // white ring: static circular border, consistent with the other pages
+
     // Title: "<item> ALARM"
     lv_obj_t *title = lv_label_create(ui_ScreenPageChartAlarm);
     lv_label_set_text_fmt(title, "%s ALARM", ui_disp_item_name(s_alarm_item));
@@ -63,6 +65,7 @@ void ui_ScreenPageChartAlarm_screen_init(void)
 
     // Slider: range = [nmin, nmax+1], the nmax+1 step = OFF
     s_alarm_slider = lv_slider_create(ui_ScreenPageChartAlarm);
+    lv_obj_set_style_clip_corner(s_alarm_slider, true, 0);
     lv_slider_set_range(s_alarm_slider, s_alarm_nmin, s_alarm_nmax + 1);
     int16_t cur = nvs_chart_alarm_get(s_alarm_item);
     int32_t sv = (cur >= CHART_ALARM_OFF) ? (s_alarm_nmax + 1) : ((int32_t)cur / s_alarm_div);
@@ -88,5 +91,6 @@ void ui_ScreenPageChartAlarm_screen_init(void)
     lv_obj_set_style_text_color(hint, lv_color_hex(0x555555), LV_PART_MAIN);
     lv_obj_align(hint, LV_ALIGN_CENTER, 0, 110);
 
+    lv_obj_move_foreground(ring);   // bring the ring to the front
     lv_obj_add_event_cb(ui_ScreenPageChartAlarm, ui_event_chart_alarm_background, LV_EVENT_GESTURE, NULL);
 }
