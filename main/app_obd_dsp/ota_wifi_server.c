@@ -548,6 +548,10 @@ static esp_err_t firmware_handler(httpd_req_t *req)
     s_recv.ota_started = false;
     notify_status(OTA_WIFI_STATE_DONE, "firmware updated, rebooting", s_recv.received_size, s_recv.expected_size);
 
+    // 先回成功响应给 App，再重启。否则 App 等不到 HTTP 200，会把一次成功的
+    // 刷写误报为失败。500ms 的延迟留给响应真正发出去。
+    send_json_response(req, 200, "{\"ok\":true,\"message\":\"firmware updated, rebooting\"}");
+
     // 延迟重启
     vTaskDelay(pdMS_TO_TICKS(500));
     esp_restart();
@@ -761,6 +765,9 @@ static esp_err_t bootmedia_handler(httpd_req_t *req)
 
     recv_reset();
     notify_status(OTA_WIFI_STATE_DONE, "bootmedia updated, rebooting", total_size, total_size);
+
+    // 同 firmware_handler：先回成功响应再重启，避免 App 误报失败。
+    send_json_response(req, 200, "{\"ok\":true,\"message\":\"bootmedia updated, rebooting\"}");
 
     // 延迟重启
     vTaskDelay(pdMS_TO_TICKS(500));
