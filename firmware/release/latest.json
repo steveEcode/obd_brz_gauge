@@ -17,19 +17,19 @@
   "firmware": {
     "project": "obd_brz_gauge",
     "version": "1",
-    "build_tag": "main-40-0f0beff18eda",
-    "git": "0f0beff18eda",
+    "build_tag": "main-42-755a32933b46",
+    "git": "755a32933b46",
     "branch": "main",
-    "count": 40,
-    "built": "Aug 20 2026 21:32:58",
+    "count": 42,
+    "built": "Aug 22 2026 01:15:30",
     "idf": "v5.5.3",
     "slot": "ota_0"
   },
   "files": {
     "firmware": {
       "path": "obd_brz_gauge.bin",
-      "size": 2046576,
-      "sha256": "5e3d92b740a61ce2ef3f820868ef52cd58e7d7f892f83451715fb99938ec4639"
+      "size": 2031616,
+      "sha256": "2b6e98ed5db16fae19840fa14ed121fc673293e17a72971f40d02fc8d637aad0"
     },
     "bootmedia": {
       "path": "bootmedia.bin",
@@ -43,8 +43,8 @@
     },
     "bootloader": {
       "path": "bootloader/bootloader.bin",
-      "size": 20832,
-      "sha256": "98715bc7b0023018f9c2137e89f37080316f6053efc3a6945b8b18a68a4f381f"
+      "size": 20912,
+      "sha256": "09c69b774b2c0561298ef8c6c86b15e78955aaac3fd64ee9e574882fb9e97978"
     },
     "ota_data_initial": {
       "path": "ota_data_initial.bin",
