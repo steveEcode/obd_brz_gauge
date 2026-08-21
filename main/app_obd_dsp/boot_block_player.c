@@ -8,6 +8,7 @@
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "app_obd_dsp/boot_media_mount.h"
 
 typedef struct {
     uint16_t canvas_width;
@@ -17,6 +18,7 @@ typedef struct {
     uint16_t fps;
     uint16_t frame_count;
     uint32_t duration_ms;
+    uint32_t binary_size;
     char stream_format[32];
     char data_file[32];
 } boot_block_manifest_t;
@@ -83,15 +85,29 @@ static bool parse_u32(const char *value, uint32_t *out) {
 }
 
 static bool manifest_load(boot_block_manifest_t *out) {
-    FILE *fp = fopen(s_manifest_path, "rb");
-    if (!fp) return false;
+    // Read the manifest text straight from the raw partition.
+    char raw[1024];
+    size_t manifest_max = boot_media_raw_manifest_max();
+    if (manifest_max > sizeof(raw)) manifest_max = sizeof(raw);
+    esp_err_t rerr = boot_media_raw_read_manifest((uint8_t *)raw, manifest_max);
+    if (rerr != ESP_OK) return false;
+    raw[manifest_max - 1] = '\0';
 
     boot_block_manifest_t m = {0};
     strncpy(m.stream_format, BOOT_BLOCK_DEFAULT_STREAM_FORMAT, sizeof(m.stream_format) - 1);
     strncpy(m.data_file, BOOT_BLOCK_DEFAULT_DATA_FILE, sizeof(m.data_file) - 1);
 
+    // Simple line-by-line scan of the in-memory manifest text.
+    char *cursor = raw;
     char line[128];
-    while (fgets(line, sizeof(line), fp)) {
+    while (*cursor && cursor - raw < (long)manifest_max) {
+        char *nl = strchr(cursor, '\n');
+        size_t line_len = nl ? (size_t)(nl - cursor) : strlen(cursor);
+        if (line_len >= sizeof(line)) line_len = sizeof(line) - 1;
+        memcpy(line, cursor, line_len);
+        line[line_len] = '\0';
+        cursor += line_len + (nl ? 1 : 0);
+
         char *value = strchr(line, '=');
         if (!value) continue;
         *value++ = '\0';
@@ -107,10 +123,10 @@ static bool manifest_load(boot_block_manifest_t *out) {
         else if (strcmp(key, "fps") == 0 && parse_u32(value, &parsed)) m.fps = (uint16_t)parsed;
         else if (strcmp(key, "frame_count") == 0 && parse_u32(value, &parsed)) m.frame_count = (uint16_t)parsed;
         else if (strcmp(key, "duration_ms") == 0 && parse_u32(value, &parsed)) m.duration_ms = parsed;
+        else if (strcmp(key, "binary_size") == 0 && parse_u32(value, &parsed)) m.binary_size = parsed;
         else if (strcmp(key, "data_file") == 0) strncpy(m.data_file, value, sizeof(m.data_file) - 1);
         else if (strcmp(key, "stream_format") == 0) strncpy(m.stream_format, value, sizeof(m.stream_format) - 1);
     }
-    fclose(fp);
 
     if (!m.canvas_width || !m.canvas_height || !m.grid_width || !m.grid_height || !m.fps || !m.frame_count)
         return false;
@@ -180,21 +196,22 @@ static bool prepare_canvas(lv_obj_t *parent, const boot_block_manifest_t *m) {
 }
 
 static bool load_stream(void) {
-    FILE *fp = fopen(s_data_path, "rb");
-    if (!fp) { ESP_LOGW(TAG, "open block data failed: %s", s_data_path); return false; }
-
-    fseek(fp, 0, SEEK_END);
-    long file_size = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-    if (file_size <= 0) { fclose(fp); return false; }
+    size_t file_size = s_state.manifest.binary_size;
+    if (file_size == 0) {
+        // Fallback: read whatever the partition holds (capped by partition size).
+        size_t avail = 0;
+        boot_media_raw_read_bin(NULL, 0, &avail);
+        file_size = avail;
+    }
+    if (file_size == 0) { ESP_LOGW(TAG, "boot block size is zero"); return false; }
 
     uint8_t *data = heap_caps_malloc(file_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!data) data = heap_caps_malloc(file_size, MALLOC_CAP_8BIT);
-    if (!data) { fclose(fp); return false; }
+    if (!data) { ESP_LOGW(TAG, "alloc %u bytes failed", (unsigned)file_size); return false; }
 
-    size_t read = fread(data, 1, file_size, fp);
-    fclose(fp);
-    if ((long)read != file_size) { free(data); return false; }
+    size_t got = 0;
+    esp_err_t rerr = boot_media_raw_read_bin(data, file_size, &got);
+    if (rerr != ESP_OK || got != file_size) { free(data); ESP_LOGW(TAG, "read bin failed: %s", esp_err_to_name(rerr)); return false; }
 
     s_state.stream_data = data;
     s_state.stream_size = file_size;

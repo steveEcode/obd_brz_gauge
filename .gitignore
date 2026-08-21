@@ -3,6 +3,7 @@ managed_components/
 sdkconfig.old
 sdkconfig
 .vscode/
+.qwen/
 .DS_Store
 **/.DS_Store
 main/SAX0AC BC CC.pdf

@@ -9,7 +9,11 @@
 #include "app_obd_dsp/device_identity.h"
 #include "app_obd_dsp/ota_wifi_server.h"
 #include "bsp_obd_dsp/rs485_brake_temp.h"
+#include "bsp_obd_dsp/elm327_ble_client.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_log.h"
+#include "esp_system.h"
 
 #ifndef OBD_GAUGE_BUILD_TAG
 #define OBD_GAUGE_BUILD_TAG "unknown"
@@ -97,6 +101,23 @@ void ui_ScreenPageOTAMode_screen_init(void)
 
     rs485_brake_temp_pause();
 
+    // Drop the ELM327 BLE link for the duration of the OTA: the GATT client keeps
+    // re-scanning/reconnecting in the background and steals the single 2.4GHz
+    // radio from the SoftAP, stalling the upload mid-transfer.
+    elm327_ble_pause_for_ota();
+
+    // Pausing the ELM327 client is not enough — the BT controller stays up and
+    // the RaceChrono advert keeps firing every 40-80 ms on all three channels,
+    // and SW coexistence hands it the radio each time.  Measured effect on a
+    // 6.7 MB boot animation: ~15 KB/s with drops that each cost a full TCP RTO.
+    //
+    // This screen needs no BLE at all (the phone joins the SoftAP with the fixed
+    // password and reads its token from GET /ota/discover), and every exit path
+    // from an upload is a reboot, so tear BT all the way down and give the freed
+    // ~60 KB of internal DRAM to the WiFi RX buffer pool.  Must happen BEFORE
+    // ota_wifi_server_start(), which is where esp_wifi_init() sizes that pool.
+    ota_wifi_server_release_bt();
+
     // NOTE: do NOT call espnow_link_stop() here. It deinits the WiFi driver and
     // forces ota_wifi_server_start() through a fresh esp_wifi_init/start while
     // BLE is still up — that path fails to allocate the SoftAP beacon buffer
@@ -152,25 +173,34 @@ static void on_wifi_ota_status(ota_wifi_state_t state, const char *message, uint
     }
 }
 
-// Swipe left/right/up to exit OTA mode and stop WiFi
+// Leaving OTA mode: entering it released the BT controller and freed its RAM to
+// the WiFi RX buffer pool (see the screen_init comment).  That is irreversible,
+// so BLE — and with it the OBD link — can only come back through a reset.
+// Uploads already end in esp_restart(); this covers the "looked and swiped away"
+// case so the gauge is never left BLE-dead.
+static void exit_ota_mode(void)
+{
+    ESP_LOGI(TAG, "Exiting OTA mode, stopping WiFi server");
+    ota_wifi_server_stop();
+    rs485_brake_temp_resume();
+
+    ESP_LOGI(TAG, "Rebooting to restore BLE (BT controller was released for the OTA radio)");
+    // Give the WiFi teardown and the log line a moment to drain.
+    vTaskDelay(pdMS_TO_TICKS(150));
+    esp_restart();
+}
+
+// Any swipe exits OTA mode.  Both former destinations (EasterEgg / Settings)
+// are replaced by a reboot, which lands on the normal boot flow.
 static void ui_event_ota_mode_background(lv_event_t *e)
 {
     lv_event_code_t event_code = lv_event_get_code(e);
     if (event_code == LV_EVENT_GESTURE) {
         lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
-        if (dir == LV_DIR_LEFT || dir == LV_DIR_RIGHT || dir == LV_DIR_TOP) {
+        if (dir == LV_DIR_LEFT || dir == LV_DIR_RIGHT ||
+            dir == LV_DIR_TOP  || dir == LV_DIR_BOTTOM) {
             lv_indev_wait_release(lv_indev_get_act());
-            ESP_LOGI(TAG, "Exiting OTA mode, stopping WiFi server");
-            ota_wifi_server_stop();
-            rs485_brake_temp_resume();
-            _ui_screen_change(&ui_ScreenPageEasterEgg, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageEasterEgg_screen_init);
-        }
-        // Swipe down also exits
-        else if (dir == LV_DIR_BOTTOM) {
-            lv_indev_wait_release(lv_indev_get_act());
-            ota_wifi_server_stop();
-            rs485_brake_temp_resume();
-            _ui_screen_change(&ui_ScreenPageSettings, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageSettings_screen_init);
+            exit_ota_mode();
         }
     }
 

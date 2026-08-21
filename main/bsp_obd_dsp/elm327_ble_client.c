@@ -59,6 +59,7 @@ static ble_scan_result_t s_scan_list[BLE_SCAN_MAX_DEVICES];
 static int s_scan_count = 0;
 static bool s_ble_inited = false;  // whether the BLE stack has been initialized
 static bool s_poll_task_started = false; // whether the poll task has been created
+static volatile bool s_ota_paused = false; // during WiFi OTA: suppress auto-reconnect + polling so BLE stops competing for the radio
 static TaskHandle_t s_poll_task_handle = NULL; // poll task handle, used for task-notification wakeup
 static volatile bool s_notify_ready = false;   // set only after CCCD notify subscription completes; init/poll proceed based on this (prevents losing handshake responses)
 static volatile int64_t s_last_obd_valid_us = 0; // time of the last valid OBD data; a timeout without data triggers self-heal re-init
@@ -912,6 +913,11 @@ static void obd_poll_task(void *arg) {
             vTaskDelay(pdMS_TO_TICKS(500));
             continue;
         }
+        // WiFi OTA: keep the ELM327 polling quiet so BLE stops competing for the radio.
+        if (s_ota_paused) {
+            vTaskDelay(pdMS_TO_TICKS(200));
+            continue;
+        }
         // Not connected or notify subscription not ready → mark for re-init and wait
         if (!s_connected || !s_notify_ready) {
             inited = false;
@@ -1467,7 +1473,7 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
         // Only auto-start scanning when a target MAC is actually bound. Stack-only inits
         // (no OBD device bound) must not scan: scanning duty-cycles the radio and degrades
         // the SkyGauge pairing advert on MASTER devices.
-        if (s_target_bda_valid && !s_scan_only_mode) {
+        if (s_target_bda_valid && !s_scan_only_mode && !s_ota_paused) {
             start_scan();
         }
         break;
@@ -1514,7 +1520,7 @@ static void gap_event_handler(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param
             }
         } else if (pr->scan_rst.search_evt == ESP_GAP_SEARCH_INQ_CMPL_EVT) {
             // Scan window expired without a connection: keep auto-reconnect alive.
-            if (!s_scan_only_mode && s_target_bda_valid && !s_connected) {
+            if (!s_scan_only_mode && s_target_bda_valid && !s_connected && !s_ota_paused) {
                 start_scan();
             }
         }
@@ -1570,7 +1576,7 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
     case ESP_GATTC_OPEN_EVT: {
         if (param->open.status != ESP_GATT_OK) {
             ESP_LOGE(TAG, "Open failed status=%d", param->open.status);
-            start_scan();
+            if (!s_ota_paused) start_scan();
         }
         break;
     }
@@ -2154,7 +2160,9 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
         //  - Normal mode with a bound MAC: auto-reconnect to the target (auto-recovers after
         //    a drop / self-heal forced disconnect, no manual reconnect needed)
         // Stack-only inits (no bound target) stay off the radio so advertising isn't duty-cycled.
-        if (s_target_bda_valid || s_scan_only_mode) {
+        // During WiFi OTA (s_ota_paused) stay off the radio entirely — the ELM327 link is
+        // dropped on purpose so the SoftAP gets the whole radio for the upload.
+        if ((s_target_bda_valid || s_scan_only_mode) && !s_ota_paused) {
             start_scan();
         }
         break;
@@ -2274,6 +2282,29 @@ void elm327_ble_disconnect(void) {
         ESP_LOGD(TAG, "Disconnecting from BLE device...");
         esp_ble_gattc_close(s_gattc_if, s_conn_id);
     }
+}
+
+// Called when entering WiFi OTA mode: drop the ELM327 link and suppress the
+// auto-reconnect + poll loop, so the single 2.4GHz radio is fully available to
+// the SoftAP. This fixes the upload stalling mid-transfer while the ELM327
+// GATT client keeps re-scanning/reconnecting in the background.
+void elm327_ble_pause_for_ota(void) {
+    s_ota_paused = true;
+    esp_ble_gap_stop_scanning();
+    if (s_connected && s_gattc_if != ESP_GATT_IF_NONE && s_conn_id != 0xFFFF) {
+        esp_ble_gattc_close(s_gattc_if, s_conn_id);
+    }
+    if (s_poll_task_handle) xTaskNotify(s_poll_task_handle, 0, eNoAction);
+    ESP_LOGI(TAG, "BLE paused for WiFi OTA");
+}
+
+// Called when leaving WiFi OTA mode: re-arm auto-reconnect if a target is bound.
+void elm327_ble_resume_after_ota(void) {
+    s_ota_paused = false;
+    if (s_target_bda_valid && !s_connected) {
+        start_scan();
+    }
+    ESP_LOGI(TAG, "BLE resumed after WiFi OTA");
 }
 
 const char *elm327_ble_get_connected_name(void) {

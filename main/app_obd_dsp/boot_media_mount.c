@@ -1,288 +1,227 @@
-// boot_media_mount.c — mount the bootmedia SPIFFS partition
+// boot_media_mount.c — raw-partition storage for the boot animation.
+// The bootmedia partition is a plain `data` partition (not SPIFFS): the boot
+// animation is exactly one manifest + one bin, laid out at fixed offsets.
+//   offset 0x0000  -> boot_block.txt  (manifest, max 4 KB)
+//   offset 0x1000  -> boot_block.bin  (media data)
+// Writing goes straight to flash with esp_partition_write (~MB/s), which is
+// orders of magnitude faster than SPIFFS for a 6.7 MB upload.
 #include "app_obd_dsp/boot_media_mount.h"
 
-#include <sys/stat.h>
 #include <stdio.h>
 #include <string.h>
-
 #include "esp_log.h"
-#include "esp_spiffs.h"
+#include "esp_partition.h"
 
 static const char *TAG = "boot_media";
 
 #define BOOTMEDIA_PARTITION_LABEL "bootmedia"
-#define BOOTMEDIA_BASE_PATH       "/bootmedia"
-#define BOOTMEDIA_TXN_MARKER      "/bootmedia/.bootmedia_txn.lock"
-#define BOOTMEDIA_ACTIVE_TXT      "/bootmedia/boot_block.txt"
-#define BOOTMEDIA_ACTIVE_BIN      "/bootmedia/boot_block.bin"
-#define BOOTMEDIA_STAGING_TXT     "/bootmedia/boot_block.txt.new"
-#define BOOTMEDIA_STAGING_BIN     "/bootmedia/boot_block.bin.new"
-#define BOOTMEDIA_BACKUP_TXT      "/bootmedia/boot_block.txt.prev"
-#define BOOTMEDIA_BACKUP_BIN      "/bootmedia/boot_block.bin.prev"
+#define BOOTMEDIA_MANIFEST_OFFSET 0x0000
+#define BOOTMEDIA_MANIFEST_MAX    0x1000     // 4 KB
+#define BOOTMEDIA_BIN_OFFSET      0x1000     // after the manifest slot
+#define BOOTMEDIA_WRITE_SCRATCH   16384    // 16 KB: internal-RAM scratch buffer.
+                                            // PSRAM sources are not safe during flash
+                                            // operations; copy into this buffer first.
 
-static bool s_mounted = false;
+static const esp_partition_t *s_part = NULL;
+static uint8_t s_flash_write_buf[BOOTMEDIA_WRITE_SCRATCH];
 
-static bool path_exists(const char *path)
+static const esp_partition_t *get_partition(void)
 {
-    struct stat st;
-    return stat(path, &st) == 0;
-}
-
-static void remove_if_exists(const char *path)
-{
-    if (path_exists(path)) {
-        remove(path);
+    if (s_part) {
+        return s_part;
     }
-}
-
-static bool rename_without_overwrite(const char *from, const char *to)
-{
-    if (!path_exists(from)) {
-        return true;
+    s_part = esp_partition_find_first(ESP_PARTITION_TYPE_DATA, (esp_partition_subtype_t)0x82, BOOTMEDIA_PARTITION_LABEL);
+    if (!s_part) {
+        ESP_LOGE(TAG, "bootmedia partition not found");
+        return NULL;
     }
-    if (path_exists(to)) {
-        return false;
-    }
-    return rename(from, to) == 0;
-}
-
-static bool rename_overwriting_existing(const char *from, const char *to)
-{
-    if (!path_exists(from)) {
-        return true;
-    }
-    if (path_exists(to)) {
-        remove(to);
-    }
-    return rename(from, to) == 0;
-}
-
-static bool read_marker_phase(char *phase, size_t phase_len)
-{
-    if (phase_len == 0 || !path_exists(BOOTMEDIA_TXN_MARKER)) {
-        return false;
-    }
-
-    FILE *marker = fopen(BOOTMEDIA_TXN_MARKER, "rb");
-    if (!marker) {
-        return false;
-    }
-
-    char line[64] = {0};
-    bool ok = fgets(line, sizeof(line), marker) != NULL;
-    fclose(marker);
-    if (!ok) {
-        return false;
-    }
-
-    char *value = strchr(line, '=');
-    if (!value) {
-        return false;
-    }
-    *value++ = '\0';
-    line[strcspn(line, "\r\n\t ")] = '\0';
-    value[strcspn(value, "\r\n\t ")] = '\0';
-    if (strcmp(line, "phase") != 0) {
-        return false;
-    }
-
-    strncpy(phase, value, phase_len - 1);
-    phase[phase_len - 1] = '\0';
-    return true;
-}
-
-static bool write_marker_phase(const char *phase)
-{
-    FILE *marker = fopen(BOOTMEDIA_TXN_MARKER, "wb");
-    if (!marker) {
-        return false;
-    }
-
-    bool ok = fprintf(marker, "phase=%s\n", phase) > 0;
-    fclose(marker);
-    return ok;
+    return s_part;
 }
 
 bool boot_media_mount(void)
 {
-    if (!s_mounted) {
-        esp_vfs_spiffs_conf_t conf = {
-            .base_path = BOOTMEDIA_BASE_PATH,
-            .partition_label = BOOTMEDIA_PARTITION_LABEL,
-            .max_files = 4,  // 减少文件数以降低内存占用
-            .format_if_mount_failed = false,
-        };
-
-        esp_err_t ret = esp_vfs_spiffs_register(&conf);
-        if (ret != ESP_OK) {
-            ESP_LOGW(TAG, "SPIFFS mount failed (label=%s): %s", BOOTMEDIA_PARTITION_LABEL, esp_err_to_name(ret));
-            return false;
-        }
-
-        s_mounted = true;
-        ESP_LOGI(TAG, "SPIFFS mounted at %s", BOOTMEDIA_BASE_PATH);
-
-        // 打印可用空间
-        size_t total = 0, used = 0;
-        esp_spiffs_info(BOOTMEDIA_PARTITION_LABEL, &total, &used);
-        ESP_LOGI(TAG, "SPIFFS total: %zu, used: %zu, free: %zu", total, used, total - used);
-    }
-    return true;
+    return get_partition() != NULL;
 }
 
 void boot_media_unmount(void)
 {
-    if (!s_mounted) return;
-    esp_vfs_spiffs_unregister(BOOTMEDIA_PARTITION_LABEL);
-    s_mounted = false;
+    // Raw partition handle stays valid; nothing to release.
+}
+
+static bool manifest_present(void)
+{
+    const esp_partition_t *p = get_partition();
+    if (!p) return false;
+
+    uint8_t probe[8] = {0};
+    if (esp_partition_read(p, BOOTMEDIA_MANIFEST_OFFSET, probe, sizeof(probe)) != ESP_OK) {
+        return false;
+    }
+    // A valid manifest starts with a printable key like "canvas_width=".
+    return probe[0] >= 'a' && probe[0] <= 'z';
 }
 
 bool boot_media_has_block_video(void)
 {
-    if (!s_mounted) return false;
-    struct stat st;
-    return (stat(BOOTMEDIA_ACTIVE_TXT, &st) == 0 &&
-            stat(BOOTMEDIA_ACTIVE_BIN, &st) == 0);
+    return manifest_present();
 }
 
 bool boot_media_recover_previous_if_needed(void)
 {
-    if (!s_mounted) {
-        return false;
-    }
-
-    char phase[16] = {0};
-    bool has_txn = read_marker_phase(phase, sizeof(phase));
-    bool has_prev = path_exists(BOOTMEDIA_BACKUP_TXT) || path_exists(BOOTMEDIA_BACKUP_BIN);
-    bool has_staging = path_exists(BOOTMEDIA_STAGING_TXT) || path_exists(BOOTMEDIA_STAGING_BIN);
-    bool has_active = boot_media_has_block_video();
-
-    if (!has_txn && !has_prev && !has_staging) {
-        return has_active;
-    }
-
-    ESP_LOGW(TAG, "Recovering bootmedia transaction (txn=%d phase=%s prev=%d staging=%d active=%d)",
-             has_txn, has_txn ? phase : "-", has_prev, has_staging, has_active);
-
-    if (has_txn && strcmp(phase, "committed") == 0) {
-        if (!has_active && has_prev) {
-            if (path_exists(BOOTMEDIA_BACKUP_TXT)) {
-                rename_overwriting_existing(BOOTMEDIA_BACKUP_TXT, BOOTMEDIA_ACTIVE_TXT);
-            }
-            if (path_exists(BOOTMEDIA_BACKUP_BIN)) {
-                rename_overwriting_existing(BOOTMEDIA_BACKUP_BIN, BOOTMEDIA_ACTIVE_BIN);
-            }
-        } else {
-            remove_if_exists(BOOTMEDIA_BACKUP_TXT);
-            remove_if_exists(BOOTMEDIA_BACKUP_BIN);
-        }
-
-        remove_if_exists(BOOTMEDIA_STAGING_TXT);
-        remove_if_exists(BOOTMEDIA_STAGING_BIN);
-        remove_if_exists(BOOTMEDIA_TXN_MARKER);
-        return boot_media_has_block_video();
-    }
-
-    if (path_exists(BOOTMEDIA_BACKUP_TXT)) {
-        rename_overwriting_existing(BOOTMEDIA_BACKUP_TXT, BOOTMEDIA_ACTIVE_TXT);
-    }
-    if (path_exists(BOOTMEDIA_BACKUP_BIN)) {
-        rename_overwriting_existing(BOOTMEDIA_BACKUP_BIN, BOOTMEDIA_ACTIVE_BIN);
-    }
-
-    remove_if_exists(BOOTMEDIA_STAGING_TXT);
-    remove_if_exists(BOOTMEDIA_STAGING_BIN);
-    remove_if_exists(BOOTMEDIA_TXN_MARKER);
-
+    // Raw layout has no backup slot; nothing to recover.
     return boot_media_has_block_video();
 }
 
 bool boot_media_commit_incoming_update(void)
 {
-    if (!s_mounted) {
-        return false;
-    }
-
-    if (!path_exists(BOOTMEDIA_STAGING_TXT) || !path_exists(BOOTMEDIA_STAGING_BIN)) {
-        ESP_LOGW(TAG, "Bootmedia commit skipped: staging files missing");
-        return false;
-    }
-
-    if (!write_marker_phase("precommit")) {
-        ESP_LOGW(TAG, "Bootmedia marker write failed before commit");
-        return false;
-    }
-
-    if (path_exists(BOOTMEDIA_ACTIVE_TXT)) {
-        if (!rename_without_overwrite(BOOTMEDIA_ACTIVE_TXT, BOOTMEDIA_BACKUP_TXT)) {
-            ESP_LOGE(TAG, "Failed to back up boot_block.txt");
-            return false;
-        }
-    }
-    if (path_exists(BOOTMEDIA_ACTIVE_BIN)) {
-        if (!rename_without_overwrite(BOOTMEDIA_ACTIVE_BIN, BOOTMEDIA_BACKUP_BIN)) {
-            ESP_LOGE(TAG, "Failed to back up boot_block.bin");
-            return false;
-        }
-    }
-
-    if (!write_marker_phase("committed")) {
-        ESP_LOGW(TAG, "Bootmedia marker write failed after backup");
-        return false;
-    }
-
-    if (!rename_without_overwrite(BOOTMEDIA_STAGING_TXT, BOOTMEDIA_ACTIVE_TXT) ||
-        !rename_without_overwrite(BOOTMEDIA_STAGING_BIN, BOOTMEDIA_ACTIVE_BIN)) {
-        ESP_LOGE(TAG, "Failed to promote staged bootmedia files");
-        return false;
-    }
-
-    remove_if_exists(BOOTMEDIA_BACKUP_TXT);
-    remove_if_exists(BOOTMEDIA_BACKUP_BIN);
-    remove_if_exists(BOOTMEDIA_TXN_MARKER);
-
-    ESP_LOGI(TAG, "Bootmedia update committed");
-
-    // 上传完成后在后台整理碎片，不影响上传速度
-    esp_err_t err = esp_spiffs_gc(BOOTMEDIA_PARTITION_LABEL, 0);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "GC failed: %s", esp_err_to_name(err));
-    }
-
-    return true;
+    // The raw manifest/bin are already written in place by the uploader.
+    return boot_media_has_block_video();
 }
 
 bool boot_media_remove_active_block(void)
 {
-    if (!s_mounted) {
-        return false;
-    }
+    const esp_partition_t *p = get_partition();
+    if (!p) return false;
 
-    // Unmount first
-    boot_media_unmount();
-
-    // Format the entire partition to ensure a clean slate
-    esp_err_t err = esp_spiffs_format(BOOTMEDIA_PARTITION_LABEL);
+    // Erase the whole partition so a fresh animation can be written.
+    esp_err_t err = esp_partition_erase_range(p, 0, p->size);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Format failed: %s", esp_err_to_name(err));
-        // Try to remount anyway
-        boot_media_mount();
+        ESP_LOGE(TAG, "erase failed: %s", esp_err_to_name(err));
+        return false;
+    }
+    return true;
+}
+
+bool boot_media_invalidate_manifest(void)
+{
+    const esp_partition_t *p = get_partition();
+    if (!p) return false;
+
+    // Erase only the 4 KB manifest sector.  This immediately invalidates the
+    // old animation (manifest_present() will fail) without paying the ~20 s
+    // cost of erasing the full 10 MB partition.  The data region is erased
+    // on-demand by the uploader once it knows the incoming payload size.
+    esp_err_t err = esp_partition_erase_range(p, BOOTMEDIA_MANIFEST_OFFSET, BOOTMEDIA_MANIFEST_MAX);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "manifest erase failed: %s", esp_err_to_name(err));
+        return false;
+    }
+    return true;
+}
+
+bool boot_media_erase_data_region(uint32_t total_size, uint32_t manifest_size)
+{
+    const esp_partition_t *p = get_partition();
+    if (!p || manifest_size == 0 || manifest_size > BOOTMEDIA_MANIFEST_MAX || total_size < manifest_size) {
         return false;
     }
 
-    // Remount
-    if (!boot_media_mount()) {
+    // The upload is a logical [manifest][bin] stream, while flash has a fixed
+    // 4 KB manifest slot.  Erase only the sectors touched by the binary.
+    size_t binary_size = total_size - manifest_size;
+    if (binary_size == 0) return true;
+
+    uint32_t erase_len = (binary_size + 0xFFFu) & ~0xFFFu;
+    if (erase_len > p->size - BOOTMEDIA_BIN_OFFSET) {
         return false;
     }
 
-    ESP_LOGI(TAG, "Bootmedia partition formatted and remounted");
+    esp_err_t err = esp_partition_erase_range(p, BOOTMEDIA_BIN_OFFSET, erase_len);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "data region erase failed: %s", esp_err_to_name(err));
+        return false;
+    }
     return true;
 }
 
 size_t boot_media_get_free_space(void)
 {
-    if (!s_mounted) return 0;
-    size_t total = 0, used = 0;
-    esp_spiffs_info(BOOTMEDIA_PARTITION_LABEL, &total, &used);
-    return total > used ? total - used : 0;
+    const esp_partition_t *p = get_partition();
+    if (!p) return 0;
+    return p->size - BOOTMEDIA_BIN_OFFSET;
 }
+
+/* --- raw read/write helpers used by the uploader and the player --- */
+
+esp_err_t boot_media_raw_write(uint32_t abs_offset, const uint8_t *data, size_t len,
+                               uint32_t manifest_size)
+{
+    const esp_partition_t *p = get_partition();
+    if (!p || !data || manifest_size == 0 || manifest_size > BOOTMEDIA_MANIFEST_MAX) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    // abs_offset is relative to the logical [manifest][bin] stream. Split a
+    // segment that crosses the manifest boundary so the binary always starts
+    // at the physical 4 KB boundary.
+    uint32_t logical_end = abs_offset + (uint32_t)len;
+    if (logical_end < abs_offset) return ESP_ERR_INVALID_SIZE;
+
+    size_t consumed = 0;
+    while (consumed < len) {
+        uint32_t logical_offset = abs_offset + (uint32_t)consumed;
+        size_t part_off;
+        size_t segment_len;
+        if (logical_offset < manifest_size) {
+            part_off = BOOTMEDIA_MANIFEST_OFFSET + logical_offset;
+            segment_len = manifest_size - logical_offset;
+        } else {
+            part_off = BOOTMEDIA_BIN_OFFSET + (logical_offset - manifest_size);
+            segment_len = len - consumed;
+        }
+        if (segment_len > len - consumed) segment_len = len - consumed;
+        if (part_off + segment_len > p->size) {
+            ESP_LOGE(TAG, "raw write out of range: off=%zu len=%zu part_size=%lu",
+                     part_off, segment_len, (unsigned long)p->size);
+            return ESP_ERR_INVALID_SIZE;
+        }
+
+        // esp_partition_write may execute with the flash cache disabled. Copy
+        // the source into internal RAM before each write; upload buffers live
+        // in PSRAM and are not safe as flash-operation sources on all targets.
+        size_t copied = 0;
+        while (copied < segment_len) {
+            size_t copy_len = segment_len - copied;
+            if (copy_len > sizeof(s_flash_write_buf)) copy_len = sizeof(s_flash_write_buf);
+            memcpy(s_flash_write_buf, data + consumed + copied, copy_len);
+            esp_err_t err = esp_partition_write(p, part_off + copied, s_flash_write_buf, copy_len);
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "raw write failed at logical=%u: %s", logical_offset + (uint32_t)copied,
+                         esp_err_to_name(err));
+                return err;
+            }
+            copied += copy_len;
+        }
+        consumed += segment_len;
+    }
+
+    return ESP_OK;
+}
+
+esp_err_t boot_media_raw_read_manifest(uint8_t *buf, size_t size)
+{
+    const esp_partition_t *p = get_partition();
+    if (!p) return ESP_ERR_NOT_FOUND;
+    if (size > BOOTMEDIA_MANIFEST_MAX) size = BOOTMEDIA_MANIFEST_MAX;
+    return esp_partition_read(p, BOOTMEDIA_MANIFEST_OFFSET, buf, size);
+}
+
+esp_err_t boot_media_raw_read_bin(uint8_t *buf, size_t size, size_t *out_len)
+{
+    const esp_partition_t *p = get_partition();
+    if (!p) return ESP_ERR_NOT_FOUND;
+
+    size_t avail = p->size - BOOTMEDIA_BIN_OFFSET;
+    size_t to_read = size < avail ? size : avail;
+    esp_err_t err = esp_partition_read(p, BOOTMEDIA_BIN_OFFSET, buf, to_read);
+    if (err != ESP_OK) return err;
+    if (out_len) *out_len = to_read;
+    return ESP_OK;
+}
+
+size_t boot_media_raw_manifest_max(void)
+{
+    return BOOTMEDIA_MANIFEST_MAX;
+}
+
+
