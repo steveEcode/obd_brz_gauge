@@ -17,10 +17,10 @@
   "firmware": {
     "project": "obd_brz_gauge",
     "version": "1",
-    "build_tag": "main-46-e0074b8fc1f0",
-    "git": "e0074b8fc1f0",
+    "build_tag": "main-47-1f6eead6c825",
+    "git": "1f6eead6c825",
     "branch": "main",
-    "count": 46,
+    "count": 47,
     "built": "Aug 23 2026 23:21:01",
     "idf": "v5.5.3",
     "slot": "ota_0"
