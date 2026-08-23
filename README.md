@@ -153,3 +153,32 @@ re-verifying BLE services, PIDs and response parsing
   documentation (Gen1/Gen2 CAN ID mappings and byte-level decoding formulas),
   which made the CAN broadcast monitoring possible. /
   提供了完整的 FT86 CAN 总线文档，使 CAN 广播帧监听得以实现。
+
+## License / 开源协议
+
+This project is licensed under the **GNU General Public License v2.0 (GPLv2)**.
+
+本项目采用 **GNU 通用公共许可证 v2.0 (GPLv2)** 开源协议。
+
+- You are free to use, modify, and distribute this software.
+- If you distribute modified versions, you must also release the source code under GPLv2.
+- See [LICENSE](LICENSE) for the full license text.
+
+**简单来说**：
+- ✅ 可以自由使用、修改和分发本软件
+- ⚠️ 如果分发修改版本，必须同样以GPLv2协议开源代码
+- 📄 完整协议文本见 [LICENSE](LICENSE) 文件
+
+```
+Copyright (C) 2024-2026  parklu and contributors
+
+This program is free software; you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation; either version 2 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+```
