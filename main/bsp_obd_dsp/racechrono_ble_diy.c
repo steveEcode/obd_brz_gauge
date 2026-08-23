@@ -649,13 +649,19 @@ static void gatts_cb(esp_gatts_cb_event_t event, esp_gatt_if_t gatts_if, esp_ble
             }
         }
         prepare_device_info_manifest();
+        bool is_master = (nvs_cfg_get()->device_role == ESPNOW_ROLE_MASTER);
         if (s_rc_enabled) {
             // Full mode: create all 4 services (RC → Pair → Info → OTA)
             request_adv_config();
             esp_ble_gatts_create_attr_tab(s_gatt_db, gatts_if, IDX_NB, 0);
             ESP_LOGD(RC_TAG, "GATTS registered (adv name=%s), waiting for adv+attr table", s_adv_name);
+        } else if (is_master) {
+            // Master minimal mode: advertise with Pair service so slaves can discover and pair
+            request_adv_config();
+            esp_ble_gatts_create_attr_tab(s_gatt_db_pair, gatts_if, IDX_PAIR_NB, 1);
+            ESP_LOGI(RC_TAG, "GATTS registered (Master mode: Pair+Info+OTA, adv on, name=%s)", s_adv_name);
         } else {
-            // Minimal mode: no RaceChrono/Pair services. Stay invisible until OTA mode is
+            // Non-master minimal mode: no RaceChrono/Pair services. Stay invisible until OTA mode is
             // entered — racechrono_ble_diy_set_ota_mode(true) configures and starts the advert.
             esp_ble_gatts_create_attr_tab(s_gatt_db_info, gatts_if, IDX_INFO_NB, 2);
             ESP_LOGI(RC_TAG, "GATTS registered (minimal: Info+OTA only, adv off until OTA mode, name=%s)", s_adv_name);

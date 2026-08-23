@@ -356,7 +356,10 @@ void app_main(void)
     }
 
     vTaskDelay(pdMS_TO_TICKS(500));
-    racechrono_ble_diy_start(user_cfg->rc_enabled);
+    // Slave: skip RaceChrono BLE GATTS service (only needs BLE client for master pairing)
+    if (dev_role != ESPNOW_ROLE_SLAVE) {
+        racechrono_ble_diy_start(user_cfg->rc_enabled);
+    }
 
     BaseType_t valid_task_started = xTaskCreate(mark_app_valid_task, "ota_valid", 4096, NULL, tskIDLE_PRIORITY + 1, NULL);
     if (valid_task_started != pdPASS) {
