@@ -156,25 +156,26 @@ re-verifying BLE services, PIDs and response parsing
 
 ## License / 开源协议
 
-This project is licensed under the **GNU General Public License v2.0 (GPLv2)**.
+This project is licensed under the **GNU General Public License v3.0 (GPLv3)**.
 
-本项目采用 **GNU 通用公共许可证 v2.0 (GPLv2)** 开源协议。
+本项目采用 **GNU 通用公共许可证 v3.0 (GPLv3)** 开源协议。
 
 - You are free to use, modify, and distribute this software.
-- If you distribute modified versions, you must also release the source code under GPLv2.
+- If you distribute modified versions, you must also release the source code under GPLv3.
 - See [LICENSE](LICENSE) for the full license text.
 
 **简单来说**：
 - ✅ 可以自由使用、修改和分发本软件
-- ⚠️ 如果分发修改版本，必须同样以GPLv2协议开源代码
+- ⚠️ 如果分发修改版本，必须同样以GPLv3协议开源代码
+- 🔒 增强了防专利条款和Tivoization保护
 - 📄 完整协议文本见 [LICENSE](LICENSE) 文件
 
 ```
-Copyright (C) 2024-2026  parklu and contributors
+Copyright (C) 2024-2026  steveEcode and contributors
 
-This program is free software; you can redistribute it and/or modify
+This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
-the Free Software Foundation; either version 2 of the License, or
+the Free Software Foundation, either version 3 of the License, or
 (at your option) any later version.
 
 This program is distributed in the hope that it will be useful,
