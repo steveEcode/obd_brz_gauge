@@ -37,6 +37,9 @@ static const char MASTER_NAME[] = "SkyGauge";   // name the master broadcasts (s
 static bool s_is_master = false;
 static bool s_espnow_started = false;  // Track if ESP-NOW was actually started
 static bool s_wifi_initialized = false;  // Track if WiFi was initialized
+static TaskHandle_t s_master_task_handle = NULL;
+static TaskHandle_t s_linktest_task_handle = NULL;
+static TaskHandle_t s_presence_task_handle = NULL;
 
 // Slave -> master "presence" packet (small; distinguished from the OBD packet by length)
 typedef struct __attribute__((packed)) {
@@ -198,8 +201,8 @@ void espnow_link_start_master(void) {
     ESP_ERROR_CHECK(esp_now_add_peer(&peer));
 
     ESP_ERROR_CHECK(esp_now_register_recv_cb(recv_cb));   // receive slave presence/control packets
-    xTaskCreate(master_task, "espnow_tx", 3072, NULL, 4, NULL);
-    xTaskCreate(master_linktest_task, "espnow_lt", 3072, NULL, 4, NULL);
+    xTaskCreate(master_task, "espnow_tx", 3072, NULL, 4, &s_master_task_handle);
+    xTaskCreate(master_linktest_task, "espnow_lt", 3072, NULL, 4, &s_linktest_task_handle);
     ESP_LOGI(TAG, "ESP-NOW MASTER up (broadcast %dms, ch%d)", BROADCAST_INTERVAL_MS, ESPNOW_CHANNEL);
 }
 
@@ -336,7 +339,7 @@ void espnow_link_start_slave(void) {
     peer.encrypt = false;
     ESP_ERROR_CHECK(esp_now_add_peer(&peer));
     ESP_ERROR_CHECK(esp_now_register_recv_cb(recv_cb));
-    xTaskCreate(slave_presence_task, "espnow_pres", 2560, NULL, 4, NULL);
+    xTaskCreate(slave_presence_task, "espnow_pres", 2560, NULL, 4, &s_presence_task_handle);
     ESP_LOGI(TAG, "ESP-NOW SLAVE up (listening ch%d, presence %dms)", ESPNOW_CHANNEL, PRESENCE_INTERVAL_MS);
 }
 
@@ -427,7 +430,51 @@ void espnow_link_apply_synced_threshold(uint16_t thresh) {
     }
 }
 
-// Stop ESP-NOW and release WiFi resources (for OTA mode).
+static void delete_link_task(TaskHandle_t *handle)
+{
+    if (handle && *handle) {
+        vTaskDelete(*handle);
+        *handle = NULL;
+    }
+}
+
+static void stop_link_tasks(void)
+{
+    delete_link_task(&s_master_task_handle);
+    delete_link_task(&s_linktest_task_handle);
+    delete_link_task(&s_presence_task_handle);
+    s_linktest_active = false;
+    s_rx_linktest = false;
+    obd_data_rpm_override_set(false, 0);
+}
+
+// Quiesce ESP-NOW for OTA without stopping/deinitializing the WiFi driver.
+// OTA can then reuse the already-running WiFi stack for its SoftAP, while the
+// 10 Hz master broadcast (or slave presence traffic) no longer competes with
+// the TCP upload on the ESP32-S3's single 2.4 GHz radio.
+void espnow_link_pause_for_ota(void)
+{
+    stop_link_tasks();
+
+    if (!s_espnow_started) {
+        ESP_LOGI(TAG, "ESP-NOW already inactive for OTA");
+        return;
+    }
+
+    ESP_LOGI(TAG, "Pausing ESP-NOW for OTA (keeping WiFi initialized)");
+    esp_now_unregister_recv_cb();
+    esp_now_unregister_send_cb();
+
+    esp_err_t err = esp_now_deinit();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "esp_now_deinit during OTA pause failed: %s", esp_err_to_name(err));
+        return;
+    }
+    s_espnow_started = false;
+    ESP_LOGI(TAG, "ESP-NOW paused; WiFi remains available for OTA SoftAP");
+}
+
+// Stop ESP-NOW and release WiFi resources.
 // After calling this, espnow_link_start_master/slave can be called again to restart.
 void espnow_link_stop(void) {
     if (!s_espnow_started && !s_wifi_initialized) {
@@ -436,13 +483,12 @@ void espnow_link_stop(void) {
     }
 
     ESP_LOGI(TAG, "Stopping ESP-NOW...");
+    stop_link_tasks();
 
-    // Unregister callbacks first
-    esp_now_unregister_recv_cb();
-    esp_now_unregister_send_cb();
-
-    // Deinit ESP-NOW before stopping WiFi
+    // Unregister callbacks before deinitializing ESP-NOW.
     if (s_espnow_started) {
+        esp_now_unregister_recv_cb();
+        esp_now_unregister_send_cb();
         esp_err_t err = esp_now_deinit();
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "esp_now_deinit failed: %s", esp_err_to_name(err));

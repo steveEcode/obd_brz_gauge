@@ -17,7 +17,11 @@ void espnow_link_start_master(void);
 // Slave: init WiFi + ESP-NOW, receive the master's broadcast and write it into the local OBD data cache (no ELM327 link).
 void espnow_link_start_slave(void);
 
-// Stop ESP-NOW and release WiFi resources (for OTA mode).
+// Pause ESP-NOW traffic for OTA, but keep the WiFi driver initialized so the
+// OTA SoftAP can reuse it. The normal OTA flow reboots after completion/exit.
+void espnow_link_pause_for_ota(void);
+
+// Stop ESP-NOW and release WiFi resources.
 // After calling this, espnow_link_start_master/slave can be called again to restart.
 void espnow_link_stop(void);
 

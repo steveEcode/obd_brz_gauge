@@ -10,6 +10,7 @@
 #include "app_obd_dsp/ota_wifi_server.h"
 #include "bsp_obd_dsp/rs485_brake_temp.h"
 #include "bsp_obd_dsp/elm327_ble_client.h"
+#include "bsp_obd_dsp/espnow_link.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -27,7 +28,6 @@ lv_obj_t *ui_LabelOTAModeStatus = NULL;
 lv_obj_t *ui_LabelOTAModeVersion = NULL;
 
 static void ui_event_ota_mode_background(lv_event_t *e);
-static void on_wifi_ota_status(ota_wifi_state_t state, const char *message, uint32_t received, uint32_t expected);
 
 void ui_ScreenPageOTAMode_screen_init(void)
 {
@@ -106,28 +106,20 @@ void ui_ScreenPageOTAMode_screen_init(void)
     // radio from the SoftAP, stalling the upload mid-transfer.
     elm327_ble_pause_for_ota();
 
-    // Pausing the ELM327 client is not enough — the BT controller stays up and
-    // the RaceChrono advert keeps firing every 40-80 ms on all three channels,
-    // and SW coexistence hands it the radio each time.  Measured effect on a
-    // 6.7 MB boot animation: ~15 KB/s with drops that each cost a full TCP RTO.
-    //
-    // This screen needs no BLE at all (the phone joins the SoftAP with the fixed
-    // password and reads its token from GET /ota/discover), and every exit path
-    // from an upload is a reboot, so tear BT all the way down and give the freed
-    // ~60 KB of internal DRAM to the WiFi RX buffer pool.  Must happen BEFORE
-    // ota_wifi_server_start(), which is where esp_wifi_init() sizes that pool.
-    ota_wifi_server_release_bt();
+    // Give the single 2.4 GHz radio to the OTA SoftAP. Keep the WiFi driver
+    // itself alive (the SoftAP reuses it), but stop the ESP-NOW broadcast /
+    // presence tasks and deinit only ESP-NOW. Otherwise the master continues a
+    // broadcast every 100 ms while TCP is trying to fill the small RX pool.
+    espnow_link_pause_for_ota();
 
-    // NOTE: do NOT call espnow_link_stop() here. It deinits the WiFi driver and
-    // forces ota_wifi_server_start() through a fresh esp_wifi_init/start while
-    // BLE is still up — that path fails to allocate the SoftAP beacon buffer
-    // (752B) and panics in ieee80211_hostap_attach. The OTA server is designed
-    // to reuse the running stack (APSTA, channel 1) and leaves ESP-NOW untouched.
+    // The RaceChrono advert also periodically takes the radio away from WiFi.
+    // OTA mode does not need BLE, and all exit paths reboot, so release it fully.
+    ota_wifi_server_release_bt();
 
     // Start WiFi SoftAP + HTTP server immediately (no BLE handshake needed)
     ESP_LOGI(TAG, "Starting WiFi OTA server from OTA mode screen");
     ota_wifi_info_t info = {0};
-    if (!ota_wifi_server_start(&info, on_wifi_ota_status)) {
+    if (!ota_wifi_server_start(&info, NULL)) {
         ESP_LOGE(TAG, "Failed to start WiFi OTA server");
         rs485_brake_temp_resume();
         if (ui_LabelOTAModeStatus) {
@@ -137,45 +129,10 @@ void ui_ScreenPageOTAMode_screen_init(void)
     }
 }
 
-static void on_wifi_ota_status(ota_wifi_state_t state, const char *message, uint32_t received, uint32_t expected)
-{
-    (void)received;
-    (void)expected;
-    if (ui_LabelOTAModeStatus == NULL) return;
 
-    switch (state) {
-        case OTA_WIFI_STATE_READY:
-            lv_label_set_text(ui_LabelOTAModeStatus, "Ready");
-            lv_obj_set_style_text_color(ui_LabelOTAModeStatus, lv_color_hex(0x00CC66), LV_PART_MAIN | LV_STATE_DEFAULT);
-            break;
-        case OTA_WIFI_STATE_RECEIVING:
-            if (message) {
-                lv_label_set_text(ui_LabelOTAModeStatus, message);
-            } else {
-                lv_label_set_text(ui_LabelOTAModeStatus, "Receiving update...");
-            }
-            lv_obj_set_style_text_color(ui_LabelOTAModeStatus, lv_color_hex(0x00CC66), LV_PART_MAIN | LV_STATE_DEFAULT);
-            break;
-        case OTA_WIFI_STATE_DONE:
-            lv_label_set_text(ui_LabelOTAModeStatus, "Update complete!");
-            lv_obj_set_style_text_color(ui_LabelOTAModeStatus, lv_color_hex(0x00CC66), LV_PART_MAIN | LV_STATE_DEFAULT);
-            break;
-        case OTA_WIFI_STATE_ERROR:
-            if (message) {
-                lv_label_set_text_fmt(ui_LabelOTAModeStatus, "Error: %s", message);
-            } else {
-                lv_label_set_text(ui_LabelOTAModeStatus, "Update failed");
-            }
-            lv_obj_set_style_text_color(ui_LabelOTAModeStatus, lv_color_hex(0xFF0000), LV_PART_MAIN | LV_STATE_DEFAULT);
-            break;
-        default:
-            break;
-    }
-}
-
-// Leaving OTA mode: entering it released the BT controller and freed its RAM to
-// the WiFi RX buffer pool (see the screen_init comment).  That is irreversible,
-// so BLE — and with it the OBD link — can only come back through a reset.
+// Leaving OTA mode: entering it released the BT controller and quiesced
+// ESP-NOW. That is irreversible for this session, so BLE — and with it the OBD
+// link — can only come back through a reset.
 // Uploads already end in esp_restart(); this covers the "looked and swiped away"
 // case so the gauge is never left BLE-dead.
 static void exit_ota_mode(void)

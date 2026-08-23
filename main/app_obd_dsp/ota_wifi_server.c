@@ -15,6 +15,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <sys/socket.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -60,8 +62,8 @@ static const char *TAG = "ota_wifi";
 // buffer we are filling at the same time.  16 KB is plenty — recv() returns
 // whatever the window holds, rarely more than a few KB at a time.  Falls back
 // to PSRAM at OTA_RECV_CHUNK_PSRAM if internal RAM is tight.
-#define OTA_RECV_CHUNK          16384      // internal-RAM staging buffer
-#define OTA_RECV_CHUNK_PSRAM    65536      // PSRAM fallback size
+#define OTA_RECV_CHUNK          262144     // internal-RAM staging buffer (256KB，进一步减少recv调用次数)
+#define OTA_RECV_CHUNK_PSRAM    262144     // PSRAM fallback size
 #define OTA_FLASH_WRITE_CHUNK 4096         // internal scratch buffer used for flash-safe writes
 #define OTA_PROGRESS_STEP   (64 * 1024)    // report to BLE callback every 64KB
 #define OTA_IDLE_TIMEOUT_US (10 * 60 * 1000000LL)  // auto-stop when no HTTP activity for 10 minutes
@@ -87,8 +89,7 @@ static uint8_t s_flash_write_buf[OTA_FLASH_WRITE_CHUNK];
 typedef enum {
     RECV_KIND_NONE = 0,
     RECV_KIND_FIRMWARE,
-    RECV_KIND_BOOTMEDIA_MANIFEST,
-    RECV_KIND_BOOTMEDIA_BIN,
+    RECV_KIND_BOOTMEDIA,
 } recv_kind_t;
 
 typedef struct {
@@ -96,31 +97,22 @@ typedef struct {
     uint32_t expected_size;
     uint32_t received_size;
     uint8_t expected_sha[32];
-    char expected_sha_hex[65];
     mbedtls_sha256_context sha;
     bool sha_started;
 
+    // The complete payload is accumulated in PSRAM.  No flash operation is
+    // allowed while the HTTP upload is active; otherwise cache-disabled erase/
+    // writes starve WiFi/lwIP and the phone appears to hang.
+    uint8_t *upload_buf;
+
     // firmware
     const esp_partition_t *ota_partition;
-    esp_ota_handle_t ota_handle;
-    bool ota_started;
 
     // bootmedia
     uint32_t manifest_size;
-    FILE *stage_file;
-    char staged_path[128];
-    uint32_t staged_abs;   // 上一次写入后的绝对偏移（用于判断是否连续，避免多余 fseek）
-    uint8_t *bootmedia_buf; // PSRAM buffer for full upload (WiFi-disabled flash write)
 } ota_recv_t;
 
 static ota_recv_t s_recv = {0};
-
-// Set by POST /ota/bootmedia/prepare once it has erased the data region for a
-// known payload size.  recv_reset() wipes s_recv on the first chunk, so this
-// has to live outside it.  Purpose: keep the ~9 s cache-disabled erase out of
-// the recv loop, where it slams the TCP window shut mid-transfer.
-static uint32_t s_prepared_total_size = 0;
-static uint32_t s_prepared_manifest_size = 0;
 
 /* ------------------------------------------------------------------ */
 /* WiFi runtime: reuse the existing stack when present (ESP-NOW case) */
@@ -356,9 +348,10 @@ static bool sha_finish_matches(void)
 {
     if (!s_recv.sha_started) return false;
     uint8_t digest[32] = {0};
-    if (mbedtls_sha256_finish(&s_recv.sha, digest) != 0) return false;
+    int ret = mbedtls_sha256_finish(&s_recv.sha, digest);
+    mbedtls_sha256_free(&s_recv.sha);
     s_recv.sha_started = false;
-    return memcmp(digest, s_recv.expected_sha, 32) == 0;
+    return ret == 0 && memcmp(digest, s_recv.expected_sha, 32) == 0;
 }
 
 static esp_err_t flash_safe_ota_write(esp_ota_handle_t handle, const uint8_t *data, size_t len)
@@ -380,45 +373,40 @@ static esp_err_t flash_safe_ota_write(esp_ota_handle_t handle, const uint8_t *da
     return ESP_OK;
 }
 
-static esp_err_t flash_safe_file_write(FILE *file, const uint8_t *data, size_t len)
-{
-    size_t offset = 0;
-    while (offset < len) {
-        size_t chunk = len - offset;
-        if (chunk > sizeof(s_flash_write_buf)) {
-            chunk = sizeof(s_flash_write_buf);
-        }
-        memcpy(s_flash_write_buf, data + offset, chunk);
-        size_t written = fwrite(s_flash_write_buf, 1, chunk, file);
-        if (written != chunk) {
-            ESP_LOGE(TAG, "SPIFFS write failed at offset=%u, chunk=%u, written=%u",
-                     (unsigned)offset, (unsigned)chunk, (unsigned)written);
-            return ESP_FAIL;
-        }
-        offset += chunk;
-    }
-    return ESP_OK;
-}
-
 static void recv_reset(void)
 {
-    if (s_recv.ota_started) {
-        esp_ota_abort(s_recv.ota_handle);
-        s_recv.ota_started = false;
-    }
-    if (s_recv.stage_file) {
-        fclose(s_recv.stage_file);
-        s_recv.stage_file = NULL;
-    }
     if (s_recv.sha_started) {
         mbedtls_sha256_free(&s_recv.sha);
         s_recv.sha_started = false;
     }
-    if (s_recv.bootmedia_buf) {
-        free(s_recv.bootmedia_buf);
-        s_recv.bootmedia_buf = NULL;
+    if (s_recv.upload_buf) {
+        free(s_recv.upload_buf);
+        s_recv.upload_buf = NULL;
     }
     memset(&s_recv, 0, sizeof(s_recv));
+}
+
+static bool allocate_upload_buffer(uint32_t size, const char *label)
+{
+    const uint32_t caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    size_t free_bytes = heap_caps_get_free_size(caps);
+    size_t largest = heap_caps_get_largest_free_block(caps);
+    ESP_LOGI(TAG, "%s upload buffer: need=%lu, PSRAM free=%zu, largest=%zu",
+             label, (unsigned long)size, free_bytes, largest);
+
+    if (size == 0 || largest < size) {
+        ESP_LOGE(TAG, "%s upload buffer does not fit: need=%lu, largest=%zu",
+                 label, (unsigned long)size, largest);
+        return false;
+    }
+
+    s_recv.upload_buf = heap_caps_malloc(size, caps);
+    if (!s_recv.upload_buf) {
+        ESP_LOGE(TAG, "%s upload buffer allocation failed: need=%lu, free=%zu, largest=%zu",
+                 label, (unsigned long)size, free_bytes, largest);
+        return false;
+    }
+    return true;
 }
 
 static bool parse_hex_sha(const char *hex, uint8_t *out)
@@ -580,12 +568,14 @@ static esp_err_t status_handler(httpd_req_t *req)
 // 1. Content-Type: application/octet-stream - 原始二进制
 // 2. Content-Type: application/base64 - Base64 编码
 // POST /ota/firmware — 分块上传
-// App 端把固件拆成 64KB 小块逐块 POST，每块带：
+// App 端把固件拆成 256KB 小块逐块 POST，每块带：
 //   X-Offset: 该块在整个数据流中的起始偏移
 //   X-Last:   是否最后一块（1/0）
-// esp_ota_write 是流式顺序写，跨请求保持 ota_handle 即可。
+// HTTP 阶段只累计到 PSRAM，完整校验后才停止 WiFi 并写 OTA 分区。
 static esp_err_t firmware_handler(httpd_req_t *req)
 {
+    int64_t handler_start_us = esp_timer_get_time();
+
     if (!validate_token(req)) {
         return send_err(req, "unauthorized");
     }
@@ -615,40 +605,72 @@ static esp_err_t firmware_handler(httpd_req_t *req)
         is_last = (strcmp(last_str, "1") == 0);
     }
 
-    esp_err_t err = ESP_OK;
-    const uint32_t total_expected_size = expected_size;
+    uint8_t expected_sha[32];
+    if (!parse_hex_sha(sha_hex, expected_sha) || expected_size == 0 || chunk_offset > expected_size) {
+        return send_err(req, "invalid headers");
+    }
+    if (!is_base64 && (uint32_t)req->content_len > expected_size - chunk_offset) {
+        return send_err(req, "invalid chunk size");
+    }
 
     if (chunk_offset == 0) {
-        // Hand the radio entirely to WiFi for the duration of the transfer.
         ota_wifi_server_release_bt();
-        // 第一个块：清空旧状态，初始化 OTA
         recv_reset();
         s_recv.ota_partition = esp_ota_get_next_update_partition(NULL);
         if (!s_recv.ota_partition) {
             return send_err(req, "no ota partition");
         }
-        if (expected_size == 0 || expected_size > s_recv.ota_partition->size ||
-            !parse_hex_sha(sha_hex, s_recv.expected_sha)) {
-            return send_err(req, "invalid headers");
+        if (expected_size > s_recv.ota_partition->size) {
+            return send_err(req, "firmware too large");
+        }
+        if (!allocate_upload_buffer(expected_size, "firmware")) {
+            recv_reset();
+            return send_err(req, "no memory for firmware buffer");
         }
 
-        err = esp_ota_begin(s_recv.ota_partition, expected_size, &s_recv.ota_handle);
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "esp_ota_begin failed: %s", esp_err_to_name(err));
-            return send_err(req, "ota begin failed");
-        }
-        s_recv.ota_started = true;
         s_recv.kind = RECV_KIND_FIRMWARE;
         s_recv.expected_size = expected_size;
         s_recv.received_size = 0;
+        memcpy(s_recv.expected_sha, expected_sha, sizeof(expected_sha));
         sha_init();
-        notify_status(OTA_WIFI_STATE_RECEIVING, "firmware receiving", 0, expected_size);
-    } else if (!s_recv.ota_started) {
-        // 非首块但没有进行中的 OTA（比如状态丢失），拒绝。
-        return send_err(req, "ota session not started");
+        notify_status(OTA_WIFI_STATE_RECEIVING, "firmware receiving (PSRAM)", 0, expected_size);
+    } else if (s_recv.kind != RECV_KIND_FIRMWARE || !s_recv.upload_buf ||
+               s_recv.expected_size != expected_size || s_recv.received_size != chunk_offset ||
+               memcmp(s_recv.expected_sha, expected_sha, sizeof(expected_sha)) != 0) {
+        ESP_LOGE(TAG, "firmware chunk out of sequence: offset=%lu expected=%lu kind=%d",
+                 (unsigned long)chunk_offset, (unsigned long)s_recv.received_size, s_recv.kind);
+        return send_err(req, "unexpected chunk offset");
     }
 
-    // 接收缓冲区 - 显式从 PSRAM 分配，保留内部 RAM 给 WiFi/SPIFFS DMA
+    int64_t after_init_us = esp_timer_get_time();
+    ESP_LOGI(TAG, "firmware chunk begin: offset=%lu content_len=%d last=%d total=%lu (init +%lld ms)",
+             (unsigned long)chunk_offset, req->content_len, is_last,
+             (unsigned long)expected_size, (after_init_us - handler_start_us) / 1000);
+
+    // 检查TCP连接状态
+    int sock_fd = httpd_req_to_sockfd(req);
+    if (sock_fd < 0) {
+        ESP_LOGE(TAG, "firmware: invalid socket fd");
+        recv_reset();
+        return send_err(req, "invalid socket");
+    }
+
+    // 增大socket接收缓冲区，加速数据接收
+    int rcvbuf_size = 256 * 1024;  // 256KB
+    int ret = setsockopt(sock_fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf_size, sizeof(rcvbuf_size));
+    if (ret == 0) {
+        int actual_size = 0;
+        socklen_t optlen = sizeof(actual_size);
+        getsockopt(sock_fd, SOL_SOCKET, SO_RCVBUF, &actual_size, &optlen);
+        ESP_LOGI(TAG, "firmware: socket rcvbuf set to %d bytes (requested %d)", actual_size, rcvbuf_size);
+    } else {
+        ESP_LOGW(TAG, "firmware: failed to set socket rcvbuf: %d", errno);
+    }
+
+    // 禁用Nagle算法，减少延迟
+    int nodelay = 1;
+    setsockopt(sock_fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+
     size_t recv_cap = 0;
     char *recv_buf = alloc_recv_buf(&recv_cap);
     uint8_t *decode_buf = NULL;
@@ -667,169 +689,261 @@ static esp_err_t firmware_handler(httpd_req_t *req)
 
     int remaining = req->content_len;
     bool failed = false;
+    uint32_t chunk_received = 0;
+    unsigned recv_timeouts = 0;
+    unsigned consecutive_timeouts = 0;
+    unsigned recv_calls = 0;
+
+    int64_t recv_loop_start_us = esp_timer_get_time();
+    int64_t last_recv_us = recv_loop_start_us;
+    ESP_LOGI(TAG, "firmware: starting recv loop, content_len=%d recv_cap=%zu", req->content_len, recv_cap);
+
     while (remaining > 0 && !failed) {
         int to_read = remaining > (int)recv_cap ? (int)recv_cap : remaining;
+        recv_calls++;
+
+        int64_t before_recv_us = esp_timer_get_time();
+        int64_t gap_us = before_recv_us - last_recv_us;
         int received = httpd_req_recv(req, recv_buf, to_read);
+        int64_t after_recv_us = esp_timer_get_time();
+        int64_t recv_duration_us = after_recv_us - before_recv_us;
+
+        if (recv_calls <= 2 || received > 16384 || recv_duration_us > 100000 || gap_us > 200000) {
+            ESP_LOGI(TAG, "firmware recv #%u: to_read=%d received=%d remaining=%d duration=%lld us gap=%lld us",
+                     recv_calls, to_read, received, remaining, recv_duration_us, gap_us);
+        }
+
+        last_recv_us = after_recv_us;
+
+        if (recv_calls <= 5 || received > 8192) {
+            ESP_LOGI(TAG, "firmware recv #%u: to_read=%d received=%d remaining=%d",
+                     recv_calls, to_read, received, remaining);
+        }
+
+        if (received == HTTPD_SOCK_ERR_TIMEOUT) {
+            recv_timeouts++;
+            consecutive_timeouts++;
+            ESP_LOGW(TAG, "firmware recv timeout %u (consecutive %u): offset=%lu chunk_received=%lu remaining=%d duration=%lld us",
+                     recv_timeouts, consecutive_timeouts, (unsigned long)chunk_offset,
+                     (unsigned long)chunk_received, remaining, recv_duration_us);
+            // Content-Length模式下，少量超时是正常的（网络抖动）
+            // 但如果连续超时说明连接已断开
+            if (consecutive_timeouts >= 3) {
+                ESP_LOGE(TAG, "firmware recv timeout limit reached: total=%u consecutive=%u",
+                         recv_timeouts, consecutive_timeouts);
+                break;
+            }
+            continue;
+        }
         if (received <= 0) {
+            ESP_LOGE(TAG, "firmware recv failed: received=%d offset=%lu chunk_received=%lu remaining=%d",
+                     received, (unsigned long)chunk_offset,
+                     (unsigned long)chunk_received, remaining);
             failed = true;
             break;
         }
+        // 成功接收数据，重置连续超时计数器
+        consecutive_timeouts = 0;
 
-        const uint8_t *data_to_write;
+        const uint8_t *data;
         size_t data_len;
         if (is_base64) {
             size_t decode_len = 0;
-            int ret = mbedtls_base64_decode(decode_buf, recv_cap, &decode_len, (const unsigned char *)recv_buf, received);
+            int ret = mbedtls_base64_decode(decode_buf, recv_cap, &decode_len,
+                                            (const unsigned char *)recv_buf, received);
             if (ret != 0) {
                 ESP_LOGE(TAG, "base64 decode failed: %d", ret);
                 failed = true;
                 break;
             }
-            data_to_write = decode_buf;
+            data = decode_buf;
             data_len = decode_len;
         } else {
-            data_to_write = (const uint8_t *)recv_buf;
+            data = (const uint8_t *)recv_buf;
             data_len = received;
         }
 
-        err = flash_safe_ota_write(s_recv.ota_handle, data_to_write, data_len);
-        if (err != ESP_OK) {
+        if (data_len > expected_size - chunk_offset - chunk_received) {
+            ESP_LOGE(TAG, "firmware decoded chunk exceeds payload: offset=%lu got=%zu total=%lu",
+                     (unsigned long)(chunk_offset + chunk_received), data_len,
+                     (unsigned long)expected_size);
             failed = true;
             break;
         }
-
-        sha_update(data_to_write, data_len);
-        s_recv.received_size += data_len;
+        memcpy(s_recv.upload_buf + chunk_offset + chunk_received, data, data_len);
+        sha_update(data, data_len);
+        chunk_received += data_len;
         remaining -= received;
-        report_progress();
+        s_recv.received_size = chunk_offset + chunk_received;
+        // 只在64KB边界报告进度，避免频繁回调阻塞接收循环
+        if (s_recv.received_size % OTA_PROGRESS_STEP == 0) {
+            report_progress();
+        }
     }
     free(recv_buf);
     if (decode_buf) free(decode_buf);
 
+    int64_t recv_loop_end_us = esp_timer_get_time();
+    int64_t recv_duration_ms = (recv_loop_end_us - recv_loop_start_us) / 1000;
+
+    if (!failed) {
+        ESP_LOGI(TAG, "firmware chunk complete: offset=%lu len=%lu next=%lu last=%d (recv took %lld ms, %u calls)",
+                 (unsigned long)chunk_offset, (unsigned long)chunk_received,
+                 (unsigned long)s_recv.received_size, is_last, recv_duration_ms, recv_calls);
+    }
+
     if (failed) {
         uint32_t received_size = s_recv.received_size;
         recv_reset();
-        notify_status(OTA_WIFI_STATE_ERROR, "firmware receive failed", received_size, total_expected_size);
+        notify_status(OTA_WIFI_STATE_ERROR, "firmware receive failed", received_size, expected_size);
         return send_err(req, "receive failed");
     }
 
-    // 还没收齐，返回中间成功响应，等待下一块。
     if (!is_last && s_recv.received_size < s_recv.expected_size) {
-        return send_json_response(req, 200, "{\"ok\":true,\"message\":\"chunk received\"}");
+        char json[96];
+        snprintf(json, sizeof(json), "{\"ok\":true,\"nextOffset\":%lu}",
+                 (unsigned long)s_recv.received_size);
+
+        int64_t before_response_us = esp_timer_get_time();
+        esp_err_t ret = send_json_response(req, 200, json);
+        int64_t after_response_us = esp_timer_get_time();
+
+        ESP_LOGI(TAG, "firmware: intermediate response sent in %lld ms (handler total %lld ms)",
+                 (after_response_us - before_response_us) / 1000,
+                 (after_response_us - handler_start_us) / 1000);
+        return ret;
     }
 
     if (s_recv.received_size != s_recv.expected_size) {
         uint32_t received_size = s_recv.received_size;
         recv_reset();
-        notify_status(OTA_WIFI_STATE_ERROR, "firmware size mismatch", received_size, total_expected_size);
+        notify_status(OTA_WIFI_STATE_ERROR, "firmware size mismatch", received_size, expected_size);
         return send_err(req, "size mismatch");
     }
-
     if (!sha_finish_matches()) {
         uint32_t received_size = s_recv.received_size;
         recv_reset();
-        notify_status(OTA_WIFI_STATE_ERROR, "firmware sha mismatch", received_size, total_expected_size);
+        notify_status(OTA_WIFI_STATE_ERROR, "firmware sha mismatch", received_size, expected_size);
         return send_err(req, "sha mismatch");
     }
 
-    err = esp_ota_end(s_recv.ota_handle);
-    if (err != ESP_OK) {
-        uint32_t received_size = s_recv.received_size;
-        recv_reset();
-        notify_status(OTA_WIFI_STATE_ERROR, "firmware ota end failed", received_size, total_expected_size);
-        return send_err(req, "ota end failed");
+    // The network phase is complete. Acknowledge it first, then let the TCP
+    // response leave the radio before starting any cache-disabled flash work.
+    notify_status(OTA_WIFI_STATE_RECEIVING, "firmware installing", expected_size, expected_size);
+    esp_err_t response_err = send_json_response(
+        req, 200, "{\"ok\":true,\"message\":\"firmware received, installing\"}");
+    if (response_err != ESP_OK) {
+        ESP_LOGW(TAG, "firmware final response failed: %s", esp_err_to_name(response_err));
+    }
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_wifi_stop();
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    esp_ota_handle_t ota_handle = 0;
+    esp_err_t err = esp_ota_begin(s_recv.ota_partition, expected_size, &ota_handle);
+    if (err == ESP_OK) {
+        err = flash_safe_ota_write(ota_handle, s_recv.upload_buf, expected_size);
+    }
+    if (err == ESP_OK) {
+        err = esp_ota_end(ota_handle);
+        ota_handle = 0;
+    } else if (ota_handle != 0) {
+        esp_ota_abort(ota_handle);
+        ota_handle = 0;
+    }
+    if (err == ESP_OK) {
+        err = esp_ota_set_boot_partition(s_recv.ota_partition);
     }
 
-    err = esp_ota_set_boot_partition(s_recv.ota_partition);
-    if (err != ESP_OK) {
-        uint32_t received_size = s_recv.received_size;
-        recv_reset();
-        notify_status(OTA_WIFI_STATE_ERROR, "firmware set boot failed", received_size, total_expected_size);
-        return send_err(req, "set boot failed");
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "firmware install complete, rebooting");
+        notify_status(OTA_WIFI_STATE_DONE, "firmware updated, rebooting", expected_size, expected_size);
+    } else {
+        ESP_LOGE(TAG, "firmware install failed after upload: %s; rebooting old firmware",
+                 esp_err_to_name(err));
+        notify_status(OTA_WIFI_STATE_ERROR, "firmware install failed", expected_size, expected_size);
     }
-
-    s_recv.ota_started = false;
-    notify_status(OTA_WIFI_STATE_DONE, "firmware updated, rebooting", s_recv.received_size, s_recv.expected_size);
-
-    send_json_response(req, 200, "{\"ok\":true,\"message\":\"firmware updated, rebooting\"}");
-
-    vTaskDelay(pdMS_TO_TICKS(500));
+    recv_reset();
+    vTaskDelay(pdMS_TO_TICKS(300));
     esp_restart();
-
     return ESP_OK;
 }
 
-
 // POST /ota/bootmedia/prepare
-// App 在上传分块之前先调用一次，触发 SPIFFS 挂载 + 清空旧动画。
-// 首次挂载可能耗时数十秒，绝不能让它发生在分块上传中。
+// App 在上传分块之前调用一次，仅验证分区容量和 PSRAM。
+// 这里绝不擦除 Flash，旧动画会保留到新数据完整校验通过。
 static esp_err_t bootmedia_prepare_handler(httpd_req_t *req)
 {
     if (!validate_token(req)) {
         return send_err(req, "unauthorized");
     }
-
     if (!boot_media_mount()) {
         return send_err(req, "mount failed");
     }
-    // Invalidate the manifest (4 KB erase, <100 ms).
-    if (!boot_media_invalidate_manifest()) {
-        return send_err(req, "cleanup failed");
-    }
 
-    s_prepared_total_size = 0;
-    s_prepared_manifest_size = 0;
-
-    // If the app tells us the payload size here, erase the data region NOW —
-    // before a single byte of body is in flight.  Erasing runs with the flash
-    // cache disabled for ~9 s (6.5 MB region measured at 489 KB/s); doing that
-    // between two httpd_req_recv() calls, as the old code did, closes the TCP
-    // receive window and overruns the WiFi RX buffers, and the connection never
-    // recovers its congestion window afterwards.
-    //
-    // Older app builds omit these headers; they fall back to the in-loop erase.
     char total_str[16] = {0};
     char manifest_str[16] = {0};
-    if (httpd_req_get_hdr_value_str(req, "X-OTA-Size", total_str, sizeof(total_str)) == ESP_OK &&
-        httpd_req_get_hdr_value_str(req, "X-OTA-Manifest-Size", manifest_str, sizeof(manifest_str)) == ESP_OK) {
-        uint32_t total_size = (uint32_t)strtoul(total_str, NULL, 10);
-        uint32_t manifest_size = (uint32_t)strtoul(manifest_str, NULL, 10);
-        if (total_size == 0 || manifest_size == 0 || manifest_size >= total_size ||
-            manifest_size > boot_media_raw_manifest_max()) {
-            return send_err(req, "invalid prepare sizes");
-        }
+    if (httpd_req_get_hdr_value_str(req, "X-OTA-Size", total_str, sizeof(total_str)) != ESP_OK ||
+        httpd_req_get_hdr_value_str(req, "X-OTA-Manifest-Size", manifest_str, sizeof(manifest_str)) != ESP_OK) {
+        return send_err(req, "missing prepare sizes");
+    }
 
-        size_t free_space_pre = boot_media_get_free_space();
-        const size_t needed_space = (size_t)(total_size - manifest_size) + 4096;
-        if (free_space_pre < needed_space) {
-            char err_msg[80];
-            snprintf(err_msg, sizeof(err_msg), "bootmedia too large: free=%zu need=%zu",
-                     free_space_pre, needed_space);
-            return send_err(req, err_msg);
-        }
-
-        if (!boot_media_erase_data_region(total_size, manifest_size)) {
-            return send_err(req, "erase failed");
-        }
-        s_prepared_total_size = total_size;
-        s_prepared_manifest_size = manifest_size;
+    uint32_t total_size = (uint32_t)strtoul(total_str, NULL, 10);
+    uint32_t manifest_size = (uint32_t)strtoul(manifest_str, NULL, 10);
+    if (total_size == 0 || manifest_size == 0 || manifest_size >= total_size ||
+        manifest_size > boot_media_raw_manifest_max()) {
+        return send_err(req, "invalid prepare sizes");
     }
 
     size_t free_space = boot_media_get_free_space();
+    const size_t needed_space = (size_t)(total_size - manifest_size);
+    if (free_space < needed_space) {
+        char err_msg[80];
+        snprintf(err_msg, sizeof(err_msg), "bootmedia too large: free=%zu need=%zu",
+                 free_space, needed_space);
+        return send_err(req, err_msg);
+    }
 
-    char json[80];
-    snprintf(json, sizeof(json), "{\"ok\":true,\"free\":%zu,\"preErased\":%s}",
-             free_space, s_prepared_total_size != 0 ? "true" : "false");
+    // Deliberately do NOT invalidate or erase here. A multi-megabyte erase in
+    // an HTTP handler blocks the ESP32 flash cache long enough to collapse the
+    // SoftAP TCP connection. Keeping the old manifest also makes an interrupted
+    // upload non-destructive. Erase/commit happens only after full SHA verify.
+    size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    ESP_LOGI(TAG, "bootmedia prepare: total=%lu manifest=%lu PSRAM free=%zu largest=%zu",
+             (unsigned long)total_size, (unsigned long)manifest_size, psram_free, largest);
+    if (largest < total_size) {
+        return send_err(req, "no memory for bootmedia buffer");
+    }
+
+    // Consume the tiny placeholder body so a keep-alive socket cannot carry
+    // unread prepare data into the first upload request.
+    char discard[32];
+    int remaining = req->content_len;
+    while (remaining > 0) {
+        int received = httpd_req_recv(req, discard, remaining > (int)sizeof(discard) ? (int)sizeof(discard) : remaining);
+        if (received <= 0) {
+            return send_err(req, "prepare receive failed");
+        }
+        remaining -= received;
+    }
+
+    char json[128];
+    snprintf(json, sizeof(json),
+             "{\"ok\":true,\"free\":%zu,\"psramFree\":%zu,\"largestBlock\":%zu}",
+             free_space, psram_free, largest);
     return send_json_response(req, 200, json);
 }
 
 // POST /ota/bootmedia — 分块上传
-// App 端把 [manifest][bin] 整体拆成 64KB 小块，逐块 POST，每块带：
+// App 端把 [manifest][bin] 整体拆成小块逐块 POST，每块带：
 //   X-Offset: 该块在整个数据流中的起始偏移
 //   X-Last:   是否最后一块（1/0）
 // 收齐全部块后校验 SHA-256 并提交、重启。
 static esp_err_t bootmedia_handler(httpd_req_t *req)
 {
+    int64_t handler_start_us = esp_timer_get_time();
+
     if (!validate_token(req)) {
         return send_err(req, "unauthorized");
     }
@@ -864,9 +978,10 @@ static esp_err_t bootmedia_handler(httpd_req_t *req)
 
     if (total_size == 0 || manifest_size == 0 || manifest_size > boot_media_raw_manifest_max() ||
         manifest_size >= total_size || chunk_offset > total_size ||
-        (uint32_t)req->content_len > total_size - chunk_offset) {
-        ESP_LOGE(TAG, "invalid sizes/offset: total=%u, manifest=%u, offset=%u, content_len=%d",
-                 total_size, manifest_size, chunk_offset, req->content_len);
+        (!is_base64 && (uint32_t)req->content_len > total_size - chunk_offset)) {
+        ESP_LOGE(TAG, "invalid sizes/offset: total=%lu manifest=%lu offset=%lu content_len=%d",
+                 (unsigned long)total_size, (unsigned long)manifest_size,
+                 (unsigned long)chunk_offset, req->content_len);
         return send_err(req, "invalid sizes");
     }
     uint8_t expected_sha[32];
@@ -874,51 +989,65 @@ static esp_err_t bootmedia_handler(httpd_req_t *req)
         return send_err(req, "invalid sha");
     }
 
-    // 第一个块（offset==0）：prepare 已经只擦了 manifest 槽（4 KB）。
-    // 这里按实际 payload 大小擦除数据区，比全量擦 10 MB 分区快得多。
     if (chunk_offset == 0) {
-        // Belt and braces: the OTA-mode screen already released BT before
-        // esp_wifi_init(), but the BLE-initiated entry point does not.  Doing it
-        // here still kills coexistence for the transfer (it just cannot recover
-        // the RX buffer pool, which is sized at esp_wifi_init() time).
         ota_wifi_server_release_bt();
         recv_reset();
-        memcpy(s_recv.expected_sha, expected_sha, sizeof(expected_sha));
-        strncpy(s_recv.expected_sha_hex, sha_hex, sizeof(s_recv.expected_sha_hex) - 1);
-        s_recv.manifest_size = manifest_size;
-
         if (!boot_media_mount()) {
             return send_err(req, "mount failed");
         }
-
         size_t free_space = boot_media_get_free_space();
-        const size_t needed_space = (size_t)(total_size - manifest_size) + 4096;
+        size_t needed_space = (size_t)(total_size - manifest_size);
         if (free_space < needed_space) {
-            ESP_LOGE(TAG, "bootmedia space insufficient: free=%zu, need=%lu (total=%lu)",
-                     free_space, (unsigned long)needed_space, (unsigned long)total_size);
-            char err_msg[80];
-            snprintf(err_msg, sizeof(err_msg), "bootmedia too large: free=%zu need=%lu", free_space, (unsigned long)needed_space);
-            return send_err(req, err_msg);
+            return send_err(req, "bootmedia too large");
+        }
+        if (!allocate_upload_buffer(total_size, "bootmedia")) {
+            recv_reset();
+            return send_err(req, "no memory for bootmedia buffer");
         }
 
-        // Allocate a PSRAM buffer for the entire upload.  We accumulate all
-        // chunks here and write to flash only after the last chunk has been
-        // received *and the HTTP response has been sent*, so WiFi and flash
-        // write never overlap — eliminating the 100× contention slowdown.
-        s_recv.bootmedia_buf = heap_caps_malloc(total_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (!s_recv.bootmedia_buf) {
-            ESP_LOGE(TAG, "bootmedia: cannot allocate %u bytes in PSRAM", total_size);
-            return send_err(req, "no memory for upload buffer");
-        }
-        s_recv.kind = RECV_KIND_BOOTMEDIA_MANIFEST;
+        s_recv.kind = RECV_KIND_BOOTMEDIA;
         s_recv.expected_size = total_size;
         s_recv.received_size = 0;
+        s_recv.manifest_size = manifest_size;
+        memcpy(s_recv.expected_sha, expected_sha, sizeof(expected_sha));
         sha_init();
         notify_status(OTA_WIFI_STATE_RECEIVING, "bootmedia receiving (PSRAM)", 0, total_size);
-    } else if (s_recv.kind != RECV_KIND_BOOTMEDIA_MANIFEST || s_recv.expected_size != total_size ||
-               s_recv.manifest_size != manifest_size || !s_recv.bootmedia_buf) {
-        return send_err(req, "ota session not started");
+    } else if (s_recv.kind != RECV_KIND_BOOTMEDIA || !s_recv.upload_buf ||
+               s_recv.expected_size != total_size || s_recv.manifest_size != manifest_size ||
+               s_recv.received_size != chunk_offset ||
+               memcmp(s_recv.expected_sha, expected_sha, sizeof(expected_sha)) != 0) {
+        ESP_LOGE(TAG, "bootmedia chunk out of sequence: offset=%lu expected=%lu kind=%d",
+                 (unsigned long)chunk_offset, (unsigned long)s_recv.received_size, s_recv.kind);
+        return send_err(req, "unexpected chunk offset");
     }
+
+    ESP_LOGI(TAG, "bootmedia chunk begin: offset=%lu content_len=%d last=%d total=%lu",
+             (unsigned long)chunk_offset, req->content_len, is_last,
+             (unsigned long)total_size);
+
+    // 检查TCP连接状态
+    int sock_fd = httpd_req_to_sockfd(req);
+    if (sock_fd < 0) {
+        ESP_LOGE(TAG, "bootmedia: invalid socket fd");
+        recv_reset();
+        return send_err(req, "invalid socket");
+    }
+
+    // 增大socket接收缓冲区，加速数据接收
+    int rcvbuf_size = 256 * 1024;  // 256KB
+    int ret = setsockopt(sock_fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf_size, sizeof(rcvbuf_size));
+    if (ret == 0) {
+        int actual_size = 0;
+        socklen_t optlen = sizeof(actual_size);
+        getsockopt(sock_fd, SOL_SOCKET, SO_RCVBUF, &actual_size, &optlen);
+        ESP_LOGI(TAG, "bootmedia: socket rcvbuf set to %d bytes (requested %d)", actual_size, rcvbuf_size);
+    } else {
+        ESP_LOGW(TAG, "bootmedia: failed to set socket rcvbuf: %d", errno);
+    }
+
+    // 禁用Nagle算法，减少延迟
+    int nodelay = 1;
+    setsockopt(sock_fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
 
     size_t recv_cap = 0;
     char *recv_buf = alloc_recv_buf(&recv_cap);
@@ -938,76 +1067,106 @@ static esp_err_t bootmedia_handler(httpd_req_t *req)
 
     int remaining = req->content_len;
     bool failed = false;
-    // Already erased if this is a continuation chunk, or if /ota/bootmedia/prepare
-    // erased the region up-front for exactly this payload.
-    bool data_region_erased = (chunk_offset != 0) ||
-                              (s_prepared_total_size == total_size &&
-                               s_prepared_manifest_size == manifest_size);
     uint32_t chunk_received = 0;
+    unsigned recv_timeouts = 0;
+    unsigned consecutive_timeouts = 0;
+    unsigned recv_calls = 0;
+
+    int64_t recv_loop_start_us = esp_timer_get_time();
+    int64_t last_recv_us = recv_loop_start_us;
+    ESP_LOGI(TAG, "bootmedia: starting recv loop, content_len=%d recv_cap=%zu", req->content_len, recv_cap);
 
     while (remaining > 0 && !failed) {
         int to_read = remaining > (int)recv_cap ? (int)recv_cap : remaining;
+        recv_calls++;
+
+        int64_t before_recv_us = esp_timer_get_time();
+        int64_t gap_us = before_recv_us - last_recv_us;
         int received = httpd_req_recv(req, recv_buf, to_read);
+        int64_t after_recv_us = esp_timer_get_time();
+        int64_t recv_duration_us = after_recv_us - before_recv_us;
+
+        if (recv_calls <= 2 || received > 16384 || recv_duration_us > 100000 || gap_us > 200000) {
+            ESP_LOGI(TAG, "bootmedia recv #%u: to_read=%d received=%d remaining=%d duration=%lld us gap=%lld us",
+                     recv_calls, to_read, received, remaining, recv_duration_us, gap_us);
+        }
+
+        last_recv_us = after_recv_us;
+
+        if (received == HTTPD_SOCK_ERR_TIMEOUT) {
+            recv_timeouts++;
+            consecutive_timeouts++;
+            ESP_LOGW(TAG, "bootmedia recv timeout %u (consecutive %u): offset=%lu chunk_received=%lu remaining=%d duration=%lld us",
+                     recv_timeouts, consecutive_timeouts, (unsigned long)chunk_offset,
+                     (unsigned long)chunk_received, remaining, recv_duration_us);
+            // Content-Length模式下，少量超时是正常的（网络抖动）
+            // 但如果连续超时说明连接已断开
+            if (consecutive_timeouts >= 3) {
+                ESP_LOGE(TAG, "bootmedia recv timeout limit reached: total=%u consecutive=%u",
+                         recv_timeouts, consecutive_timeouts);
+                break;
+            }
+            continue;
+        }
+
+        if (received > 0 && chunk_received % 8192 == 0) {
+            ESP_LOGD(TAG, "bootmedia: recv progress: chunk_received=%lu remaining=%d received=%d",
+                     (unsigned long)chunk_received, remaining, received);
+        }
         if (received <= 0) {
-            ESP_LOGE(TAG, "bootmedia recv failed: received=%d, remaining=%d", received, remaining);
+            ESP_LOGE(TAG, "bootmedia recv failed: received=%d offset=%lu chunk_received=%lu remaining=%d",
+                     received, (unsigned long)chunk_offset,
+                     (unsigned long)chunk_received, remaining);
             failed = true;
             break;
         }
+        // 成功接收数据，重置连续超时计数器
+        consecutive_timeouts = 0;
 
-        const uint8_t *data_to_write;
+        const uint8_t *data;
         size_t data_len;
         if (is_base64) {
             size_t decode_len = 0;
-            int ret = mbedtls_base64_decode(decode_buf, recv_cap, &decode_len, (const unsigned char *)recv_buf, received);
+            int ret = mbedtls_base64_decode(decode_buf, recv_cap, &decode_len,
+                                            (const unsigned char *)recv_buf, received);
             if (ret != 0) {
                 ESP_LOGE(TAG, "base64 decode failed: %d", ret);
                 failed = true;
                 break;
             }
-            data_to_write = decode_buf;
+            data = decode_buf;
             data_len = decode_len;
         } else {
-            data_to_write = (const uint8_t *)recv_buf;
+            data = (const uint8_t *)recv_buf;
             data_len = received;
         }
 
-        // First chunk: erase the data region AFTER the first TCP read.
-        // Reading first keeps the TCP receive window open; the client has
-        // already started sending the body, so after the erase the data
-        // is waiting in the TCP buffer (or the client rapidly resumes).
-        if (!data_region_erased) {
-            // Copy the first batch to PSRAM before erasing so we don't
-            // lose it if the recv buffer gets recycled.
-            memcpy(s_recv.bootmedia_buf + chunk_offset + chunk_received, data_to_write, data_len);
-            sha_update(data_to_write, data_len);
-            chunk_received += data_len;
-            s_recv.received_size = chunk_offset + chunk_received;
-            remaining -= received;
-
-            if (!boot_media_erase_data_region(total_size, manifest_size)) {
-                failed = true;
-                break;
-            }
-            data_region_erased = true;
-            // Yield so the LWIP task can process the TCP ACK backlog that
-            // built up during the ~8.7 s cache-disabled erase window.
-            vTaskDelay(pdMS_TO_TICKS(200));
-            continue;
+        if (data_len > total_size - chunk_offset - chunk_received) {
+            ESP_LOGE(TAG, "bootmedia decoded chunk exceeds payload");
+            failed = true;
+            break;
         }
-
-        // Copy directly into the PSRAM accumulation buffer — no flash write
-        // while WiFi is active.
-        memcpy(s_recv.bootmedia_buf + chunk_offset + chunk_received, data_to_write, data_len);
-        sha_update(data_to_write, data_len);
+        memcpy(s_recv.upload_buf + chunk_offset + chunk_received, data, data_len);
+        sha_update(data, data_len);
         chunk_received += data_len;
         remaining -= received;
-
         s_recv.received_size = chunk_offset + chunk_received;
-        report_progress();
+        // 只在64KB边界报告进度，避免频繁回调阻塞接收循环
+        if (s_recv.received_size % OTA_PROGRESS_STEP == 0) {
+            report_progress();
+        }
     }
-
     free(recv_buf);
     if (decode_buf) free(decode_buf);
+
+    int64_t recv_loop_end_us = esp_timer_get_time();
+    int64_t recv_duration_ms = (recv_loop_end_us - recv_loop_start_us) / 1000;
+
+    if (!failed) {
+        ESP_LOGI(TAG, "bootmedia chunk complete: offset=%lu len=%lu next=%lu last=%d (recv took %lld ms, %u calls)",
+                 (unsigned long)chunk_offset, (unsigned long)chunk_received,
+                 (unsigned long)s_recv.received_size, is_last, recv_duration_ms, recv_calls);
+    }
 
     if (failed) {
         uint32_t received_size = s_recv.received_size;
@@ -1016,18 +1175,26 @@ static esp_err_t bootmedia_handler(httpd_req_t *req)
         return send_err(req, "receive failed");
     }
 
-    // Not the last chunk — return immediately; data is in PSRAM.
     if (!is_last && s_recv.received_size < total_size) {
-        return send_json_response(req, 200, "{\"ok\":true,\"message\":\"chunk received\"}");
-    }
+        char json[96];
+        snprintf(json, sizeof(json), "{\"ok\":true,\"nextOffset\":%lu}",
+                 (unsigned long)s_recv.received_size);
 
+        int64_t before_response_us = esp_timer_get_time();
+        esp_err_t ret = send_json_response(req, 200, json);
+        int64_t after_response_us = esp_timer_get_time();
+
+        ESP_LOGI(TAG, "bootmedia: intermediate response sent in %lld ms (handler total %lld ms), ret=%d",
+                 (after_response_us - before_response_us) / 1000,
+                 (after_response_us - handler_start_us) / 1000, ret);
+        return ret;
+    }
     if (s_recv.received_size != total_size) {
         uint32_t received_size = s_recv.received_size;
         recv_reset();
         notify_status(OTA_WIFI_STATE_ERROR, "bootmedia size mismatch", received_size, total_size);
         return send_err(req, "size mismatch");
     }
-
     if (!sha_finish_matches()) {
         uint32_t received_size = s_recv.received_size;
         recv_reset();
@@ -1035,35 +1202,45 @@ static esp_err_t bootmedia_handler(httpd_req_t *req)
         return send_err(req, "sha mismatch");
     }
 
-    // === Last chunk received successfully ===
-    // Send the HTTP response BEFORE stopping WiFi, so the client knows the
-    // upload succeeded.  Then stop WiFi, write the PSRAM buffer to flash at
-    // full hardware speed (~700 KB/s), and reboot.
-    send_json_response(req, 200, "{\"ok\":true,\"message\":\"bootmedia updated, rebooting\"}");
-    vTaskDelay(pdMS_TO_TICKS(1000));  // let TCP FIN/ACK flush
-
-    // From here on the region is no longer pristine — a retry must re-erase.
-    s_prepared_total_size = 0;
-    s_prepared_manifest_size = 0;
-
+    notify_status(OTA_WIFI_STATE_RECEIVING, "bootmedia installing", total_size, total_size);
+    esp_err_t response_err = send_json_response(
+        req, 200, "{\"ok\":true,\"message\":\"bootmedia received, installing\"}");
+    if (response_err != ESP_OK) {
+        ESP_LOGW(TAG, "bootmedia final response failed: %s", esp_err_to_name(response_err));
+    }
+    vTaskDelay(pdMS_TO_TICKS(1000));
     esp_wifi_stop();
-    vTaskDelay(pdMS_TO_TICKS(500));
+    vTaskDelay(pdMS_TO_TICKS(200));
 
-    esp_err_t write_err = boot_media_raw_write(0, s_recv.bootmedia_buf, total_size, manifest_size);
-
-    if (write_err != ESP_OK) {
-        ESP_LOGE(TAG, "Flash write failed: %s", esp_err_to_name(write_err));
+    esp_err_t write_err = ESP_OK;
+    if (!boot_media_invalidate_manifest()) {
+        write_err = ESP_FAIL;
+    }
+    if (write_err == ESP_OK && !boot_media_erase_data_region(total_size, manifest_size)) {
+        write_err = ESP_FAIL;
+    }
+    // Commit the manifest last. If power is lost while the binary is being
+    // written, the erased manifest keeps the incomplete animation invisible.
+    if (write_err == ESP_OK) {
+        write_err = boot_media_raw_write(manifest_size, s_recv.upload_buf + manifest_size,
+                                         total_size - manifest_size, manifest_size);
+    }
+    if (write_err == ESP_OK) {
+        write_err = boot_media_raw_write(0, s_recv.upload_buf, manifest_size, manifest_size);
     }
 
+    if (write_err == ESP_OK) {
+        ESP_LOGI(TAG, "bootmedia install complete, rebooting");
+        notify_status(OTA_WIFI_STATE_DONE, "bootmedia updated, rebooting", total_size, total_size);
+    } else {
+        ESP_LOGE(TAG, "bootmedia install failed after upload: %s", esp_err_to_name(write_err));
+        notify_status(OTA_WIFI_STATE_ERROR, "bootmedia install failed", total_size, total_size);
+    }
     recv_reset();
-    notify_status(OTA_WIFI_STATE_DONE, "bootmedia updated, rebooting", total_size, total_size);
-
-    vTaskDelay(pdMS_TO_TICKS(500));
+    vTaskDelay(pdMS_TO_TICKS(300));
     esp_restart();
-
     return ESP_OK;
 }
-
 
 /* ------------------------------------------------------------------ */
 /* Idle watchdog: auto-stop after OTA_IDLE_TIMEOUT_US without activity */
@@ -1231,6 +1408,11 @@ bool ota_wifi_server_start(ota_wifi_info_t *info, ota_wifi_status_cb_t callback)
     // retransmits, and every retransmit costs an RTO on this link.
     esp_wifi_set_max_tx_power(80);
 
+    // 优化TCP参数以提升大文件上传性能
+    // 注意：这些是编译时配置，运行时无法修改，但可以通过日志提醒用户
+    ESP_LOGI(TAG, "TCP window size hint: increase CONFIG_LWIP_TCP_WND_DEFAULT and "
+                  "CONFIG_LWIP_TCP_SND_BUF_DEFAULT in sdkconfig for better throughput");
+
     // 启动 HTTP 服务器
     ESP_LOGI(TAG, "heap before httpd: internal=%lu / total=%lu, stack=%u caps=INTERNAL",
              (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
@@ -1243,13 +1425,14 @@ bool ota_wifi_server_start(ota_wifi_info_t *info, ota_wifi_status_cb_t callback)
     // disable cache, so any task that touches flash must not live in PSRAM.
     config.task_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     config.core_id = 1;                              // keep HTTP handler off the WiFi/BLE core
-    config.recv_wait_timeout = 120;                // must tolerate slow phone upload between recv calls
+    config.recv_wait_timeout = 2;                  // 2s per recv call, Content-Length模式下不应该超时
     config.send_wait_timeout = 300;
     // Reduce httpd memory usage
     config.max_uri_handlers = 14;                    // 11 handlers (incl. OPTIONS preflight for POST routes)
     config.max_resp_headers = 4;                     // minimal headers
     config.max_open_sockets = 7;                     // max allowed by LWIP_MAX_SOCKETS (10 - 3 internal)
-    config.keep_alive_enable = true;                 // reuse TCP across chunked uploads; single-client AP has no pile-up risk
+    config.backlog_conn = 5;                         // accept队列长度
+    config.lru_purge_enable = true;                  // 启用LRU清理，自动关闭空闲连接
 
     err = httpd_start(&s_httpd, &config);
     if (err != ESP_OK) {
