@@ -207,6 +207,19 @@ static const vehicle_override_t s_vehicle_overrides[] = {
         .has_boost       = true,
     },
     {
+        // BMW E-series (E9x M3 S65 NA): standard PIDs via 7DF functional addressing.
+        // Oil temp falls back to standard 01 5C — S65 has no 01 5C; the real sensor sits on
+        // proprietary mode 21 (KWP local IDs @6F1) / mode 22 (DID 448/58F0/58F3 @6F1, DID F5xx @7DF),
+        // not reverse-engineered yet. Once the formula is known, add an oil_formula_t and
+        // uds_header_cmd="ATSH6F1\r" (or "ATSH7DF\r") here to query it.
+        .match_name      = "BMW E",
+        .oil_primary     = &oil_std_5c,
+        .oil_secondary   = &oil_std_5c,
+        .forced_protocol = 6,
+        .functional_addr = true,
+        .obd_timeout     = 0x0A,
+    },
+    {
         .match_name      = "JCW F56",
         .oil_primary     = &oil_mini_5822,
         .oil_secondary   = &oil_std_5c,

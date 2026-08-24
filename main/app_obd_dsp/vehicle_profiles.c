@@ -165,6 +165,31 @@ static const vehicle_profile_t s_profiles[] = {
         .poll_gap_ms = 1,
     },
     {
+        // BMW E-series (E9x M3, S65B40 NA V8; also usable as a base for E46/E39/E60/E9x non-M)
+        // OBD-only; standard mode 01 PIDs go through 7DF functional addressing (the E-series DME
+        // does not answer physical 7E0 for mode 01, same behaviour as BMW F/G above).
+        // RPM/speed/coolant/intake/load/TPS all standard; S65 is NA so no boost.
+        // Oil temp: S65 does NOT support standard 01 5C. Car Scanner reads it via proprietary
+        //   mode 21 (KWP local IDs 01/04/05/07/08/0B @6F1) and mode 22 (DID 448/58F0/58F3 @6F1,
+        //   DID F5xx @7DF). Those formulas are not reverse-engineered yet, so we fall back to 01 5C.
+        .name = "BMW E",
+        .final_drive_ratio = 3.846f,       // E92 M3 6MT final drive (M-DCT is 3.154)
+        .tire_rolling_radius_m = 0.335f,   // rear 265/40R18
+        .gear_count = 6,
+        .gear_ratios = {0, 4.055f, 2.396f, 1.582f, 1.192f, 1.000f, 0.872f},  // Getrag GS6-53BZ 6MT
+        .gear_tolerance = 0.15f,
+        .oil_temp_strategy = {
+            .primary = OIL_TEMP_MODE_PID_5C,        // fallback only; S65 has no standard 5C (see note above)
+            .secondary = OIL_TEMP_MODE_NONE,
+            .tertiary = OIL_TEMP_MODE_NONE,
+            .quaternary = OIL_TEMP_MODE_NONE,
+        },
+        .forced_protocol = 6,              // ISO 15765-4 CAN 11-bit 500k
+        .obd_functional_addr = true,       // 7DF functional addressing (same as phone apps)
+        .obd_timeout = 0x0A,
+        .poll_gap_ms = 1,
+    },
+    {
         // MINI John Cooper Works F56 (BMW B48 2.0T, FWD transverse)
         .name = "JCW F56",
         .final_drive_ratio = 3.824f,       // F56 JCW 6MT final drive ratio
@@ -241,6 +266,31 @@ static const vehicle_profile_t s_profiles[] = {
         .obd_functional_addr = true,       // standard PIDs use the 7DF broadcast (same as phone apps)
         .obd_timeout = 0x0F,
         .poll_gap_ms = 50,                 // extended UDS responses are a bit slow, keep it conservative
+    },
+    {
+        // Jeep (generic placeholder; refine gear ratios/tire size once the exact model/engine/transmission is known)
+        // Confirmed via probe: standard mode 01 PIDs (RPM/speed/coolant/intake/load/TPS/voltage/MAP) all respond
+        // over 7DF functional addressing. Oil temp 01 5C is a REAL sensor here (r=1.0, not just a table lookup),
+        // so no custom override/formula is needed — the default OIL_TEMP_MODE_PID_5C strategy just works.
+        // Still unresolved in the probe: oem-mode01 (0169/016A/016C/016E/016F/01BD...), proprietary mode 22 F5xx
+        // series, and a 29-bit extended header (DA18F1, likely TCU) with mode 22 DIDs 1D07/1D08/1D09/1D12 — none
+        // mapped to a gauge yet, so no CAN rules / secondary oil formula added.
+        .name = "jeep",
+        .final_drive_ratio = 3.45f,        // Generic placeholder (Wrangler JL Pentastar ballpark)
+        .tire_rolling_radius_m = 0.373f,   // Generic placeholder for 245/75R17
+        .gear_count = 8,                   // Generic placeholder (8HP75-class 8-speed auto)
+        .gear_ratios = {0, 4.710f, 3.140f, 2.100f, 1.670f, 1.290f, 1.000f, 0.840f, 0.670f},
+        .gear_tolerance = 0.15f,
+        .oil_temp_strategy = {
+            .primary = OIL_TEMP_MODE_PID_5C,        // confirmed real sensor via probe (r=1.0)
+            .secondary = OIL_TEMP_MODE_NONE,
+            .tertiary = OIL_TEMP_MODE_NONE,
+            .quaternary = OIL_TEMP_MODE_NONE,
+        },
+        .has_boost = false,                // set true if the specific engine is turbocharged (e.g. 2.0L Hurricane)
+        .forced_protocol = 6,              // ISO 15765-4 CAN 11-bit 500k
+        .obd_functional_addr = true,       // 7DF functional addressing confirmed by probe
+        .obd_timeout = 0x0F,
     },
 };
 
