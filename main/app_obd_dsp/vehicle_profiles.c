@@ -152,6 +152,8 @@ static const vehicle_profile_t s_profiles[] = {
         // °C = raw*0.75 - 48 (2 bytes, 7E0 physical) — same as BMW G-series. Verified against bmw_pid_data/b58_pid_data.h.
         // Alternative DIDs: 4408 ("unfiltered", °C = raw*0.1 - 273.14) and 4425 ("sump", °C = raw/10).
         // Fallback to standard 01 5C if 4402 is unavailable. Gear/final-drive are placeholders to refine per trim.
+        // Engine oil pressure: B58 DME reports it via Mode 22 DID 4436 (absolute pressure in hPa, 7E0 physical,
+        // unsigned 16-bit, raw×1). Enables OBD oil pressure so the external ADS1115 ADC is skipped for this car.
         .name = "Supra A90",
         .final_drive_ratio = 2.813f,       // placeholder from BMW F/G; 3.0T Supra is ~3.15
         .tire_rolling_radius_m = 0.330f,   // 225/45R18 placeholder
@@ -165,6 +167,7 @@ static const vehicle_profile_t s_profiles[] = {
             .quaternary = OIL_TEMP_MODE_NONE,
         },
         .has_boost = true,                 // B58/B48 turbo
+        .has_obd_oil_pressure = true,      // Mode 22 DID 4436 (absolute hPa); supersedes the ADS1115 ADC
         .forced_protocol = 6,
         .obd_functional_addr = true,
         .obd_timeout = 0x0A,               // BRZ PID-style 40ms (faster than BMW F/G's 0x0F)

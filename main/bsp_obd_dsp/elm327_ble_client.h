@@ -35,6 +35,7 @@ typedef struct {
     void (*on_parsed_fuel_level)(uint32_t fuel_level);// fuel level
     void (*on_parsed_control_module_voltage)(uint32_t control_module_voltage);// control module voltage
     void (*on_parsed_afr)(uint32_t afr_x100);    // air-fuel ratio AFR, x100 (1470=14.7:1)
+    void (*on_parsed_oil_pressure)(uint32_t oil_pressure_hpa);    // engine oil pressure (absolute hPa, Mode 22 DID 4436)
 
 } elm327_ble_callbacks_t;
 

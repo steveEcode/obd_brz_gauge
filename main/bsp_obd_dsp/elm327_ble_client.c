@@ -616,6 +616,13 @@ static void can_expire_stale_temp_channels(void)
 static void default_on_parsed_afr(uint32_t afr_x100) {
     obd_data_set_afr_x100((int16_t)afr_x100);
 }
+// Mode 22 DID 4436 (B58): absolute oil pressure in hPa → 0.1 bar (x10), setter clamps to [0, 200]
+static void default_on_parsed_oil_pressure(uint32_t oil_pressure_hpa) {
+    int32_t x10 = (int32_t)oil_pressure_hpa / 100;   // 100 hPa = 0.1 bar
+    if (x10 < 0) x10 = 0;
+    if (x10 > 200) x10 = 200;
+    obd_data_set_oil_pressure_x10((int16_t)x10);
+}
 
 // ---- CAN continuous monitor: enter/exit/byte-wise feed/line-wise parse ----
 
@@ -1024,7 +1031,7 @@ static void obd_poll_task(void *arg) {
             }
         }
 
-        bool completed_obd_round = (tick_count == 9);
+        bool completed_obd_round = (tick_count == 10);
         {
         switch(tick_count)
         {
@@ -1125,6 +1132,16 @@ static void obd_poll_task(void *arg) {
             case 9:// Air-fuel ratio AFR (01 44, Commanded Equivalence Ratio)
                 elm327_ble_send_ascii_blocking("01 44\r");
                 break;
+            case 10:// Engine oil pressure (Mode 22 DID 4436, B58 absolute hPa) — physical 7E0, only for OBD-oil-pressure profiles
+                {
+                    const vehicle_profile_t *vp = vehicle_profile_get_active();
+                    if (vp && vp->has_obd_oil_pressure) {
+                        elm327_ble_send_ascii_blocking("ATSH7E0\r");
+                        elm327_ble_send_ascii_blocking("22 44 36\r");
+                        elm327_ble_send_ascii_blocking(get_vehicle_fixed_header_cmd());
+                    }
+                }
+                break;
             default:
                 break;
         }
@@ -1134,7 +1151,7 @@ static void obd_poll_task(void *arg) {
         }
 
         tick_count++;
-        if(tick_count >= 10)
+        if(tick_count >= 11)
         {
             tick_count = 0;
         }
@@ -1981,6 +1998,15 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
             if (values >= 4 && mode22 == 0x62 && s_cbs.on_parsed_oil_temp) {
                 uint32_t pid16 = (ph << 8) | pl;
 
+                // ---- Engine oil pressure (Mode 22 DID 4436, B58: absolute hPa, unsigned 16-bit) ----
+                if (pid16 == 0x4436) {
+                    if (values >= 5 && s_cbs.on_parsed_oil_pressure) {
+                        uint32_t hpa = (d0 << 8) | d1;
+                        s_cbs.on_parsed_oil_pressure(hpa);
+                    }
+                    goto oil_temp_done;
+                }
+
                 // ---- Data-driven override parsing ----
                 if (s_oil_use_override) {
                     const oil_formula_t *oil_f = (s_oil_override_idx == 0) ? s_oil_formula_pri : s_oil_formula_sec;
@@ -2195,6 +2221,7 @@ void elm327_ble_start_default(const char *target_name, const uint8_t mac[6]) {
         .on_parsed_gear = default_on_parsed_gear,
         .on_parsed_manifold_pressure = default_on_parsed_manifold_pressure,
         .on_parsed_afr = default_on_parsed_afr,
+        .on_parsed_oil_pressure = default_on_parsed_oil_pressure,
     };
     s_scan_only_mode = false;
     bool mac_set = mac && (mac[0]|mac[1]|mac[2]|mac[3]|mac[4]|mac[5]) != 0;
