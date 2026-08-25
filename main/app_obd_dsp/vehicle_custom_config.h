@@ -204,6 +204,7 @@ static const vehicle_override_t s_vehicle_overrides[] = {
         .forced_protocol = 6,
         .functional_addr = true,
         .obd_timeout     = 0x0F,
+        .poll_gap_ms     = 1,                 // BRZ PID-style 1ms slot gap for faster RPM refresh
         .has_boost       = true,
     },
     {

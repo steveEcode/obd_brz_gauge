@@ -142,6 +142,7 @@ static const vehicle_profile_t s_profiles[] = {
         .forced_protocol = 6,
         .obd_functional_addr = true,
         .obd_timeout = 0x0F,
+        .poll_gap_ms = 1,      // BRZ PID-style 1ms slot gap for faster RPM refresh
     },
     {
         // Toyota GR Supra A90 (2019+, BMW B58 3.0T / B48 2.0T, ZF 8HP51)
