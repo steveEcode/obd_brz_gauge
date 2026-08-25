@@ -144,6 +144,32 @@ static const vehicle_profile_t s_profiles[] = {
         .obd_timeout = 0x0F,
     },
     {
+        // Toyota GR Supra A90 (2019+, BMW B58 3.0T / B48 2.0T, ZF 8HP51)
+        // Mechanically the BMW CLAR platform with a BMW DME, so OBD behaves like BMW F/G: 11-bit CAN, 7DF functional.
+        // RPM path optimized like the BRZ PID profile: obd_timeout 0x0A (40ms) + poll_gap_ms 1 for a faster refresh.
+        // Engine oil temp: the B58 DME reports it via Mode 22 DID 4402 ("oil temperature after filter"),
+        // °C = raw*0.75 - 48 (2 bytes, 7E0 physical) — same as BMW G-series. Verified against bmw_pid_data/b58_pid_data.h.
+        // Alternative DIDs: 4408 ("unfiltered", °C = raw*0.1 - 273.14) and 4425 ("sump", °C = raw/10).
+        // Fallback to standard 01 5C if 4402 is unavailable. Gear/final-drive are placeholders to refine per trim.
+        .name = "Supra A90",
+        .final_drive_ratio = 2.813f,       // placeholder from BMW F/G; 3.0T Supra is ~3.15
+        .tire_rolling_radius_m = 0.330f,   // 225/45R18 placeholder
+        .gear_count = 8,                   // ZF 8HP51 8-speed
+        .gear_ratios = {0, 5.250f, 3.360f, 2.172f, 1.720f, 1.316f, 1.000f, 0.822f, 0.640f},  // ZF 8HP51
+        .gear_tolerance = 0.09f,
+        .oil_temp_strategy = {
+            .primary = OIL_TEMP_MODE_BMW_G_22_4402,  // B58 Mode 22 DID 4402: °C = raw*0.75 - 48
+            .secondary = OIL_TEMP_MODE_PID_5C,       // standard 01 5C fallback
+            .tertiary = OIL_TEMP_MODE_NONE,
+            .quaternary = OIL_TEMP_MODE_NONE,
+        },
+        .has_boost = true,                 // B58/B48 turbo
+        .forced_protocol = 6,
+        .obd_functional_addr = true,
+        .obd_timeout = 0x0A,               // BRZ PID-style 40ms (faster than BMW F/G's 0x0F)
+        .poll_gap_ms = 1,                  // BRZ PID-style 1ms polling
+    },
+    {
         // BMW G-series compatibility profile (G20/G21/G22/G80/G82, B48/B58 turbo, ZF 8HP)
         // CAN broadcast is disabled; use the same OBD-only request path as BMW F/G to keep the ELM327 loop serial.
         .name = "BMW G OBD",
@@ -269,12 +295,9 @@ static const vehicle_profile_t s_profiles[] = {
     },
     {
         // Jeep (generic placeholder; refine gear ratios/tire size once the exact model/engine/transmission is known)
-        // Confirmed via probe: standard mode 01 PIDs (RPM/speed/coolant/intake/load/TPS/voltage/MAP) all respond
-        // over 7DF functional addressing. Oil temp 01 5C is a REAL sensor here (r=1.0, not just a table lookup),
-        // so no custom override/formula is needed — the default OIL_TEMP_MODE_PID_5C strategy just works.
-        // Still unresolved in the probe: oem-mode01 (0169/016A/016C/016E/016F/01BD...), proprietary mode 22 F5xx
-        // series, and a 29-bit extended header (DA18F1, likely TCU) with mode 22 DIDs 1D07/1D08/1D09/1D12 — none
-        // mapped to a gauge yet, so no CAN rules / secondary oil formula added.
+        // Generic standard mode 01 PIDs (RPM/speed/coolant/intake/load/TPS/voltage) use the 29-bit functional
+        // broadcast 18DB33F1 (forced protocol 7), same as Honda Integra. Oil temp goes through the generic
+        // standard PID 01 5C — no manufacturer-specific CAN rules / formulas are applied.
         .name = "jeep",
         .final_drive_ratio = 3.45f,        // Generic placeholder (Wrangler JL Pentastar ballpark)
         .tire_rolling_radius_m = 0.373f,   // Generic placeholder for 245/75R17
@@ -288,9 +311,50 @@ static const vehicle_profile_t s_profiles[] = {
             .quaternary = OIL_TEMP_MODE_NONE,
         },
         .has_boost = false,                // set true if the specific engine is turbocharged (e.g. 2.0L Hurricane)
-        .forced_protocol = 6,              // ISO 15765-4 CAN 11-bit 500k
-        .obd_functional_addr = true,       // 7DF functional addressing confirmed by probe
+        .forced_protocol = 7,              // ISO 15765-4 CAN 29-bit 500k (critical: not protocol 6)
+        .obd_functional_addr = true,       // functional broadcast, not physical ECU address
+        .obd_29bit_functional = true,      // 29-bit functional broadcast address (18DB33F1, not 7DF)
         .obd_timeout = 0x0F,
+    },
+    {
+        // Honda Integra/本田形格 (2023+, 11th gen Civic Si platform, L15C7 1.5T CVT)
+        // This vehicle uses 29-bit CAN extended addressing for ALL OBD communications, including standard mode 01 PIDs.
+        // Functional broadcast address is 18DB33F1 (not the typical 11-bit 7DF). Confirmed via real-world scan and
+        // autosportlabs forum (https://forum.autosportlabs.com/viewtopic.php?t=4671): "Hondas need 29-bit extended
+        // IDs for basic MODE $01 PIDs. Rather than a traditional 11-bit 0x7DF broadcast, it needs an extended 29-bit
+        // 0x18DB33F1 broadcast".
+        //
+        // Probing via fake_elm327.py with Car Scanner's Honda profile confirmed that under header 18DB33F1, several
+        // mode 22 UDS DIDs successfully mapped to gauges (RPM/speed/coolant temp/fuel rail pressure), while standard
+        // mode 01 PIDs were NOT tested in that specific scan (the CSV contained only proprietary mode 22 requests).
+        // This profile attempts standard mode 01 first under the 29-bit functional header; if those don't respond,
+        // the vehicle will need a custom override table mapping mode 22 DIDs (22 F40C→RPM, 22 F40D→speed, etc.).
+        //
+        // Oil temperature: non-Type R Integra/Civic models do NOT have a physical oil temp sensor (per IntegraForums
+        // discussion); the Type R's oil temp is calculated, not a direct sensor reading. Standard PID 01 5C will be
+        // attempted as primary strategy, but it may return NO DATA or a placeholder/calculated value. If it fails
+        // consistently, user can manually switch to a different vehicle profile or we add a custom mode 22 fallback.
+        //
+        // Gear ratios: placeholder values for a generic CVT (continuously variable, no discrete gears). Ratio-based
+        // gear detection is disabled (gear_count=0). If the actual transmission reports gear position via CAN or a
+        // mode 22 DID, a custom override can be added later.
+        .name = "Honda Integra",
+        .final_drive_ratio = 4.438f,       // L15C7 CVT final drive (approximation from 11th gen Civic CVT specs)
+        .tire_rolling_radius_m = 0.325f,   // 215/50R17 or 215/55R16 depending on trim; this is a mid-range estimate
+        .gear_count = 0,                   // CVT has no discrete gears; disable ratio-based gear detection
+        .gear_ratios = {0},
+        .gear_tolerance = 0.0f,
+        .oil_temp_strategy = {
+            .primary = OIL_TEMP_MODE_PID_5C,        // attempt standard PID first; may not be a real sensor
+            .secondary = OIL_TEMP_MODE_NONE,
+            .tertiary = OIL_TEMP_MODE_NONE,
+            .quaternary = OIL_TEMP_MODE_NONE,
+        },
+        .has_boost = true,                 // L15C7 is turbocharged; boost pressure via standard 01 0B
+        .forced_protocol = 7,              // ISO 15765-4 CAN 29-bit 500k (critical: not protocol 6)
+        .obd_functional_addr = true,       // use functional broadcast, not physical ECU address
+        .obd_29bit_functional = true,      // 29-bit functional broadcast address (18DB33F1, not 7DF)
+        .obd_timeout = 0x19,               // default timeout; adjust if responses are slow
     },
 };
 

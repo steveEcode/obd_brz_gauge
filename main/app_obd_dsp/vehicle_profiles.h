@@ -59,6 +59,7 @@ typedef struct {
     bool has_boost;                      // whether turbocharged (decides whether to query/display boost pressure)
     uint8_t forced_protocol;             // forced ELM327 protocol number (ATSP), 0=auto-detect; lock to 6 for cars like BMW where auto-detect is unstable
     bool obd_functional_addr;            // true=standard PIDs use functional addressing (ATSH 7DF, same as phone apps); false=physical addressing (ATSH 7E0, Subaru etc.)
+    bool obd_29bit_functional;           // true=29-bit CAN functional broadcast (ATSH 18DB33F1) for standard PIDs; only valid when obd_functional_addr=true and forced_protocol=7/9; Honda Integra/Civic 11th gen need this
     float speed_scale;                   // speed correction factor (read value × this factor), 0 or unset = 1.0 (no correction)
     uint8_t obd_timeout;                 // ATST timeout value (ELM327 units, 0=default 0x19); for BMW G OBD fast responses, set 0x0F to reduce NO DATA waits
     uint8_t poll_gap_ms;                 // poll slot interval (ms), 0=use the default OBD_POLL_SLOT_GAP_MS(30ms)

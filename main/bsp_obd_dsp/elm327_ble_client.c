@@ -200,7 +200,12 @@ static inline uint8_t oil_mode_to_poll_idx(oil_temp_query_mode_t mode) {
 static const char *get_vehicle_fixed_header_cmd(void) {
     const vehicle_profile_t *vp = vehicle_profile_get_active();
     if (vp && vp->obd_functional_addr) {
-        return "ATSH7DF\r"; // functional addressing (vehicle-wide broadcast), same as phone apps; BMW needs this, otherwise physical 7E0 may not respond
+        // 29-bit CAN functional broadcast (Honda Integra/Civic 11th gen and similar vehicles)
+        if (vp->obd_29bit_functional) {
+            return "ATSH18DB33F1\r";
+        }
+        // 11-bit functional addressing (vehicle-wide broadcast), same as phone apps; BMW needs this
+        return "ATSH7DF\r";
     }
     return "ATSH7E0\r";     // physical addressing to the engine ECU; Subaru/default
 }
