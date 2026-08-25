@@ -7,3 +7,5 @@ sdkconfig
 .DS_Store
 **/.DS_Store
 main/SAX0AC BC CC.pdf
+__pycache__/
+*.pyc

@@ -9,9 +9,13 @@ fake_elm327.py — 假装自己是 WiFi ELM327 的 TCP 服务器。
 这样 app 不会把 PID 标记为不支持，会继续把 profile 里的全套私有 PID 都问一遍。
 
 用法:
-    python3 fake_elm327.py                          # 监听 0.0.0.0:35000
-    python3 fake_elm327.py --vin WVWZZZAUZJW123456  # 指定 VIN 触发车型自动识别
+    python3 fake_elm327.py                          # 监听 0.0.0.0:35000，VIN 每次随机
+    python3 fake_elm327.py --vin WVWZZZAUZJW123456  # 固定 VIN（复测同一台"车"用）
     python3 fake_elm327.py --port 35000 -v          # 实时打印每一条
+
+注意：VIN 默认每次启动随机生成。Car Scanner 常按 VIN 缓存"这台车都有哪些传感器"，
+固定 VIN 会导致第二次连上时它直接复用上次扫过的列表、不再重新发现，看起来就像
+"跑一次就不请求数据了"。随机 VIN 能让每次重连都触发一次完整的重新扫描。
 
 然后手机 Car Scanner:
     Settings → Connection → WiFi → IP = 本机局域网 IP, Port = 35000
@@ -33,6 +37,16 @@ import threading
 import time
 from collections import OrderedDict
 from datetime import datetime
+
+VIN_CHARS = "ABCDEFGHJKLMNPRSTUVWXYZ0123456789"  # VIN 规范不含 I/O/Q，避免跟 1/0 混淆
+
+
+def random_vin():
+    """每次启动生成一个不同的假 VIN，让 Car Scanner 把这当成"新车"，重新跑一遍完整扫描
+    （而不是复用上次同一个 VIN 缓存下来的传感器列表）。"""
+    rnd = Random()
+    return "".join(rnd.choice(VIN_CHARS) for _ in range(17))
+
 
 # ----------------------------------------------------------------------------
 # 全局记录
@@ -110,10 +124,11 @@ def probe_bytes(cfg, header, req, n, seed=0):
 
     if cfg.probe == "prbs":
         tick = int(el / cfg.tick)
-        # 每个请求一条独立序列：种子里同时混入请求编号和 tick
+        # 每个请求一条独立序列：种子里混入请求编号和 tick。
+        # 每个字节独立随机 —— 一次采集同时满足「识别」(序列配对) 和
+        # 「公式」(多元回归)，不用再跑第二遍 basis。
         rnd = Random((idx * 2654435761) ^ (tick * 40503) ^ 0x5BF03635)
-        v = rnd.randrange(0x08, 0xF8)
-        out = [v] * n
+        out = [rnd.randrange(0x08, 0xF8) for _ in range(n)]
         slot = tick
     else:  # basis
         # 只让一个字节动，而且每次注入都换一个新的随机值。
@@ -168,23 +183,33 @@ def hexjoin(byts, spaces):
 
 
 def resp_header_for(req_hdr):
-    """请求 header -> 响应 header。7DF/7E0->7E8, 7E1->7E9 ... 29bit 也处理。"""
-    try:
-        h = int(req_hdr, 16)
-    except ValueError:
+    """请求 header -> 响应 header。7DF/7E0->7E8, 7E1->7E9 ... 29bit 也处理。
+
+    29-bit 除了完整 8 位（18DAxxF1 / 18DB33F1）外，不少 app（例如 Car Scanner 的
+    本田 profile）只发 6 位缩写形式（DAxxF1 / DB33F1），省掉优先级字节 18 —— 适配器
+    没收到 ATCP 时默认优先级本来就是 18，缩写形式等价于补上 18 的完整头。之前这里只认
+    8 位的完整形式，6 位缩写落到最后的 "return req_hdr"，把请求头原样当响应头传回去；
+    app 按标准 29-bit 响应规则（source/target 互换）过滤帧，收到没变过的请求头认不出来，
+    表现就是这类车每条私有 PID 都解不出来（比如本田 22 2612 @DA10F1 这种按 ECU 分的请求）。
+    """
+    hu = req_hdr.upper().strip()
+    if hu in ("7DF", ""):
         return "7E8"
-    if req_hdr.upper() in ("7DF", ""):
-        return "7E8"
-    if len(req_hdr) <= 3:                 # 11-bit
+    if len(hu) <= 3:                      # 11-bit
+        try:
+            h = int(hu, 16)
+        except ValueError:
+            return "7E8"
         if 0x7E0 <= h <= 0x7E7:
             return "%03X" % (h + 8)
-        return "%03X" % (h + 8 & 0x7FF)
-    # 29-bit: 18DB33F1 / 18DAxxF1 -> 18DAF1xx
-    if len(req_hdr) == 8:
-        tgt = (h >> 8) & 0xFF
-        if tgt == 0x33:
-            tgt = 0x10
-        return "18DAF1%02X" % tgt
+        return "%03X" % ((h + 8) & 0x7FF)
+    # 29-bit：完整 8 位（18DAxxF1/18DB33F1）和缩写 6 位（DAxxF1/DB33F1）统一按末 6 位处理
+    body = hu[-6:]
+    if len(body) == 6 and all(ch in "0123456789ABCDEF" for ch in body):
+        tgt = body[2:4]
+        if tgt == "33":
+            tgt = "10"
+        return "18DAF1" + tgt
     return req_hdr
 
 
@@ -229,6 +254,30 @@ def format_response(payload, req_hdr, headers_on, spaces_on):
 # 会话状态 + 命令处理
 # ----------------------------------------------------------------------------
 
+# 只有 7/9/A 是 29-bit（6/8 仍是 11-bit），之前这里把 8 也当成 29-bit 处理是错的，
+# 会导致协议 8 场景下 header 被错误切到 29-bit 格式。
+PROTO_DEFAULT_HEADER = {
+    "7": "18DB33F1",   # ISO 15765-4 CAN 29-bit 500k
+    "9": "18DB33F1",   # ISO 15765-4 CAN 29-bit 250k
+    "A": "18DB33F1",   # SAE J1939 CAN 29-bit 250k
+}
+
+PROTO_DESC = {
+    "1": "SAE J1850 PWM",
+    "2": "SAE J1850 VPW",
+    "3": "ISO 9141-2",
+    "4": "ISO 14230-4 (KWP 5BAUD)",
+    "5": "ISO 14230-4 (KWP FAST)",
+    "6": "ISO 15765-4 (CAN 11/500)",
+    "7": "ISO 15765-4 (CAN 29/500)",
+    "8": "ISO 15765-4 (CAN 11/250)",
+    "9": "ISO 15765-4 (CAN 29/250)",
+    "A": "SAE J1939 (CAN 29/250)",
+    "B": "USER1 CAN (11/125)",
+    "C": "USER2 CAN (11/50)",
+}
+
+
 class Session:
     def __init__(self, cfg):
         self.cfg = cfg
@@ -237,6 +286,7 @@ class Session:
         self.spaces = True
         self.linefeed = False
         self.header = "7DF"
+        self.header_explicit = False  # app 是否发过 ATSH（发过就不再跟协议自动联动）
         self.proto = "6"
         self.reset()
 
@@ -245,6 +295,7 @@ class Session:
         self.headers = False
         self.spaces = True
         self.header = "7DF"
+        self.header_explicit = False
 
 
 def handle_at(sess, cmd):
@@ -264,7 +315,11 @@ def handle_at(sess, cmd):
     if c == "DPN":
         return sess.proto + "\r", True
     if c == "DP":
-        return "ISO 15765-4 (CAN 11/500)\r", True
+        # 之前这里无论实际协议是什么都硬编码回 "CAN 11/500"。app 切到 29-bit
+        # 协议（ATSP7 等）后如果调用 ATDP 核对当前协议，会看到跟自己设置的不
+        # 一致，可能触发它自己的重连/重新握手逻辑。这里按 sess.proto 给出对应
+        # 描述文本，跟真实 ELM327 行为一致。
+        return PROTO_DESC.get(sess.proto, "ISO 15765-4 (CAN 11/500)") + "\r", True
     if c.startswith("E"):
         sess.echo = c.endswith("1")
         return "OK\r", True
@@ -279,11 +334,20 @@ def handle_at(sess, cmd):
         return "OK\r", True
     if c.startswith("SH"):
         sess.header = c[2:].strip()
+        sess.header_explicit = True   # app 自己设过 header，后面切协议不再覆盖它
         return "OK\r", True
     if c.startswith("SP"):
         p = c[2:].strip().lstrip("A")
         if p and p != "0":
             sess.proto = p
+            # 真实 ELM327 切到 29-bit 协议（7/8/9/A）时，默认 header 会自动变成
+            # 29-bit 的功能广播地址 18DB33F1，不需要 app 额外发 ATSH。很多 app
+            # （包括 Car Scanner）选中"CAN 29bit"协议预设后确实不发 ATSH，直接
+            # 假设适配器已经切好了默认 header —— 之前这里没跟着联动，header 停
+            # 留在 11-bit 的 "7DF"，响应也按 11-bit 格式回，导致 app 认不出来、
+            # 表现为连不上/收不到数据。只在 app 没自己显式设置过 header 时才自动切换。
+            if not sess.header_explicit:
+                sess.header = PROTO_DEFAULT_HEADER.get(p, "7DF")
         return "OK\r", True
     if c.startswith("TP"):
         return "OK\r", True
@@ -303,14 +367,26 @@ def build_obd_response(sess, req, cfg):
     mode = data[0]
 
     # ---- mode 01：当前数据 ----
+    # Car Scanner 在"全传感器"页经常把多个 PID 打包进一条请求（如 010C0D0B0411），
+    # 省轮询次数。真实 ELM327/ECU 会对每个 PID 各回一段 "41 xx ..."，多帧拼接返回。
+    # 之前这里只取了 data[1] 一个 PID，打包请求里剩下的 PID 全部没有回应 —— 表现就是
+    # 页面上大部分仪表拿不到新数据、卡死不动。这里改成逐个 PID 都回应。
     if mode == 0x01 and len(data) >= 2:
-        pid = data[1]
-        if pid % 0x20 == 0:                       # 支持位图
-            if pid >= 0xC0:
-                return [0x41, pid, 0xFF, 0xFF, 0xFF, 0xFE]
-            return [0x41, pid, 0xFF, 0xFF, 0xFF, 0xFF]
-        n = MODE01_LEN.get(pid, cfg.default_len)
-        return [0x41, pid] + probe_bytes(cfg, sess.header, req, n, pid)
+        out = []
+        for pid in data[1:]:
+            if pid % 0x20 == 0:                   # 支持位图
+                if pid >= 0xC0:
+                    out += [0x41, pid, 0xFF, 0xFF, 0xFF, 0xFE]
+                else:
+                    out += [0x41, pid, 0xFF, 0xFF, 0xFF, 0xFF]
+                continue
+            n = MODE01_LEN.get(pid, cfg.default_len)
+            # 探测用单 PID 规范请求串（而不是整条打包请求）做 key，
+            # 这样每个 PID 的注入序列独立、且和 analyze_probe.py 期望的
+            # "010C" 这类单 PID 请求格式对得上。
+            single_req = "%02X%02X" % (mode, pid)
+            out += [0x41, pid] + probe_bytes(cfg, sess.header, single_req, n, pid)
+        return out
 
     # ---- mode 09：车辆信息 ----
     if mode == 0x09 and len(data) >= 2:
@@ -336,16 +412,28 @@ def build_obd_response(sess, req, cfg):
         return [0x44]
 
     # ---- mode 22 (UDS ReadDataByIdentifier)：厂家私有的主战场 ----
+    # 跟 mode 01 一样，真实 UDS 请求也可以在一条 22 里打包多个 2 字节 DID
+    # （如 22 F190 F18C），ECU 对每个 DID 各回一段 "62 xx xx ..." 拼接返回。
+    # 逐个 DID 处理，而不是只看前一个。
     if mode == 0x22 and len(data) >= 3:
-        did = list(data[1:3])
-        # F190 = VIN (UDS)
-        if did == [0xF1, 0x90]:
-            return [0x62, 0xF1, 0x90] + list(cfg.vin.encode())
-        if did == [0xF1, 0x8C]:
-            return [0x62, 0xF1, 0x8C] + list(b"SN0000000001")
-        if did == [0xF1, 0x87]:
-            return [0x62, 0xF1, 0x87] + list(b"PN000000")
-        return [0x62] + did + probe_bytes(cfg, sess.header, req, cfg.default_len, did[1])
+        out = []
+        i = 1
+        while i + 1 < len(data):
+            did = [data[i], data[i + 1]]
+            i += 2
+            # F190 = VIN (UDS)
+            if did == [0xF1, 0x90]:
+                out += [0x62, 0xF1, 0x90] + list(cfg.vin.encode())
+                continue
+            if did == [0xF1, 0x8C]:
+                out += [0x62, 0xF1, 0x8C] + list(b"SN0000000001")
+                continue
+            if did == [0xF1, 0x87]:
+                out += [0x62, 0xF1, 0x87] + list(b"PN000000")
+                continue
+            single_req = "%02X%02X%02X" % (mode, did[0], did[1])
+            out += [0x62] + did + probe_bytes(cfg, sess.header, single_req, cfg.default_len, did[1])
+        return out
 
     # ---- mode 21 (丰田/斯巴鲁常用的 KWP ReadDataByLocalId) ----
     if mode == 0x21 and len(data) >= 2:
@@ -535,7 +623,9 @@ def serve(cfg):
 
 def dump(outdir):
     if not LOG_ROWS:
-        print("没有记录到任何请求。")
+        print("没有记录到任何请求（手机没连上，或没发 OBD 请求）。")
+        print("检查：手机和电脑同一 WiFi；Car Scanner 里 IP/端口填对（默认 35000）；")
+        print("     连上后要选车型、打开仪表页并开始记录。")
         return
 
     os.makedirs(outdir, exist_ok=True)
@@ -567,7 +657,7 @@ def dump(outdir):
             w.writerows(PROBE_LOG)
         print(f"\n探测日志: {plog}  ({len(PROBE_LOG)} 条注入记录，"
               f"{len(PROBE_IDX)} 个不同请求)")
-        print("  下一步: python3 analyze_probe.py identify "
+        print("  下一步(一键出结果): python3 analyze_probe.py auto "
               f"--probe {plog} --app <CarScanner导出的.csv>")
 
     obd = [(h, r, c) for (h, r), c in SEEN.items() if not r.startswith("AT")]
@@ -607,8 +697,9 @@ def main():
     p = argparse.ArgumentParser(description="伪 ELM327 WiFi 服务器，抓取 app 发出的所有请求")
     p.add_argument("--host", default="0.0.0.0")
     p.add_argument("--port", type=int, default=35000)
-    p.add_argument("--vin", default="WVWZZZAUZJW123456",
-                   help="返回给 app 的 VIN，决定它自动识别成哪台车")
+    p.add_argument("--vin", default=None,
+                   help="返回给 app 的 VIN，决定它自动识别成哪台车"
+                        "（默认每次启动随机生成一个，逼 Car Scanner 当新车重新扫描）")
     p.add_argument("--calid", default="CALID0000000001")
     p.add_argument("--default-len", type=int, default=4,
                    help="未知 PID 返回几个数据字节（默认 4）")
@@ -634,6 +725,8 @@ def main():
     p.add_argument("-v", "--verbose", action="store_true", help="打印每一条请求")
     cfg = p.parse_args()
     VERBOSE = cfg.verbose
+    if cfg.vin is None:
+        cfg.vin = random_vin()
 
     # 开工前先确认端口上没有别人（尤其是自己的僵尸进程）
     probe = socket.socket()
@@ -667,14 +760,16 @@ def main():
     print(f"""
   伪 ELM327 已启动  ->  {cfg.host}:{cfg.port}   (pid {os.getpid()})
   本机局域网 IP     ->  {ip}
+  本次 VIN          ->  {cfg.vin}  (每次启动随机，逼 app 当新车重新扫描)
 
   Car Scanner 设置：Settings → Connection → WiFi
       IP   = {ip}
       Port = {cfg.port}
   （手机和本机要在同一个 WiFi 下）
 
-  连上后：手动选一个车型 profile，打开所有仪表页，跑一次 full scan。
-  Ctrl-C 结束并导出 CSV。
+  连上后：手动选一个车型 profile → 打开所有仪表页 → 开始记录。
+  录 10~15 分钟 → 导出 CSV（只需录这一遍）。
+  然后：python3 analyze_probe.py auto --probe probe_log_*.csv --app 导出的.csv
 """)
     if cfg.selftest:
         threading.Thread(target=selftest, args=(cfg.port,), daemon=True).start()

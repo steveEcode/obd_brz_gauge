@@ -148,6 +148,55 @@ STD_PIDS = {
     0xA6: ("Odometer", 4, "(A*16777216+B*65536+C*256+D)/10", "km"),
 }
 
+# 标准 PID 的中文名（常用子集）。报告输出时优先用它给出「具体含义」。
+STD_PIDS_CN = {
+    0x04: "发动机负荷", 0x05: "水温", 0x0B: "进气歧管压力",
+    0x0C: "转速", 0x0D: "车速", 0x0F: "进气温度", 0x10: "空气流量",
+    0x11: "节气门开度", 0x1F: "运行时间", 0x2F: "油箱液位",
+    0x33: "大气压力", 0x42: "模块电压", 0x45: "相对节气门",
+    0x46: "环境温度", 0x47: "节气门B", 0x48: "节气门C",
+    0x49: "油门踏板D", 0x4A: "油门踏板E", 0x4B: "油门踏板F",
+    0x4C: "目标节气门", 0x5A: "相对油门", 0x5C: "机油温度",
+    0x5E: "油耗率", 0x61: "需求扭矩", 0x62: "实际扭矩",
+    0x63: "参考扭矩", 0xA6: "里程",
+}
+
+# Car Scanner 导出的英文传感器名 -> 中文含义（关键词按顺序匹配，specific 在前）。
+TERM_CN = [
+    ("coolant", "水温"), ("engine speed", "转速"), ("rpm", "转速"),
+    ("vehicle speed", "车速"), ("wheel speed", "轮速"), ("speed", "车速"),
+    ("oil temp", "机油温度"), ("oil temperature", "机油温度"),
+    ("transmission", "变速箱"), ("gear", "挡位"),
+    ("intake air", "进气温度"), ("intake", "进气"), ("ambient", "环境温度"),
+    ("throttle", "节气门"), ("accelerator", "油门"), ("pedal", "踏板"),
+    ("boost", "增压压力"), ("manifold", "歧管压力"),
+    ("lambda", "空燃比"), ("afr", "空燃比"), ("fuel", "燃油"),
+    ("timing", "点火正时"), ("knock", "爆震"), ("ignition", "点火"),
+    ("voltage", "电压"), ("battery", "电瓶电压"), ("torque", "扭矩"),
+    ("turbo", "涡轮"), ("egt", "排气温度"), ("exhaust", "排气温度"),
+    ("cat", "催化器"), ("load", "负荷"), ("pressure", "压力"),
+    ("temp", "温度"), ("temperature", "温度"),
+]
+
+
+def translate_cn(name, pid_hex=None):
+    """给一个 PID/sensor 名，尽力给出中文含义。
+    优先查标准 PID 中文表（pid_hex 命中时），否则对名字做关键词翻译。"""
+    if pid_hex:
+        try:
+            p = int(pid_hex, 16)
+        except ValueError:
+            p = None
+        if p in STD_PIDS_CN:
+            return STD_PIDS_CN[p]
+    if name:
+        low = name.lower()
+        for key, cn in TERM_CN:
+            if key in low:
+                return cn
+    return ""
+
+
 MODE09_PIDS = {
     0x00: "Supported PIDs", 0x02: "VIN", 0x04: "Calibration ID",
     0x06: "Calibration verification numbers", 0x08: "In-use performance tracking",
@@ -334,6 +383,7 @@ def load_probe_csv(path):
     for n in ["time", "slot", "header", "request", "byte0", "nbytes"]:
         if n not in ix:
             sys.exit(f"{path} 缺列 {n}，这不是 fake_elm327.py 产出的探测日志")
+    has_hex = "hex" in ix
     by_key = defaultdict(list)
     total = 0
     for r in rows[1:]:
@@ -345,6 +395,13 @@ def load_probe_csv(path):
             "byte0": int(r[ix["byte0"]]),
             "n": int(r[ix["nbytes"]]),
         }
+        e["bytes"] = None
+        if has_hex and r[ix["hex"]]:
+            hx = r[ix["hex"]].strip()
+            try:
+                e["bytes"] = [int(hx[i:i + 2], 16) for i in range(0, len(hx), 2)]
+            except ValueError:
+                pass
         by_key[(r[ix["header"]], r[ix["request"]])].append(e)
         total += 1
     for k in by_key:
@@ -608,6 +665,54 @@ def robust_fit(xs, ys):
     return slope, inter, r2, len(xs)
 
 
+def solve_linear(A, b):
+    """高斯消元解 A x = b（纯标准库）。返回解列表，奇异/病态时返回 None。"""
+    n = len(b)
+    M = [list(row) + [b[i]] for i, row in enumerate(A)]
+    for col in range(n):
+        piv = max(range(col, n), key=lambda r: abs(M[r][col]))
+        if abs(M[piv][col]) < 1e-12:
+            return None
+        if piv != col:
+            M[col], M[piv] = M[piv], M[col]
+        pv = M[col][col]
+        M[col] = [v / pv for v in M[col]]
+        for r in range(n):
+            if r != col and M[r][col] != 0.0:
+                f = M[r][col]
+                M[r] = [M[r][c] - f * M[col][c] for c in range(n + 1)]
+    return [M[i][n] for i in range(n)]
+
+
+def multi_linear_fit(X, y):
+    """多元线性回归 y = b0 + b1*x1 + ... + bp*xp（正规方程，纯标准库）。
+    X 是样本列表，每个样本是 [x1..xp]；返回 (beta, r2, n)，beta[0] 为截距。"""
+    n = len(X)
+    p = len(X[0]) if n else 0
+    if n < p + 2:                        # 样本数要盖过未知数（含截距）
+        return None
+    m = p + 1
+    A = [[0.0] * m for _ in range(m)]
+    b = [0.0] * m
+    for row, yi in zip(X, y):
+        xi = [1.0] + list(row)
+        for i in range(m):
+            b[i] += xi[i] * yi
+            for j in range(m):
+                A[i][j] += xi[i] * xi[j]
+    beta = solve_linear(A, b)
+    if beta is None:
+        return None
+    ym = sum(y) / n
+    ss_tot = sum((yi - ym) ** 2 for yi in y)
+    ss_res = 0.0
+    for row, yi in zip(X, y):
+        pred = beta[0] + sum(beta[i + 1] * row[i] for i in range(p))
+        ss_res += (yi - pred) ** 2
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 1e-12 else 1.0
+    return beta, r2, n
+
+
 def lag_from_mapping(by_key, app, mapping, max_pairs=24):
     """已知 sensor<->key 对应时，用回归拟合优度扫出时间偏移。
     比事件序列互相关可靠得多 —— 后者在均匀轮询下没有峰。"""
@@ -693,61 +798,83 @@ def cmd_formula(a):
         ev = by_key[key]
         vs = app[sensor][1]
         nbytes = ev[0]["n"]
-        slots = [e["slot"] for e in ev]
-        injv = [e["byte0"] for e in ev]
 
         ts = app[sensor][0]
         tol = median_gap(ev) * 2.5
         pairs = assign_by_time(ev, ts, vs, LAG, tol)
 
-        g = defaultdict(lambda: ([], []))
-        if len(pairs) >= MIN_POINTS:
-            g = group_pairs(pairs)
-        else:
-            # 时间轴对不上时退回序列配对
-            slots = [e["slot"] for e in ev]
-            injv = [e["byte0"] for e in ev]
-            best_sh, best_score = 0, -1.0
-            for sh in range(-a.max_shift, a.max_shift + 1):
-                gg = defaultdict(lambda: ([], []))
-                for i in range(len(vs)):
-                    j = i + sh
-                    if 0 <= j < len(slots):
-                        gg[slots[j]][0].append(injv[j])
-                        gg[slots[j]][1].append(vs[i])
-                sc = 0.0
-                for slot, (xs, ys) in gg.items():
-                    if slot == 0 or len(xs) < 4:
-                        continue
-                    r, _ = pearson(xs + xs, ys + ys)
-                    sc += r * r * len(xs)
-                if sc > best_score:
-                    best_score, best_sh = sc, sh
-            for i in range(len(vs)):
-                j = i + best_sh
-                if 0 <= j < len(slots):
-                    g[slots[j]][0].append(injv[j])
-                    g[slots[j]][1].append(vs[i])
-
-        base = statistics.median(g[0][1]) if 0 in g and g[0][1] else None
-
         coeffs = [None] * nbytes
         r2s = []
         intercepts = []
-        for k in range(nbytes):
-            xs, ys = g.get(k + 1, ([], []))
-            f = robust_fit(xs, ys)
-            if f is None:
-                continue
-            slope, inter, r2, used = f
-            if r2 < a.min_r2:
-                continue                      # 拟合太差，宁可留空也不给错答案
-            coeffs[k] = round(slope, 8)
-            intercepts.append(inter)
-            if abs(slope) > 1e-9:
-                r2s.append(r2)
-        if base is None:
-            base = statistics.median(intercepts) if intercepts else 0.0
+        base = None
+
+        # ---- 首选：多元回归，一次解出每个字节的系数 ----
+        # prbs 独立随机注入（或 basis 逐字节激活）都能直接回归。
+        X, Y = [], []
+        for e, val in pairs:
+            bs = e.get("bytes")
+            if bs is not None and len(bs) >= nbytes:
+                X.append(bs[:nbytes])
+                Y.append(val)
+        if len(X) >= max(MIN_POINTS, nbytes + 2):
+            mf = multi_linear_fit(X, Y)
+            if mf and mf[1] >= a.min_r2:
+                beta = mf[0]
+                base = beta[0]
+                for k in range(nbytes):
+                    if abs(beta[k + 1]) >= 1e-9:
+                        coeffs[k] = round(beta[k + 1], 8)
+                r2s = [mf[1]]
+                intercepts = [beta[0]]
+
+        # ---- 退回：单字节回归（老探测日志没有完整字节列时） ----
+        if not any(c for c in coeffs):
+            g = defaultdict(lambda: ([], []))
+            if len(pairs) >= MIN_POINTS:
+                g = group_pairs(pairs)
+            else:
+                # 时间轴对不上时退回序列配对
+                slots = [e["slot"] for e in ev]
+                injv = [e["byte0"] for e in ev]
+                best_sh, best_score = 0, -1.0
+                for sh in range(-a.max_shift, a.max_shift + 1):
+                    gg = defaultdict(lambda: ([], []))
+                    for i in range(len(vs)):
+                        j = i + sh
+                        if 0 <= j < len(slots):
+                            gg[slots[j]][0].append(injv[j])
+                            gg[slots[j]][1].append(vs[i])
+                    sc = 0.0
+                    for slot, (xs, ys) in gg.items():
+                        if slot == 0 or len(xs) < 4:
+                            continue
+                        r, _ = pearson(xs + xs, ys + ys)
+                        sc += r * r * len(xs)
+                    if sc > best_score:
+                        best_score, best_sh = sc, sh
+                for i in range(len(vs)):
+                    j = i + best_sh
+                    if 0 <= j < len(slots):
+                        g[slots[j]][0].append(injv[j])
+                        g[slots[j]][1].append(vs[i])
+
+            base2 = statistics.median(g[0][1]) if 0 in g and g[0][1] else None
+            coeffs = [None] * nbytes
+            r2s = []
+            intercepts = []
+            for k in range(nbytes):
+                xs, ys = g.get(k + 1, ([], []))
+                f = robust_fit(xs, ys)
+                if f is None:
+                    continue
+                slope, inter, r2, used = f
+                if r2 < a.min_r2:
+                    continue                      # 拟合太差，宁可留空也不给错答案
+                coeffs[k] = round(slope, 8)
+                intercepts.append(inter)
+                if abs(slope) > 1e-9:
+                    r2s.append(r2)
+            base = base2 if base2 is not None else (statistics.median(intercepts) if intercepts else 0.0)
 
         if not any(c for c in coeffs):
             continue
@@ -890,6 +1017,9 @@ def cmd_report(a):
                 row["unit"] = ""
                 row["note"] = "私有 PID" + ("" if sensor else "，且未对上任何仪表")
                 stats["待解"] += 1
+            # 统一补中文含义：标准 PID 按 pid 查表，其余对 sensor 名做关键词翻译
+            row["name_cn"] = translate_cn(
+                row["name"], pid if row["source"] == "standard" else None)
             out_rows.append(row)
 
     def sortkey(x):
@@ -898,8 +1028,8 @@ def cmd_report(a):
     out_rows.sort(key=sortkey)
 
     out = a.out or "pids_full.csv"
-    fields = ["source", "header", "mode", "pid", "request", "name", "sensor",
-              "formula", "unit", "r", "count", "note"]
+    fields = ["source", "header", "mode", "pid", "request", "name", "name_cn",
+              "sensor", "formula", "unit", "r", "count", "note"]
     with open(out, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fields)
         w.writeheader()
@@ -915,8 +1045,10 @@ def cmd_report(a):
                      "oem-mode01": "厂家扩展 mode 01（待解）",
                      "proprietary": "私有 PID（待解）"}.get(cur, cur)
             print(f"\n--- {label} ---")
+        cn = x.get("name_cn", "")
         nm = x["name"] or x["sensor"] or "?"
-        print(f"  {x['header']:<9} {x['request']:<12} {nm[:36]:<36} "
+        disp = f"{cn}/{nm}" if cn else nm
+        print(f"  {x['header']:<9} {x['request']:<12} {disp[:36]:<36} "
               f"{x['formula'][:26]:<26} {x['unit']}")
     print(f"\n{'='*104}")
     for k in ("standard", "derived", "待解"):
@@ -926,6 +1058,41 @@ def cmd_report(a):
     if stats["待解"]:
         print(f"\n还有 {stats['待解']} 条没解出来。跑一轮 --probe basis 再执行 "
               f"formula，然后把 --formulas 传进来重新 report。")
+
+
+# ----------------------------------------------------------------------------
+# auto：一条命令走完 identify → formula → report
+# ----------------------------------------------------------------------------
+
+def cmd_auto(a):
+    from types import SimpleNamespace
+    import glob as _glob
+
+    print("=" * 78)
+    print("auto：identify → formula → report 一条龙")
+    print("=" * 78)
+
+    map_out, frm_out = "mapping.csv", "formulas.csv"
+
+    cmd_identify(SimpleNamespace(probe=a.probe, app=a.app, out=map_out,
+                                 min_r=a.min_r, max_shift=a.max_shift))
+
+    cmd_formula(SimpleNamespace(probe=a.probe, app=a.app, map=map_out,
+                                out=frm_out, max_shift=a.max_shift,
+                                min_r2=a.min_r2, all=a.all))
+
+    if a.pids:
+        pids_file = a.pids
+    else:
+        cands = sorted(_glob.glob("elm_pids_*.csv"))
+        if not cands:
+            sys.exit("找不到 elm_pids_*.csv，请用 --pids 指定 fake_elm327.py 导出的请求清单")
+        pids_file = cands[-1]
+        print(f"自动选择请求清单: {pids_file}")
+
+    cmd_report(SimpleNamespace(pids=pids_file, map=map_out,
+                               formulas=frm_out, out=a.out))
+    print(f"\n✅ 全部完成。最终清单: {a.out}（mapping.csv / formulas.csv 是中间产物，可删）")
 
 
 # ----------------------------------------------------------------------------
@@ -962,6 +1129,17 @@ def main():
     rp.add_argument("--formulas", help="formula 产出的 formulas.csv（可选）")
     rp.add_argument("--out", help="输出，默认 pids_full.csv")
     rp.set_defaults(func=cmd_report)
+
+    au = sub.add_parser("auto", help="一键：identify+formula+report（配合 prbs 只录一遍）")
+    au.add_argument("--probe", required=True, help="fake_elm327.py 产出的 probe_log_*.csv")
+    au.add_argument("--app", required=True, help="Car Scanner 导出的记录 CSV")
+    au.add_argument("--pids", help="fake_elm327.py 的 elm_pids_*.csv；不填自动找最新")
+    au.add_argument("--out", default="pids_full.csv", help="最终输出，默认 pids_full.csv")
+    au.add_argument("--min-r", type=float, default=0.9)
+    au.add_argument("--max-shift", type=int, default=6)
+    au.add_argument("--min-r2", type=float, default=0.98)
+    au.add_argument("--all", action="store_true", help="标准 PID 也倒推一遍做交叉验证")
+    au.set_defaults(func=cmd_auto)
 
     a = p.parse_args()
     a.func(a)
