@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0",
+  "theme": {
+    "id": "boost_oil_example",
+    "name": "TURBO PRO",
+    "version": "1.0.0",
+    "author": "example",
+    "description": "Example boost + oil pressure theme with custom layout"
+  },
+  "compatibility": {
+    "min_firmware": "1.2.0",
+    "max_firmware": "2.x.x"
+  },
+  "colors": {
+    "bg": "0x0A0A0A",
+    "ring": "0xFF6B00",
+    "arc_track": "0x2A2A2A",
+    "arc_indicator": "0xFFFF00",
+    "text_primary": "0xFFFFFF",
+    "text_secondary": "0x888888",
+    "needle": "0xFF3030",
+    "panel": "0x1A1A1A"
+  },
+  "pages": {
+    "system_pages": [
+      "settings",
+      "ota",
+      "vehicle_select",
+      "bluetooth_pair",
+      "wifi_config",
+      "chart_alarm",
+      "chart_config"
+    ],
+    "theme_pages": [
+      {
+        "id": "main_gauge",
+        "type": "custom_layout",
+        "replaces": ["page_rpm", "page_boost", "page_multi_gauge"],
+        "comment": "layout_data_offset and layout_data_size will be filled by pack_theme.py"
+      }
+    ]
+  }
+}

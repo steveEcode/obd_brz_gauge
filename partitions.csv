@@ -1,8 +1,11 @@
-# Name,   Type, SubType, Offset,  Size, Flags
+# ESP32-S3 Partition Table (16MB Flash)
+# Name,     Type, SubType,  Offset,    Size,     Flags
 # Note: if you have increased the bootloader size, make sure to update the offsets to avoid overlap
-nvs,      data, nvs,     ,         0x6000,
-otadata,  data, ota,     ,         0x2000,
-phy_init, data, phy,     ,         0x1000,
-ota_0,    app,  ota_0,   ,         0x300000,
-ota_1,    app,  ota_1,   ,         0x300000,
-bootmedia,data, 0x82,    ,         0x9E0000,
+nvs,        data, nvs,      0x9000,    0x6000,
+otadata,    data, ota,      0xF000,    0x2000,
+phy_init,   data, phy,      0x11000,   0x1000,
+ota_0,      app,  ota_0,    0x12000,   0x300000,
+ota_1,      app,  ota_1,    0x312000,  0x300000,
+theme_0,    data, spiffs,   0x612000,  0x200000,
+theme_1,    data, spiffs,   0x812000,  0x200000,
+bootmedia,  data, 0x82,     0xA12000,  0x5F7000,
