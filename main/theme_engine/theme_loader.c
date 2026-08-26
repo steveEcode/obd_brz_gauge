@@ -5,11 +5,34 @@
 #include "esp_err.h"
 #include "cJSON.h"
 #include <string.h>
+#include <stdlib.h>
+#include <ctype.h>
 #include "bsp_obd_dsp/nvs_storage.h"
 #include "export_path/ui_theme.h"
 
 #define TAG "theme_engine"
 #define THEME_MANIFEST_MAX_SIZE  (16 * 1024)  // 16KB for JSON manifest
+
+// Widget kinds a layout.json element can bind live OBD data to. Kept as an
+// enum + shared params struct (instead of a per-widget-type function
+// pointer) because label/arc/bar need different LVGL setter calls and
+// different extra parameters (format string, divisor, range) — a single
+// void(*)(lv_obj_t*, int32_t) signature can't carry that.
+typedef enum {
+    BINDING_KIND_LABEL,   // lv_label_set_text_fmt with printf-style format + divisor
+    BINDING_KIND_ARC,     // lv_arc_set_value, raw value clamped to [range_min, range_max]
+    BINDING_KIND_BAR,     // lv_bar_set_value, raw value clamped to [range_min, range_max]
+} theme_binding_kind_t;
+
+typedef struct {
+    lv_obj_t *widget;
+    char data_source[24];      // "obd.boost" / "obd.rpm" / ...
+    theme_binding_kind_t kind;
+    int32_t range_min;
+    int32_t range_max;
+    int32_t divisor;           // label only: value/divisor is split into whole.fraction
+    char format[24];           // label only: printf-style, e.g. "%d.%02d" or "%d PSI"
+} theme_binding_t;
 
 // Internal theme context
 typedef struct {
@@ -38,12 +61,9 @@ typedef struct {
     theme_page_entry_t pages[32];
     uint8_t page_count;
 
-    // Data bindings (for theme_update_data)
-    struct {
-        lv_obj_t *widget;
-        char data_source[32];  // "obd.boost" / "obd.rpm"
-        void (*update_fn)(lv_obj_t*, int32_t);
-    } bindings[64];
+    // Data bindings (for theme_update_data), populated while building a
+    // custom page from layout.json
+    theme_binding_t bindings[32];
     uint8_t binding_count;
 } theme_context_t;
 
@@ -163,45 +183,111 @@ lv_obj_t* theme_create_page(const char *page_id) {
     return NULL;
 }
 
+// layout.json's "format" string is untrusted theme content, but gets handed
+// straight to lv_label_set_text_fmt (a vsnprintf wrapper) with only integer
+// arguments. A theme containing "%s" would make vsnprintf dereference an int
+// as a pointer -> crash or out-of-bounds read. Only allow conversions that
+// consume an int (d/i/u/x/X/o/c) plus literal '%%'; reject everything else
+// (a bad theme falls back to a safe literal instead of being trusted as-is).
+static bool theme_format_is_int_only(const char *fmt) {
+    for (const char *p = fmt; *p; p++) {
+        if (*p != '%') {
+            continue;
+        }
+        p++;
+        if (*p == '%') {
+            continue;  // literal '%%'
+        }
+        // skip flags/width/precision: digits, '.', '-', '+', '0', ' '
+        while (*p && (isdigit((unsigned char)*p) || *p == '.' || *p == '-' || *p == '+' || *p == ' ')) {
+            p++;
+        }
+        if (*p == '\0') {
+            return false;  // truncated conversion
+        }
+        switch (*p) {
+        case 'd': case 'i': case 'u': case 'x': case 'X': case 'o': case 'c':
+            break;  // safe: consumes one int
+        default:
+            return false;  // %s, %f, %p, %n, etc. — reject
+        }
+    }
+    return true;
+}
+
+// Resolves a "obd.<field>" data_source string against a live snapshot.
+// Returns false if the source name is unrecognized (binding left untouched).
+static bool theme_resolve_data_source(const obd_snapshot_t *obd, const char *src, int32_t *out_value) {
+    if (strcmp(src, "obd.rpm") == 0) {
+        *out_value = obd->rpm;
+    } else if (strcmp(src, "obd.speed") == 0) {
+        *out_value = obd->speed;
+    } else if (strcmp(src, "obd.boost") == 0) {
+        *out_value = obd->boost;
+    } else if (strcmp(src, "obd.coolant_temp") == 0) {
+        *out_value = obd->coolant_temp;
+    } else if (strcmp(src, "obd.oil_pressure") == 0) {
+        *out_value = obd->oil_pressure;
+    } else if (strcmp(src, "obd.gear") == 0) {
+        *out_value = obd->gear;
+    } else if (strcmp(src, "obd.battery_voltage") == 0) {
+        *out_value = obd->battery_voltage;
+    } else if (strcmp(src, "obd.oil_temp") == 0) {
+        *out_value = obd->oil_temp;
+    } else if (strcmp(src, "obd.afr") == 0) {
+        *out_value = obd->afr;
+    } else if (strcmp(src, "obd.throttle") == 0) {
+        *out_value = obd->throttle;
+    } else {
+        return false;
+    }
+    return true;
+}
+
 void theme_update_data(const obd_snapshot_t *obd) {
     if (!s_ctx.loaded || !obd) {
         return;
     }
 
-    // Update all registered data bindings
     for (int i = 0; i < s_ctx.binding_count; i++) {
-        if (!s_ctx.bindings[i].widget || !s_ctx.bindings[i].update_fn) {
+        theme_binding_t *bind = &s_ctx.bindings[i];
+        if (!bind->widget) {
             continue;
         }
 
         int32_t value = 0;
-        const char *src = s_ctx.bindings[i].data_source;
-
-        // Map data source to value
-        if (strcmp(src, "obd.rpm") == 0) {
-            value = obd->rpm;
-        } else if (strcmp(src, "obd.speed") == 0) {
-            value = obd->speed;
-        } else if (strcmp(src, "obd.boost") == 0) {
-            value = obd->boost;
-        } else if (strcmp(src, "obd.coolant_temp") == 0) {
-            value = obd->coolant_temp;
-        } else if (strcmp(src, "obd.oil_pressure") == 0) {
-            value = obd->oil_pressure;
-        } else if (strcmp(src, "obd.gear") == 0) {
-            value = obd->gear;
-        } else if (strcmp(src, "obd.battery_voltage") == 0) {
-            value = obd->battery_voltage;
-        } else if (strcmp(src, "obd.oil_temp") == 0) {
-            value = obd->oil_temp;
-        } else if (strcmp(src, "obd.afr") == 0) {
-            value = obd->afr;
-        } else if (strcmp(src, "obd.throttle") == 0) {
-            value = obd->throttle;
+        if (!theme_resolve_data_source(obd, bind->data_source, &value)) {
+            continue;
         }
 
-        // Call update function
-        s_ctx.bindings[i].update_fn(s_ctx.bindings[i].widget, value);
+        switch (bind->kind) {
+        case BINDING_KIND_ARC: {
+            int32_t clamped = value;
+            if (clamped < bind->range_min) clamped = bind->range_min;
+            if (clamped > bind->range_max) clamped = bind->range_max;
+            lv_arc_set_value(bind->widget, clamped);
+            break;
+        }
+        case BINDING_KIND_BAR: {
+            int32_t clamped = value;
+            if (clamped < bind->range_min) clamped = bind->range_min;
+            if (clamped > bind->range_max) clamped = bind->range_max;
+            lv_bar_set_value(bind->widget, clamped, LV_ANIM_OFF);
+            break;
+        }
+        case BINDING_KIND_LABEL: {
+            if (bind->divisor > 1) {
+                // Split e.g. 150/100 -> whole=1, frac=50, so "%d.%02d" -> "1.50"
+                int32_t whole = value / bind->divisor;
+                int32_t frac = value % bind->divisor;
+                if (frac < 0) frac = -frac;
+                lv_label_set_text_fmt(bind->widget, bind->format, whole, frac);
+            } else {
+                lv_label_set_text_fmt(bind->widget, bind->format, value);
+            }
+            break;
+        }
+        }
     }
 }
 
@@ -469,15 +555,171 @@ static void theme_register_pages(void) {
     ESP_LOGI(TAG, "Registered %d pages", s_ctx.page_count);
 }
 
-static lv_obj_t* theme_create_custom_page(const char *page_id) {
-    // TODO: Implement custom page creation from layout data
-    // For now, return a placeholder
+// Parses "0xRRGGBB" / "RRGGBB" into an lv_color_t; falls back to `fallback`
+// if the field is missing or not a string (keeps a malformed element from
+// crashing the whole page build).
+static lv_color_t theme_json_color(cJSON *obj, const char *key, lv_color_t fallback) {
+    cJSON *v = cJSON_GetObjectItem(obj, key);
+    if (!v || !cJSON_IsString(v)) {
+        return fallback;
+    }
+    return lv_color_hex(strtoul(v->valuestring, NULL, 16));
+}
 
+static int32_t theme_json_int(cJSON *obj, const char *key, int32_t fallback) {
+    cJSON *v = cJSON_GetObjectItem(obj, key);
+    if (!v || !cJSON_IsNumber(v)) {
+        return fallback;
+    }
+    return v->valueint;
+}
+
+static const char* theme_json_str(cJSON *obj, const char *key, const char *fallback) {
+    cJSON *v = cJSON_GetObjectItem(obj, key);
+    if (!v || !cJSON_IsString(v)) {
+        return fallback;
+    }
+    return v->valuestring;
+}
+
+// Registers a binding so theme_update_data() drives this widget on every
+// OBD refresh. Silently drops the binding (widget stays static) if the
+// element didn't declare a data_source, or the binding table is full —
+// a full table means a theme's layout.json has more live elements than we
+// support per page; that's a theme-authoring problem, not a crash.
+static void theme_add_binding(cJSON *elem, lv_obj_t *widget, theme_binding_kind_t kind,
+                               int32_t range_min, int32_t range_max) {
+    const char *src = theme_json_str(elem, "data_source", NULL);
+    if (!src) {
+        return;
+    }
+    if (s_ctx.binding_count >= (int)(sizeof(s_ctx.bindings) / sizeof(s_ctx.bindings[0]))) {
+        ESP_LOGW(TAG, "Binding table full, '%s' will not update live", src);
+        return;
+    }
+
+    theme_binding_t *bind = &s_ctx.bindings[s_ctx.binding_count++];
+    bind->widget = widget;
+    bind->kind = kind;
+    bind->range_min = range_min;
+    bind->range_max = range_max;
+    strncpy(bind->data_source, src, sizeof(bind->data_source) - 1);
+    bind->data_source[sizeof(bind->data_source) - 1] = '\0';
+
+    bind->divisor = theme_json_int(elem, "divisor", 1);
+    const char *fmt = theme_json_str(elem, "format", "%d");
+    if (theme_format_is_int_only(fmt)) {
+        strncpy(bind->format, fmt, sizeof(bind->format) - 1);
+    } else {
+        ESP_LOGW(TAG, "Rejecting unsafe format string '%s' for '%s', using \"%%d\"", fmt, src);
+        strncpy(bind->format, "%d", sizeof(bind->format) - 1);
+    }
+    bind->format[sizeof(bind->format) - 1] = '\0';
+}
+
+static void theme_build_arc_element(lv_obj_t *parent, cJSON *elem) {
+    lv_obj_t *arc = lv_arc_create(parent);
+    lv_obj_set_pos(arc, theme_json_int(elem, "x", 0), theme_json_int(elem, "y", 0));
+    lv_obj_set_size(arc, theme_json_int(elem, "width", 100), theme_json_int(elem, "height", 100));
+    lv_obj_clear_flag(arc, LV_OBJ_FLAG_CLICKABLE);
+
+    int32_t range_min = theme_json_int(elem, "range_min", 0);
+    int32_t range_max = theme_json_int(elem, "range_max", 100);
+    lv_arc_set_range(arc, range_min, range_max);
+    lv_arc_set_bg_angles(arc, theme_json_int(elem, "start_angle", 135), theme_json_int(elem, "end_angle", 45));
+    lv_arc_set_rotation(arc, theme_json_int(elem, "rotation", 0));
+    lv_arc_set_value(arc, range_min);
+
+    lv_color_t bg_color = theme_json_color(elem, "bg_color", theme_get_color(UI_COLOR_ARC_TRACK));
+    lv_color_t fg_color = theme_json_color(elem, "color", theme_get_color(UI_COLOR_ARC_INDICATOR));
+    int32_t line_width = theme_json_int(elem, "line_width", 10);
+
+    lv_obj_set_style_arc_color(arc, bg_color, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(arc, line_width, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(arc, fg_color, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(arc, line_width, LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(arc, LV_OPA_TRANSP, LV_PART_KNOB);
+
+    theme_add_binding(elem, arc, BINDING_KIND_ARC, range_min, range_max);
+}
+
+static void theme_build_bar_element(lv_obj_t *parent, cJSON *elem) {
+    lv_obj_t *bar = lv_bar_create(parent);
+    lv_obj_set_pos(bar, theme_json_int(elem, "x", 0), theme_json_int(elem, "y", 0));
+    lv_obj_set_size(bar, theme_json_int(elem, "width", 100), theme_json_int(elem, "height", 20));
+
+    int32_t range_min = theme_json_int(elem, "range_min", 0);
+    int32_t range_max = theme_json_int(elem, "range_max", 100);
+    lv_bar_set_range(bar, range_min, range_max);
+    lv_bar_set_value(bar, range_min, LV_ANIM_OFF);
+
+    lv_color_t bg_color = theme_json_color(elem, "bg_color", theme_get_color(UI_COLOR_ARC_TRACK));
+    lv_color_t fg_color = theme_json_color(elem, "color", theme_get_color(UI_COLOR_ARC_INDICATOR));
+    lv_obj_set_style_bg_color(bar, bg_color, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(bar, fg_color, LV_PART_INDICATOR);
+
+    // "segments" (a stepped look, like the example theme's 10-block oil
+    // pressure meter) is a purely visual grouping of the same bar — LVGL's
+    // bar doesn't natively support discrete blocks, so this is intentionally
+    // approximated as a continuous bar for now. Faithful block rendering
+    // needs a custom draw event, left for a follow-up.
+
+    theme_add_binding(elem, bar, BINDING_KIND_BAR, range_min, range_max);
+}
+
+static void theme_build_label_element(lv_obj_t *parent, cJSON *elem) {
+    lv_obj_t *label = lv_label_create(parent);
+
+    lv_color_t color = theme_json_color(elem, "color", theme_get_color(UI_COLOR_TEXT_PRIMARY));
+    lv_obj_set_style_text_color(label, color, LV_PART_MAIN);
+
+    int32_t font_size = theme_json_int(elem, "font_size", 16);
+    const lv_font_t *font;
+    if (font_size >= 48) font = &lv_font_montserrat_48;
+    else if (font_size >= 32) font = &lv_font_montserrat_32;
+    else if (font_size >= 26) font = &lv_font_montserrat_26;
+    else if (font_size >= 14) font = &lv_font_montserrat_14;
+    else font = &lv_font_montserrat_12;
+    lv_obj_set_style_text_font(label, font, LV_PART_MAIN);
+
+    const char *data_source = theme_json_str(elem, "data_source", NULL);
+    if (data_source) {
+        // Live-bound label: initial text is just a placeholder until the
+        // first theme_update_data() tick fills in the real value.
+        theme_add_binding(elem, label, BINDING_KIND_LABEL, 0, 0);
+        lv_label_set_text(label, "--");
+    } else {
+        // Static label: fixed text from the manifest, never updated.
+        lv_label_set_text(label, theme_json_str(elem, "text", ""));
+    }
+
+    // Position: x/y is the anchor point; "center"/"right" shift the label so
+    // that anchor is the label's horizontal center/right edge instead of its
+    // left edge. Needs the label's rendered width, so force a layout pass
+    // now rather than relying on lazy layout (which wouldn't be resolved
+    // yet at this point in page construction).
+    int32_t x = theme_json_int(elem, "x", 0);
+    int32_t y = theme_json_int(elem, "y", 0);
+    const char *align = theme_json_str(elem, "align", "left");
+    lv_obj_update_layout(label);
+    int32_t w = lv_obj_get_width(label);
+    if (strcmp(align, "center") == 0) {
+        lv_obj_set_pos(label, x - w / 2, y);
+    } else if (strcmp(align, "right") == 0) {
+        lv_obj_set_pos(label, x - w, y);
+    } else {
+        lv_obj_set_pos(label, x, y);
+    }
+}
+
+static lv_obj_t* theme_create_custom_page(const char *page_id) {
     lv_obj_t *page = lv_obj_create(NULL);
     lv_obj_set_size(page, 360, 360);
+    lv_obj_clear_flag(page, LV_OBJ_FLAG_SCROLLABLE);
 
     // Apply theme background color
     lv_obj_set_style_bg_color(page, theme_get_color(UI_COLOR_BG), 0);
+    lv_obj_set_style_bg_opa(page, LV_OPA_COVER, 0);
 
     // Draw dial background if available
     const lv_img_dsc_t *dial = theme_get_asset("dial");
@@ -487,7 +729,87 @@ static lv_obj_t* theme_create_custom_page(const char *page_id) {
         lv_obj_align(bg_img, LV_ALIGN_CENTER, 0, 0);
     }
 
-    ESP_LOGI(TAG, "Created custom page '%s' (placeholder)", page_id);
+    // Find this page's layout data location in the manifest
+    cJSON *pages = s_ctx.manifest ? cJSON_GetObjectItem(s_ctx.manifest, "pages") : NULL;
+    cJSON *theme_pages = pages ? cJSON_GetObjectItem(pages, "theme_pages") : NULL;
+    cJSON *page_entry = NULL;
+    cJSON_ArrayForEach(page_entry, theme_pages) {
+        cJSON *id = cJSON_GetObjectItem(page_entry, "id");
+        if (id && cJSON_IsString(id) && strcmp(id->valuestring, page_id) == 0) {
+            break;
+        }
+    }
+
+    if (!page_entry) {
+        ESP_LOGW(TAG, "No manifest entry for theme page '%s', showing background only", page_id);
+        return page;
+    }
+
+    cJSON *offset_obj = cJSON_GetObjectItem(page_entry, "layout_data_offset");
+    cJSON *size_obj = cJSON_GetObjectItem(page_entry, "layout_data_size");
+    if (!offset_obj || !size_obj || !cJSON_IsNumber(offset_obj) || !cJSON_IsNumber(size_obj)) {
+        ESP_LOGW(TAG, "Theme page '%s' has no layout data, showing background only", page_id);
+        return page;
+    }
+
+    size_t offset = (size_t)offset_obj->valueint;
+    size_t size = (size_t)size_obj->valueint;
+    if (size == 0 || size > 64 * 1024) {
+        ESP_LOGW(TAG, "Theme page '%s' layout_data_size %zu out of bounds, skipping", page_id, size);
+        return page;
+    }
+
+    char *layout_buf = heap_caps_malloc(size + 1, MALLOC_CAP_SPIRAM);
+    if (!layout_buf) {
+        ESP_LOGE(TAG, "Failed to allocate %zu bytes for layout.json", size);
+        return page;
+    }
+
+    esp_err_t ret = esp_partition_read(s_ctx.partition, offset, layout_buf, size);
+    layout_buf[size] = '\0';
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to read layout data for '%s': %s", page_id, esp_err_to_name(ret));
+        free(layout_buf);
+        return page;
+    }
+
+    cJSON *layout = cJSON_Parse(layout_buf);
+    free(layout_buf);
+    if (!layout) {
+        ESP_LOGE(TAG, "Failed to parse layout.json for '%s'", page_id);
+        return page;
+    }
+
+    cJSON *bg_color = cJSON_GetObjectItem(layout, "background_color");
+    if (bg_color && cJSON_IsString(bg_color)) {
+        lv_obj_set_style_bg_color(page, lv_color_hex(strtoul(bg_color->valuestring, NULL, 16)), 0);
+    }
+
+    cJSON *elements = cJSON_GetObjectItem(layout, "elements");
+    cJSON *elem = NULL;
+    int elem_count = 0;
+    cJSON_ArrayForEach(elem, elements) {
+        const char *type = theme_json_str(elem, "type", NULL);
+        if (!type) {
+            continue;
+        }
+        if (strcmp(type, "arc") == 0) {
+            theme_build_arc_element(page, elem);
+        } else if (strcmp(type, "bar") == 0) {
+            theme_build_bar_element(page, elem);
+        } else if (strcmp(type, "label") == 0) {
+            theme_build_label_element(page, elem);
+        } else {
+            ESP_LOGW(TAG, "Unknown layout element type '%s', skipping", type);
+            continue;
+        }
+        elem_count++;
+    }
+
+    cJSON_Delete(layout);
+
+    ESP_LOGI(TAG, "Created custom page '%s' with %d elements, %d live bindings",
+             page_id, elem_count, s_ctx.binding_count);
 
     return page;
 }
