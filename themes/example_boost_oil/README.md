@@ -23,7 +23,7 @@ If assets are not provided, the theme will use colored backgrounds.
 python3 tools/theme_packer/pack_theme.py themes/example_boost_oil firmware/theme_boost_oil.bin
 ```
 
-This will generate a 2MB binary that can be:
+This will generate a 4MB binary that can be:
 - Flashed directly to the theme_0 partition (offset 0x620000, the only theme slot)
 - Or sent via BLE OTA to the device
 

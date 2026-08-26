@@ -17,7 +17,7 @@ This branch implements a complete theme partition system that separates UI prese
 └─────────────────────────────────────────────────────┘
            ↓ reads
 ┌─────────────────────────────────────────────────────┐
-│  Theme Data Partition (theme_0, 2MB)                │
+│  Theme Data Partition (theme_0, 4MB)                │
 ├─────────────────────────────────────────────────────┤
 │  • theme_manifest.json (metadata, colors, pages)    │
 │  • assets/ (dial.png, ring.png - 360x360 images)    │
@@ -31,7 +31,7 @@ This branch implements a complete theme partition system that separates UI prese
 2. **Boot Sequence Protected**: Sky Gauge logo, intro animation, boot video NEVER themed
 3. **Theme Pages Replaceable**: Gauge displays loaded from theme partition
 4. **Theme *binaries* OTA-able once installed**: after a device has this partition table, a
-   theme package (the 2MB blob written to theme_0) can be sent over BLE, same as firmware
+   theme package (the 4MB blob written to theme_0) can be sent over BLE, same as firmware
 5. **Single Slot, Safe Fallback**: only `theme_0` exists — a missing/corrupt/unparseable theme
    falls back to the built-in default theme rather than bricking the UI (see
    `theme_load_default()`), so a second slot for A/B rollback isn't needed
@@ -69,8 +69,8 @@ table on `main` never had this bug.)
 
 - **ota_0**: 0x020000, 3MB (unchanged from auto-placement)
 - **ota_1**: 0x320000, 3MB (unchanged from auto-placement)
-- **theme_0**: 0x620000, 2MB (new — this is where `bootmedia` used to start)
-- **bootmedia**: 0x820000, 7.875MB (was 9.875MB — actual usage today is ~312KB, so this has ample room)
+- **theme_0**: 0x620000, 4MB (new — this is where `bootmedia` used to start)
+- **bootmedia**: 0xA20000, 5.875MB (was 9.875MB — actual usage today is ~312KB, so this has ample room)
 
 ### New Files
 - `main/theme_engine/theme_interface.h` - Public API

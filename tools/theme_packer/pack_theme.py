@@ -31,7 +31,7 @@ except ImportError:
     print("Warning: Pillow not installed, image conversion will be skipped")
     print("Install with: pip install Pillow")
 
-PARTITION_SIZE = 2 * 1024 * 1024  # 2MB
+PARTITION_SIZE = 4 * 1024 * 1024  # 4MB, must match theme_0 in partitions.csv
 MANIFEST_RESERVED_SIZE = 8 * 1024  # First 8KB reserved for manifest JSON
 
 
@@ -98,7 +98,8 @@ def pack_layout_json(layout_path: Path, offset: int, data: bytearray) -> int:
     layout_bytes = layout_path.read_bytes()
 
     if len(layout_bytes) > 64 * 1024:
-        raise ValueError(f"Layout JSON too large: {len(layout_bytes)} bytes (max 64KB)")
+        raise ValueError(
+            f"Layout JSON too large: {len(layout_bytes)} bytes (max 64KB)")
 
     data[offset:offset + len(layout_bytes)] = layout_bytes
     print(f"    Packed {len(layout_bytes)} bytes at offset 0x{offset:06X}")
@@ -145,7 +146,8 @@ def pack_theme(theme_dir: Path, output_bin: Path) -> None:
     manifest = json.load(open(manifest_path, 'r'))
     validate_manifest(manifest)
 
-    print(f"\nTheme: {manifest['theme']['name']} v{manifest['theme']['version']}")
+    theme_meta = manifest['theme']
+    print(f"\nTheme: {theme_meta['name']} v{theme_meta['version']}")
     print(f"  ID: {manifest['theme']['id']}")
     print(f"  Author: {manifest['theme']['author']}")
 
@@ -215,7 +217,8 @@ def pack_theme(theme_dir: Path, output_bin: Path) -> None:
     # Write final manifest to partition (first 8KB)
     manifest_bytes = json.dumps(manifest, indent=2).encode('utf-8')
     if len(manifest_bytes) >= MANIFEST_RESERVED_SIZE:
-        raise ValueError(f"Manifest too large: {len(manifest_bytes)} bytes (max {MANIFEST_RESERVED_SIZE})")
+        raise ValueError(
+            f"Manifest too large: {len(manifest_bytes)} bytes (max {MANIFEST_RESERVED_SIZE})")
 
     data[0:len(manifest_bytes)] = manifest_bytes
 
@@ -227,11 +230,14 @@ def pack_theme(theme_dir: Path, output_bin: Path) -> None:
     print("\n" + "=" * 60)
     print("Packing complete!")
     print(f"  Output file: {output_bin}")
-    print(f"  Total size: {len(data)} bytes ({len(data) / (1024*1024):.2f} MB)")
+    print(
+        f"  Total size: {len(data)} bytes ({len(data) / (1024*1024):.2f} MB)")
     print(f"  Manifest: {len(manifest_bytes)} bytes")
     print(f"  Assets: {len(assets_info)} items")
-    print(f"  Used: {current_offset} bytes ({current_offset / (1024*1024):.2f} MB)")
-    print(f"  Free: {PARTITION_SIZE - current_offset} bytes ({(PARTITION_SIZE - current_offset) / (1024*1024):.2f} MB)")
+    print(
+        f"  Used: {current_offset} bytes ({current_offset / (1024*1024):.2f} MB)")
+    free_bytes = PARTITION_SIZE - current_offset
+    print(f"  Free: {free_bytes} bytes ({free_bytes / (1024*1024):.2f} MB)")
 
 
 def main():
