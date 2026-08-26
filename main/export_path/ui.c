@@ -8,6 +8,7 @@
 #include "ui_ext.h"
 #include "ui_disp_item.h"
 #include "ui_theme.h"
+#include "theme_engine/theme_interface.h"
 #include "app_obd_dsp/app_event.h"
 #include <driver/gpio.h>
 #include "bsp_obd_dsp/bsp_board.h"
@@ -1133,6 +1134,21 @@ void ui_ota_mode_refresh(void)
 
 void ui_init(void)
 {
+    // Initialize theme partition system FIRST (before any UI creation)
+    // This loads the theme from theme_0/theme_1 partition, or falls back to default
+    ESP_LOGI(TAG, "Initializing theme partition system");
+    esp_err_t theme_ret = theme_engine_init();
+    if (theme_ret == ESP_OK) {
+        theme_info_t info;
+        if (theme_get_info(&info) == ESP_OK) {
+            ESP_LOGI(TAG, "Theme loaded: %s v%s by %s", info.name, info.version, info.author);
+        }
+        // Run test to print detailed theme info
+        theme_engine_test();
+    } else {
+        ESP_LOGW(TAG, "Theme partition system initialization failed, using built-in themes");
+    }
+
     // Load the saved UI theme BEFORE any screen is built, so every screen
     // picks up the active theme's colors at creation time.
     ui_theme_init();

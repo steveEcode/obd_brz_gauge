@@ -142,6 +142,13 @@ bool theme_has_page(const char *page_id);
  */
 void theme_unload(void);
 
+/**
+ * Test function to verify theme engine integration
+ * Prints theme info, colors, assets, and protected pages to log
+ * Call from ui_init() for debugging
+ */
+void theme_engine_test(void);
+
 #ifdef __cplusplus
 }
 #endif
