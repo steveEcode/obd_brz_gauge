@@ -1,4 +1,5 @@
 #include "theme_interface.h"
+#include "export_path/ui_theme.h"
 #include "esp_log.h"
 
 #define TAG "theme_test"

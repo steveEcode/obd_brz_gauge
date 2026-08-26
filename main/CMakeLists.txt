@@ -87,6 +87,7 @@ idf_component_register(SRC_DIRS
                     "bsp_obd_dsp/exio"
                     "bsp_obd_dsp/i2c_driver"
                     "bsp_obd_dsp/touch_driver"
+                    "theme_engine"
                     INCLUDE_DIRS
                     "."
                     REQUIRES

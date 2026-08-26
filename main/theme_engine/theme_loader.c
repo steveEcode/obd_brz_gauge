@@ -1,6 +1,7 @@
 #include "theme_interface.h"
 #include "esp_log.h"
 #include "esp_partition.h"
+#include "esp_heap_caps.h"
 #include "esp_err.h"
 #include "cJSON.h"
 #include <string.h>
@@ -22,9 +23,9 @@ typedef struct {
 
     // Memory-mapped assets
     const void *dial_data;
-    spi_flash_mmap_handle_t dial_handle;
+    esp_partition_mmap_handle_t dial_handle;
     const void *ring_data;
-    spi_flash_mmap_handle_t ring_handle;
+    esp_partition_mmap_handle_t ring_handle;
 
     // LVGL image descriptors
     lv_img_dsc_t dial_img;
@@ -86,7 +87,7 @@ esp_err_t theme_load(uint8_t slot) {
     const char *partition_name = (slot == 0) ? "theme_0" : "theme_1";
     s_ctx.partition = esp_partition_find_first(
         ESP_PARTITION_TYPE_DATA,
-        ESP_PARTITION_SUBTYPE_SPIFFS,
+        ESP_PARTITION_SUBTYPE_DATA_SPIFFS,
         partition_name
     );
 
@@ -245,13 +246,13 @@ void theme_unload(void) {
 
     // Unmap assets
     if (s_ctx.dial_handle) {
-        spi_flash_munmap(s_ctx.dial_handle);
+        esp_partition_munmap(s_ctx.dial_handle);
         s_ctx.dial_handle = 0;
         s_ctx.dial_data = NULL;
     }
 
     if (s_ctx.ring_handle) {
-        spi_flash_munmap(s_ctx.ring_handle);
+        esp_partition_munmap(s_ctx.ring_handle);
         s_ctx.ring_handle = 0;
         s_ctx.ring_data = NULL;
     }
