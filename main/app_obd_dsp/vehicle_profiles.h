@@ -57,7 +57,8 @@ typedef struct {
     float gear_tolerance;                // gear detection tolerance (e.g. 0.15 = ±15%)
     oil_temp_strategy_t oil_temp_strategy; // oil temp query strategy
     bool has_boost;                      // whether turbocharged (decides whether to query/display boost pressure)
-    bool has_obd_oil_pressure;           // true=read oil pressure over OBD (Mode 22 DID 4436, B58); supersedes the external ADS1115 ADC
+    uint16_t obd_oil_pressure_did;       // 0=off; else Mode 22 DID for OBD oil pressure (4436=B58 hPa, 586F=N55 hPa); supersedes the ADS1115 ADC
+    uint16_t obd_gear_did;               // 0=off; else Mode 22 DID for direct gear read (D031=BMW ZF 8HP current gear); supersedes ratio-based gear calc
     uint8_t forced_protocol;             // forced ELM327 protocol number (ATSP), 0=auto-detect; lock to 6 for cars like BMW where auto-detect is unstable
     bool obd_functional_addr;            // true=standard PIDs use functional addressing (ATSH 7DF, same as phone apps); false=physical addressing (ATSH 7E0, Subaru etc.)
     bool obd_29bit_functional;           // true=29-bit CAN functional broadcast (ATSH 18DB33F1) for standard PIDs; only valid when obd_functional_addr=true and forced_protocol=7/9; Honda Integra/Civic 11th gen need this

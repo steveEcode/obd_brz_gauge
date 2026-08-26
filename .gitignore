@@ -9,3 +9,8 @@ sdkconfig
 main/SAX0AC BC CC.pdf
 __pycache__/
 *.pyc
+# generated PID probe artifacts (from tools/analyze_proble.py)
+pid_can_summary.csv
+tools/probe_log
+tools/elm_pids
+tools/pids_full.csv

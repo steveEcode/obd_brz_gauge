@@ -66,6 +66,7 @@ typedef struct {
     bool                 has_boost;      // turbocharged vehicle
     uint8_t              poll_gap_ms;    // poll interval (0=default)
     const char          *uds_header_cmd; // ATSH header temporarily switched to before querying UDS oil temp (e.g. FCA extended addressing "ATSH18DA10F1\r"), the standard header is restored after the query; NULL=default behavior
+    const char          *obd_gear_header_cmd; // ATSH header temporarily switched to before querying the gear DID (e.g. BMW "ATSH6F1\r" for the EGS), restored afterwards; NULL=fall back to uds_header_cmd then 7E0 physical
 } vehicle_override_t;
 
 // ================================================================
@@ -206,19 +207,21 @@ static const vehicle_override_t s_vehicle_overrides[] = {
         .obd_timeout     = 0x0F,
         .poll_gap_ms     = 1,                 // BRZ PID-style 1ms slot gap for faster RPM refresh
         .has_boost       = true,
+        .obd_gear_header_cmd = "ATSH6F1\r",   // gear DID lives on the EGS (transmission ECU), queried over 6F1 functional
     },
     {
-        // BMW E-series (E9x M3 S65 NA): standard PIDs via 7DF functional addressing.
-        // Oil temp falls back to standard 01 5C — S65 has no 01 5C; the real sensor sits on
-        // proprietary mode 21 (KWP local IDs @6F1) / mode 22 (DID 448/58F0/58F3 @6F1, DID F5xx @7DF),
-        // not reverse-engineered yet. Once the formula is known, add an oil_formula_t and
-        // uds_header_cmd="ATSH6F1\r" (or "ATSH7DF\r") here to query it.
+        // BMW E-series (E9x M3 S65 / E87 130i N52 / E9x N54 N55): standard PIDs via 7DF functional addressing.
+        // Oil temp uses the N55 Mode 22 DIDs over the 6F1 DME request header (bmw_pid_data/n55_pid_data.h):
+        //   4402 "oil temperature after filter" (°C = raw×0.75 − 48, 2-byte), 5822 "oil temperature" (°C = raw − 60, 1-byte).
+        // The E-series DME answers Mode 22 on 6F1 (physical), so uds_header_cmd="ATSH6F1\r" switches the header for the
+        // query and restores 7DF afterwards. Confirmed on N55; N52/N54 likely share the DIDs, S65/MSS60 may differ.
         .match_name      = "BMW E",
-        .oil_primary     = &oil_std_5c,
-        .oil_secondary   = &oil_std_5c,
+        .oil_primary     = &oil_bmw_g_4402,   // 22 44 02: °C = raw×0.75 − 48
+        .oil_secondary   = &oil_mini_5822,    // 22 58 22: °C = raw − 60
         .forced_protocol = 6,
         .functional_addr = true,
         .obd_timeout     = 0x0A,
+        .uds_header_cmd  = "ATSH6F1\r",
     },
     {
         .match_name      = "JCW F56",
@@ -240,7 +243,7 @@ static const vehicle_override_t s_vehicle_overrides[] = {
     },
     {
         // Giulia 2.0T: oil temp goes through FCA UDS extended addressing 18DA10F1 (response 18DAF110); standard 01 5C is not supported.
-        // Standard PIDs (RPM/speed/coolant temp/intake temp/load/TPS/voltage/MAP) go through functional addressing 7DF.
+        // Standard PIDs (RPM/speed/coolant temp/intake temp/load/TPS/voltage/MAP) go through 29-bit functional broadcast 18DB33F1 (protocol 7).
         // Other extensible DIDs (same header 18DA10F1): oil pressure 22 13 0A=A*10/255, gear 22 19 2D (0=N,0x10=R),
         // boost gauge pressure 22 19 5A=((A*256+B)-32768)/1000-1 bar, throttle 22 19 24=(A*256+B)/655.35 %
         .match_name      = "GIULIA 2.0T",

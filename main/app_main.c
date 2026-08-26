@@ -344,10 +344,10 @@ void app_main(void)
 
         /* 9.5 Start oil pressure acquisition (direct ESP32 ADC connection).
            Skip the external ADS1115 ADC for profiles that read oil pressure over OBD
-           (e.g. Supra A90 — Mode 22 DID 4436), to avoid the ADC overwriting OBD data. */
+           (e.g. Supra A90 — DID 4436, BMW E — DID 586F), to avoid the ADC overwriting OBD data. */
         {
             const vehicle_profile_t *vp = vehicle_profile_get_active();
-            if (!(vp && vp->has_obd_oil_pressure)) {
+            if (!(vp && vp->obd_oil_pressure_did != 0)) {
                 oil_pressure_start();
             }
         }

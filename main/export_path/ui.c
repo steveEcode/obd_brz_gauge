@@ -480,6 +480,7 @@ void my_timerMain(lv_timer_t * timer)
     static uint16_t usRpm = 0;
     static uint16_t ucSpeed = 0;  // uint16_t so sweep can reach 999
     static enGear eGear = GEAR_NEUTRAL;
+    static bool  s_gear_unknown = false;   // OBD-gear profile can't read a valid gear → show "--" (no ratio-calc fallback)
     // rpm flash state (red/black toggle, strobing flag, linked ramp) moved to ui_ext.c
     // Sweep animation detection (excludes showroom sync values 200+); sweep state lives in ui_ext.c now
     #define IN_SWEEP (ui_ext_sweep_active())
@@ -529,8 +530,16 @@ void my_timerMain(lv_timer_t * timer)
         usRpm     = obd.rpm;
         ucSpeed   = obd.speed;
         int8_t decoded_gear = obd.gear;
-        eGear = (decoded_gear >= 0 && decoded_gear <= GEAR_8) ? (enGear)decoded_gear
-                                                               : calculate_gear(usRpm, ucSpeed);
+        if (decoded_gear >= 0 && decoded_gear <= GEAR_8) {
+            eGear = (enGear)decoded_gear;
+            s_gear_unknown = false;
+        } else if (vehicle_profile_get_active()->obd_gear_did != 0) {
+            // OBD gear profile: no RPM/speed ratio fallback — show "--" until a valid gear arrives
+            s_gear_unknown = true;
+        } else {
+            eGear = calculate_gear(usRpm, ucSpeed);
+            s_gear_unknown = false;
+        }
     }
 
     /* ---- Data source: sweep or real OBD (sweep state machine moved to ui_ext.c) ---- */
@@ -539,18 +548,26 @@ void my_timerMain(lv_timer_t * timer)
         usRpm   = (uint16_t)(SWEEP_RPM_PEAK * sweep_ratio);
         ucSpeed = (uint16_t)(SWEEP_SPEED_PEAK * sweep_ratio); // uint16_t so it can hold 999
         eGear   = (enGear)((int)(6.0f * sweep_ratio + 0.5f)); // up to 6th gear
+        s_gear_unknown = false;
     }
     /*Gear page: refresh only while this page is actually shown, no idle background updates*/
     if (scr == ui_ScreenPageGear) {
         static const char *pGearNum[] = {"N","1","2","3","4","5","6","7","8"};
         static enGear s_last_gear_disp = GEAR_NEUTRAL;
-        enGear g = (eGear <= GEAR_8) ? eGear : GEAR_8;
+        static bool s_last_gear_unknown = false;
         uint8_t gc = vehicle_profile_get_active()->gear_count;
         if (gc < 1) gc = 6;
-        if (g != s_last_gear_disp || IN_SWEEP) {
+        enGear g = (eGear <= GEAR_8) ? eGear : GEAR_8;
+        if (s_gear_unknown != s_last_gear_unknown || g != s_last_gear_disp || IN_SWEEP) {
+            s_last_gear_unknown = s_gear_unknown;
             s_last_gear_disp = g;
-            lv_label_set_text(ui_GearPageArcLabelGearNumText, pGearNum[g]);
-            lv_arc_set_value(ui_GearPageArcGearNumBack, (uint16_t)g * 100 / gc);
+            if (s_gear_unknown) {
+                lv_label_set_text(ui_GearPageArcLabelGearNumText, "--");
+                lv_arc_set_value(ui_GearPageArcGearNumBack, 0);
+            } else {
+                lv_label_set_text(ui_GearPageArcLabelGearNumText, pGearNum[g]);
+                lv_arc_set_value(ui_GearPageArcGearNumBack, (uint16_t)g * 100 / gc);
+            }
         }
     }
     /*RPM page: direct output, no animation delay (CAN 100Hz data is already clean)*/

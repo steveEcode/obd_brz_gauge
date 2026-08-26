@@ -139,6 +139,7 @@ static const vehicle_profile_t s_profiles[] = {
             .quaternary = OIL_TEMP_MODE_NONE,
         },
         .has_boost = true,
+        .obd_gear_did = 0xD031,   // Mode 22 DID D031 = ZF 8HP current gear (BMW_GEAR_V2); read over the 6F1 EGS header
         .forced_protocol = 6,
         .obd_functional_addr = true,
         .obd_timeout = 0x0F,
@@ -167,7 +168,7 @@ static const vehicle_profile_t s_profiles[] = {
             .quaternary = OIL_TEMP_MODE_NONE,
         },
         .has_boost = true,                 // B58/B48 turbo
-        .has_obd_oil_pressure = true,      // Mode 22 DID 4436 (absolute hPa); supersedes the ADS1115 ADC
+        .obd_oil_pressure_did = 0x4436,    // Mode 22 DID 4436 (absolute hPa); supersedes the ADS1115 ADC
         .forced_protocol = 6,
         .obd_functional_addr = true,
         .obd_timeout = 0x0A,               // BRZ PID-style 40ms (faster than BMW F/G's 0x0F)
@@ -195,13 +196,13 @@ static const vehicle_profile_t s_profiles[] = {
         .poll_gap_ms = 1,
     },
     {
-        // BMW E-series (E9x M3, S65B40 NA V8; also usable as a base for E46/E39/E60/E9x non-M)
-        // OBD-only; standard mode 01 PIDs go through 7DF functional addressing (the E-series DME
-        // does not answer physical 7E0 for mode 01, same behaviour as BMW F/G above).
-        // RPM/speed/coolant/intake/load/TPS all standard; S65 is NA so no boost.
-        // Oil temp: S65 does NOT support standard 01 5C. Car Scanner reads it via proprietary
-        //   mode 21 (KWP local IDs 01/04/05/07/08/0B @6F1) and mode 22 (DID 448/58F0/58F3 @6F1,
-        //   DID F5xx @7DF). Those formulas are not reverse-engineered yet, so we fall back to 01 5C.
+        // BMW E-series (E9x M3 S65 / E87 130i N52 / E9x N54 N55 / E46 E39). Standard mode 01 PIDs
+        // go through 7DF functional addressing (the E-series DME does not answer physical 7E0 for
+        // mode 01, same behaviour as BMW F/G). RPM/speed/coolant/intake/load/TPS all standard.
+        // Oil temp & oil pressure use the N55 Mode 22 DIDs (bmw_pid_data/n55_pid_data.h) over the
+        // 6F1 DME request header (see the override in vehicle_custom_config.h): 4402 oil temp
+        // (°C = raw×0.75 − 48), 5822 oil temp (°C = raw − 60), 586F oil pressure (hPa, raw×1).
+        // Confirmed on N55; N52/N54 likely share the same DIDs (unverified); S65/MSS60 may differ.
         .name = "BMW E",
         .final_drive_ratio = 3.846f,       // E92 M3 6MT final drive (M-DCT is 3.154)
         .tire_rolling_radius_m = 0.335f,   // rear 265/40R18
@@ -209,13 +210,14 @@ static const vehicle_profile_t s_profiles[] = {
         .gear_ratios = {0, 4.055f, 2.396f, 1.582f, 1.192f, 1.000f, 0.872f},  // Getrag GS6-53BZ 6MT
         .gear_tolerance = 0.15f,
         .oil_temp_strategy = {
-            .primary = OIL_TEMP_MODE_PID_5C,        // fallback only; S65 has no standard 5C (see note above)
+            .primary = OIL_TEMP_MODE_PID_5C,        // ignored when the override formula is present (see above)
             .secondary = OIL_TEMP_MODE_NONE,
             .tertiary = OIL_TEMP_MODE_NONE,
             .quaternary = OIL_TEMP_MODE_NONE,
         },
         .forced_protocol = 6,              // ISO 15765-4 CAN 11-bit 500k
         .obd_functional_addr = true,       // 7DF functional addressing (same as phone apps)
+        .obd_oil_pressure_did = 0x586F,    // N55 oil pressure DID (hPa, raw×1), read over ATSH6F1
         .obd_timeout = 0x0A,
         .poll_gap_ms = 1,
     },
@@ -274,10 +276,11 @@ static const vehicle_profile_t s_profiles[] = {
     },
     {
         // Alfa Romeo Giulia 2.0T (GME 2.0 turbo + ZF 8HP50 8AT, RWD)
-        // Standard OBD (RPM/speed/coolant temp/intake temp/load/TPS/voltage/MAP) goes through functional addressing 7DF; oil temp 01 5C is not supported,
-        // use FCA UDS extended addressing ATSH18DA10F1 + 22 13 02 instead (see the override in vehicle_custom_config.h).
+        // FCA Giorgio platform is 29-bit CAN: standard OBD (RPM/speed/coolant temp/intake temp/load/TPS/voltage/MAP)
+        // goes through the 29-bit functional broadcast 18DB33F1 (protocol 7), same as Jeep/Honda Integra — NOT 11-bit 7DF.
+        // Oil temp 01 5C is not supported; use FCA UDS extended addressing ATSH18DA10F1 + 22 13 02 instead
+        // (see the override in vehicle_custom_config.h).
         // MY2018+ SGW only blocks write operations (code clearing/matching); read-only live data needs no bypass.
-        // If 22 13 02 gets no response, change forced_protocol to 7 (29bit) and retry.
         .name = "GIULIA 2.0T",
         .final_drive_ratio = 2.35f,        // RWD standard final drive (Q4 AWD is 2.65, adjust to the actual car)
         .tire_rolling_radius_m = 0.330f,   // 225/45R18, adjust to the actual tires
@@ -292,8 +295,9 @@ static const vehicle_profile_t s_profiles[] = {
             .quaternary = OIL_TEMP_MODE_NONE,
         },
         .has_boost = true,                 // boost via standard 01 0B (MAP absolute pressure)
-        .forced_protocol = 6,              // CAN 11bit 500k
-        .obd_functional_addr = true,       // standard PIDs use the 7DF broadcast (same as phone apps)
+        .forced_protocol = 7,              // ISO 15765-4 CAN 29-bit 500k (critical: not protocol 6)
+        .obd_functional_addr = true,       // functional broadcast, not physical ECU address
+        .obd_29bit_functional = true,      // 29-bit functional broadcast address (18DB33F1, not 7DF)
         .obd_timeout = 0x0F,
         .poll_gap_ms = 50,                 // extended UDS responses are a bit slow, keep it conservative
     },

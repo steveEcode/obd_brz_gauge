@@ -616,12 +616,20 @@ static void can_expire_stale_temp_channels(void)
 static void default_on_parsed_afr(uint32_t afr_x100) {
     obd_data_set_afr_x100((int16_t)afr_x100);
 }
-// Mode 22 DID 4436 (B58): absolute oil pressure in hPa → 0.1 bar (x10), setter clamps to [0, 200]
+// Mode 22 oil pressure (4436=B58, 586F=N55): absolute hPa → 0.1 bar (x10), setter clamps to [0, 200]
 static void default_on_parsed_oil_pressure(uint32_t oil_pressure_hpa) {
     int32_t x10 = (int32_t)oil_pressure_hpa / 100;   // 100 hPa = 0.1 bar
     if (x10 < 0) x10 = 0;
     if (x10 > 200) x10 = 200;
     obd_data_set_oil_pressure_x10((int16_t)x10);
+}
+// Mode 22 gear (BMW 22 D0 31, ZF 8HP "BMW_GEAR_V2"): 0x00=N, 0x01..0x08=1..8; anything else invalid → ratio-calc fallback
+static void default_on_parsed_obd_gear(uint8_t raw_gear) {
+    if (raw_gear <= 0x08) {
+        obd_data_set_gear((int8_t)raw_gear);   // 0=N, 1..8 = forward gear
+    } else {
+        obd_data_set_gear(127);                // invalid/unknown (R/P/0xFF) → falls back to the computed gear
+    }
 }
 
 // ---- CAN continuous monitor: enter/exit/byte-wise feed/line-wise parse ----
@@ -915,7 +923,7 @@ static void obd_poll_task(void *arg) {
     bool inited = false;
     uint8_t heal_attempts = 0;   // consecutive self-heal count; escalates to a forced reconnect if resending ATZ a few times still yields no data
 
-    // 8-slot poll: 0=RPM, 1=IAT, 2=Speed, 3=CLT, 4=Load(0x04), 5=TPS(0x11), 6=OIL(vehicle strategy), 7=BAT(0x42)
+    // 12-slot poll: 0=RPM, 1=IAT, 2=Speed, 3=CLT, 4=Load(0x04), 5=TPS(0x11), 6=OIL(vehicle strategy), 7=BAT(0x42), 8=Boost, 9=AFR, 10=Oil pressure, 11=Gear
     while (1)
     {
         esp_task_wdt_reset();  // feed the watchdog
@@ -1031,7 +1039,7 @@ static void obd_poll_task(void *arg) {
             }
         }
 
-        bool completed_obd_round = (tick_count == 10);
+        bool completed_obd_round = (tick_count == 11);
         {
         switch(tick_count)
         {
@@ -1132,12 +1140,33 @@ static void obd_poll_task(void *arg) {
             case 9:// Air-fuel ratio AFR (01 44, Commanded Equivalence Ratio)
                 elm327_ble_send_ascii_blocking("01 44\r");
                 break;
-            case 10:// Engine oil pressure (Mode 22 DID 4436, B58 absolute hPa) — physical 7E0, only for OBD-oil-pressure profiles
+            case 10:// Engine oil pressure (Mode 22 DID, per-profile: 4436=B58, 586F=N55) — physical header, only for OBD-oil-pressure profiles
                 {
                     const vehicle_profile_t *vp = vehicle_profile_get_active();
-                    if (vp && vp->has_obd_oil_pressure) {
-                        elm327_ble_send_ascii_blocking("ATSH7E0\r");
-                        elm327_ble_send_ascii_blocking("22 44 36\r");
+                    if (vp && vp->obd_oil_pressure_did != 0) {
+                        const vehicle_override_t *ov = vehicle_profile_get_override();
+                        const char *phys_hdr = (ov && ov->uds_header_cmd) ? ov->uds_header_cmd : "ATSH7E0\r";
+                        char cmd[16];
+                        elm327_ble_send_ascii_blocking(phys_hdr);
+                        snprintf(cmd, sizeof(cmd), "22 %02X %02X\r",
+                                 (vp->obd_oil_pressure_did >> 8) & 0xFF, vp->obd_oil_pressure_did & 0xFF);
+                        elm327_ble_send_ascii_blocking(cmd);
+                        elm327_ble_send_ascii_blocking(get_vehicle_fixed_header_cmd());
+                    }
+                }
+                break;
+            case 11:// Transmission gear (Mode 22 DID, per-profile: D031=BMW ZF 8HP) — EGS functional header, only for OBD-gear profiles
+                {
+                    const vehicle_profile_t *vp = vehicle_profile_get_active();
+                    if (vp && vp->obd_gear_did != 0) {
+                        const vehicle_override_t *ov = vehicle_profile_get_override();
+                        const char *gear_hdr = (ov && ov->obd_gear_header_cmd) ? ov->obd_gear_header_cmd
+                                             : ((ov && ov->uds_header_cmd) ? ov->uds_header_cmd : "ATSH7E0\r");
+                        char cmd[16];
+                        elm327_ble_send_ascii_blocking(gear_hdr);
+                        snprintf(cmd, sizeof(cmd), "22 %02X %02X\r",
+                                 (vp->obd_gear_did >> 8) & 0xFF, vp->obd_gear_did & 0xFF);
+                        elm327_ble_send_ascii_blocking(cmd);
                         elm327_ble_send_ascii_blocking(get_vehicle_fixed_header_cmd());
                     }
                 }
@@ -1151,7 +1180,7 @@ static void obd_poll_task(void *arg) {
         }
 
         tick_count++;
-        if(tick_count >= 11)
+        if(tick_count >= 12)
         {
             tick_count = 0;
         }
@@ -1998,13 +2027,27 @@ static void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_
             if (values >= 4 && mode22 == 0x62 && s_cbs.on_parsed_oil_temp) {
                 uint32_t pid16 = (ph << 8) | pl;
 
-                // ---- Engine oil pressure (Mode 22 DID 4436, B58: absolute hPa, unsigned 16-bit) ----
-                if (pid16 == 0x4436) {
-                    if (values >= 5 && s_cbs.on_parsed_oil_pressure) {
-                        uint32_t hpa = (d0 << 8) | d1;
-                        s_cbs.on_parsed_oil_pressure(hpa);
+                // ---- Engine oil pressure (Mode 22 DID, per-profile: 4436=B58, 586F=N55; absolute hPa, 16-bit) ----
+                {
+                    const vehicle_profile_t *vp = vehicle_profile_get_active();
+                    if (vp && vp->obd_oil_pressure_did != 0 && pid16 == vp->obd_oil_pressure_did) {
+                        if (values >= 5 && s_cbs.on_parsed_oil_pressure) {
+                            uint32_t hpa = (d0 << 8) | d1;
+                            s_cbs.on_parsed_oil_pressure(hpa);
+                        }
+                        goto oil_temp_done;
                     }
-                    goto oil_temp_done;
+                }
+
+                // ---- Transmission gear (Mode 22 DID, per-profile: D031=BMW ZF 8HP; single byte 0=N,1..8=forward) ----
+                {
+                    const vehicle_profile_t *vp = vehicle_profile_get_active();
+                    if (vp && vp->obd_gear_did != 0 && pid16 == vp->obd_gear_did) {
+                        if (values >= 4 && s_cbs.on_parsed_obd_gear) {
+                            s_cbs.on_parsed_obd_gear((uint8_t)d0);
+                        }
+                        goto oil_temp_done;
+                    }
                 }
 
                 // ---- Data-driven override parsing ----
@@ -2222,6 +2265,7 @@ void elm327_ble_start_default(const char *target_name, const uint8_t mac[6]) {
         .on_parsed_manifold_pressure = default_on_parsed_manifold_pressure,
         .on_parsed_afr = default_on_parsed_afr,
         .on_parsed_oil_pressure = default_on_parsed_oil_pressure,
+        .on_parsed_obd_gear = default_on_parsed_obd_gear,
     };
     s_scan_only_mode = false;
     bool mac_set = mac && (mac[0]|mac[1]|mac[2]|mac[3]|mac[4]|mac[5]) != 0;
