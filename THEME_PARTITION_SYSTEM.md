@@ -30,18 +30,46 @@ This branch implements a complete theme partition system that separates UI prese
 1. **System Pages Preserved**: Settings, OTA, Bluetooth pairing remain in core firmware
 2. **Boot Sequence Protected**: Sky Gauge logo, intro animation, boot video NEVER themed
 3. **Theme Pages Replaceable**: Gauge displays loaded from theme partition
-4. **OTA Compatible**: Themes can be sent via BLE OTA like firmware
+4. **Theme *binaries* OTA-able once installed**: after a device has this partition table, a
+   theme package (the 2MB blob written to theme_0/theme_1) can be sent over BLE, same as firmware
 5. **Dual Slots**: theme_0/theme_1 for safe upgrades (rollback on corruption)
 6. **Color Palette**: 8 themed colors (bg, ring, arc_track, etc.)
 7. **Assets**: Optional 360x360 dial/ring images (memory-mapped from Flash)
 8. **Custom Layouts**: JSON-based page element definitions
 
+## ⚠️ IMPORTANT: This branch's partition table change is NOT OTA-deployable
+
+Adding `theme_0`/`theme_1` and resizing `bootmedia` changes `partitions.csv`, which changes the
+**partition table itself** — the layout ESP-IDF flashes to `0x8000` and every `esp_partition_*`
+call trusts at runtime. Existing devices in the field are running the *old* partition table
+(no theme_0/theme_1, bootmedia at the old offset/size).
+
+The existing BLE OTA path (`ota_update_ble.c`) only ever writes into an already-existing
+`ota_0`/`ota_1` app slot — it has no mechanism to rewrite the partition table on a live device,
+and doing that safely (relocating/resizing a data partition without erasing what's on it) is not
+something `esp_ota_ops` supports at all.
+
+**Consequence**: shipping this to existing users requires a one-time **USB reflash** (`idf.py
+flash` / esptool, full image). Only *after* a device is on this new partition table can theme
+*binaries* be pushed via BLE OTA going forward. Plan the rollout accordingly — e.g. bundle it
+with a service visit, or clearly communicate to users that this specific update needs a cable.
+
 ## Changes
 
 ### Partition Table (partitions.csv)
-- **ota_0/ota_1**: 3MB each (unchanged)
-- **theme_0/theme_1**: 2MB each (new)
-- **bootmedia**: Reduced to 5.96MB (was 9.88MB)
+The original `partitions.csv` left the `Offset` column blank and let `gen_esp32part.py`
+auto-place and auto-align every partition (verified against `git show main:partitions.csv`).
+This branch's table now specifies explicit offsets so theme_0/theme_1 can be inserted at a known
+location; those offsets were computed to match what the auto-placement would have produced, and
+are re-verified with `gen_esp32part.py --verify` at build time. (An intermediate draft of this
+table had a 64KB-alignment bug in ota_0's offset — caught and fixed before merging; the original
+table on `main` never had this bug.)
+
+- **ota_0**: 0x020000, 3MB (unchanged from auto-placement)
+- **ota_1**: 0x320000, 3MB (unchanged from auto-placement)
+- **theme_0**: 0x620000, 2MB (new — this is where `bootmedia` used to start)
+- **theme_1**: 0x820000, 2MB (new)
+- **bootmedia**: 0xA20000, 5.875MB (was 9.875MB — actual usage today is ~312KB, so this has ample room)
 
 ### New Files
 - `main/theme_engine/theme_interface.h` - Public API
@@ -102,7 +130,7 @@ python3 tools/theme_packer/pack_theme.py themes/my_theme firmware/my_theme.bin
 
 **Direct flash (USB):**
 ```bash
-esptool.py --chip esp32s3 write_flash 0x612000 firmware/my_theme.bin
+esptool.py --chip esp32s3 write_flash 0x620000 firmware/my_theme.bin
 ```
 
 **BLE OTA:**
@@ -145,7 +173,7 @@ idf.py flash
 ### Flash Example Theme
 ```bash
 python3 tools/theme_packer/pack_theme.py themes/example_boost_oil firmware/theme_example.bin
-esptool.py --chip esp32s3 --port /dev/ttyUSB0 write_flash 0x612000 firmware/theme_example.bin
+esptool.py --chip esp32s3 --port /dev/ttyUSB0 write_flash 0x620000 firmware/theme_example.bin
 ```
 
 ### Switch Theme Slot

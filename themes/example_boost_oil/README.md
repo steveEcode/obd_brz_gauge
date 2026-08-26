@@ -24,14 +24,14 @@ python3 tools/theme_packer/pack_theme.py themes/example_boost_oil firmware/theme
 ```
 
 This will generate a 2MB binary that can be:
-- Flashed directly to theme_0 partition (offset 0x612000)
+- Flashed directly to theme_0 partition (offset 0x620000)
 - Or sent via BLE OTA to the device
 
 ## Installing
 
 ### Via esptool (USB):
 ```bash
-esptool.py --chip esp32s3 --port /dev/ttyUSB0 write_flash 0x612000 firmware/theme_boost_oil.bin
+esptool.py --chip esp32s3 --port /dev/ttyUSB0 write_flash 0x620000 firmware/theme_boost_oil.bin
 ```
 
 ### Via BLE OTA:
