@@ -3,11 +3,13 @@
 # Note: if you have increased the bootloader size, make sure to update the offsets to avoid overlap
 # App-type partitions (ota_0/ota_1) MUST be offset-aligned to 0x10000 (64KB) — gen_esp32part.py
 # enforces this at build time. data-type partitions are aligned here too, for consistency.
+# Only one theme partition (theme_0): a bad/missing/corrupt theme falls back to the
+# built-in default theme (see theme_engine/theme_loader.c theme_load_default()), so a
+# second slot for A/B rollback isn't needed. Revisit if OTA theme delivery ever needs it.
 nvs,        data, nvs,      0x9000,    0x6000,
 otadata,    data, ota,      0xF000,    0x2000,
 phy_init,   data, phy,      0x11000,   0x1000,
 ota_0,      app,  ota_0,    0x20000,   0x300000,
 ota_1,      app,  ota_1,    0x320000,  0x300000,
 theme_0,    data, spiffs,   0x620000,  0x200000,
-theme_1,    data, spiffs,   0x820000,  0x200000,
-bootmedia,  data, 0x82,     0xA20000,  0x5E0000,
+bootmedia,  data, 0x82,     0x820000,  0x7E0000,

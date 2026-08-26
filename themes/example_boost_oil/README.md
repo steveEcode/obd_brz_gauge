@@ -24,7 +24,7 @@ python3 tools/theme_packer/pack_theme.py themes/example_boost_oil firmware/theme
 ```
 
 This will generate a 2MB binary that can be:
-- Flashed directly to theme_0 partition (offset 0x620000)
+- Flashed directly to the theme_0 partition (offset 0x620000, the only theme slot)
 - Or sent via BLE OTA to the device
 
 ## Installing

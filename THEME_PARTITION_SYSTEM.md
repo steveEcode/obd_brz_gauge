@@ -17,7 +17,7 @@ This branch implements a complete theme partition system that separates UI prese
 └─────────────────────────────────────────────────────┘
            ↓ reads
 ┌─────────────────────────────────────────────────────┐
-│  Theme Data Partition (theme_0/theme_1, 2MB each)   │
+│  Theme Data Partition (theme_0, 2MB)                │
 ├─────────────────────────────────────────────────────┤
 │  • theme_manifest.json (metadata, colors, pages)    │
 │  • assets/ (dial.png, ring.png - 360x360 images)    │
@@ -31,18 +31,20 @@ This branch implements a complete theme partition system that separates UI prese
 2. **Boot Sequence Protected**: Sky Gauge logo, intro animation, boot video NEVER themed
 3. **Theme Pages Replaceable**: Gauge displays loaded from theme partition
 4. **Theme *binaries* OTA-able once installed**: after a device has this partition table, a
-   theme package (the 2MB blob written to theme_0/theme_1) can be sent over BLE, same as firmware
-5. **Dual Slots**: theme_0/theme_1 for safe upgrades (rollback on corruption)
+   theme package (the 2MB blob written to theme_0) can be sent over BLE, same as firmware
+5. **Single Slot, Safe Fallback**: only `theme_0` exists — a missing/corrupt/unparseable theme
+   falls back to the built-in default theme rather than bricking the UI (see
+   `theme_load_default()`), so a second slot for A/B rollback isn't needed
 6. **Color Palette**: 8 themed colors (bg, ring, arc_track, etc.)
 7. **Assets**: Optional 360x360 dial/ring images (memory-mapped from Flash)
 8. **Custom Layouts**: JSON-based page element definitions
 
 ## ⚠️ IMPORTANT: This branch's partition table change is NOT OTA-deployable
 
-Adding `theme_0`/`theme_1` and resizing `bootmedia` changes `partitions.csv`, which changes the
+Adding `theme_0` and resizing `bootmedia` changes `partitions.csv`, which changes the
 **partition table itself** — the layout ESP-IDF flashes to `0x8000` and every `esp_partition_*`
 call trusts at runtime. Existing devices in the field are running the *old* partition table
-(no theme_0/theme_1, bootmedia at the old offset/size).
+(no theme_0, bootmedia at the old offset/size).
 
 The existing BLE OTA path (`ota_update_ble.c`) only ever writes into an already-existing
 `ota_0`/`ota_1` app slot — it has no mechanism to rewrite the partition table on a live device,
@@ -59,7 +61,7 @@ with a service visit, or clearly communicate to users that this specific update 
 ### Partition Table (partitions.csv)
 The original `partitions.csv` left the `Offset` column blank and let `gen_esp32part.py`
 auto-place and auto-align every partition (verified against `git show main:partitions.csv`).
-This branch's table now specifies explicit offsets so theme_0/theme_1 can be inserted at a known
+This branch's table now specifies explicit offsets so theme_0 can be inserted at a known
 location; those offsets were computed to match what the auto-placement would have produced, and
 are re-verified with `gen_esp32part.py --verify` at build time. (An intermediate draft of this
 table had a 64KB-alignment bug in ota_0's offset — caught and fixed before merging; the original
@@ -68,8 +70,7 @@ table on `main` never had this bug.)
 - **ota_0**: 0x020000, 3MB (unchanged from auto-placement)
 - **ota_1**: 0x320000, 3MB (unchanged from auto-placement)
 - **theme_0**: 0x620000, 2MB (new — this is where `bootmedia` used to start)
-- **theme_1**: 0x820000, 2MB (new)
-- **bootmedia**: 0xA20000, 5.875MB (was 9.875MB — actual usage today is ~312KB, so this has ample room)
+- **bootmedia**: 0x820000, 7.875MB (was 9.875MB — actual usage today is ~312KB, so this has ample room)
 
 ### New Files
 - `main/theme_engine/theme_interface.h` - Public API
@@ -176,12 +177,10 @@ python3 tools/theme_packer/pack_theme.py themes/example_boost_oil firmware/theme
 esptool.py --chip esp32s3 --port /dev/ttyUSB0 write_flash 0x620000 firmware/theme_example.bin
 ```
 
-### Switch Theme Slot
-- Via NVS: Modify `theme_cfg.theme_slot` (0 or 1)
-- Via app: Send theme slot change command → device restarts
-
 ## Notes
 
+- Only one theme partition (`theme_0`) exists; `theme_cfg.theme_slot` in NVS is unused,
+  kept only so the struct layout doesn't shift
 - Theme partition uses SPIFFS subtype (generic data partition)
 - Assets are memory-mapped (zero-copy) from Flash to PSRAM
 - Theme corruption falls back to default theme (8 colors from existing system)

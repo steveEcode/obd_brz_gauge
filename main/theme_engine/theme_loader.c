@@ -83,12 +83,10 @@ static lv_obj_t* theme_create_custom_page(const char *page_id);
 esp_err_t theme_engine_init(void) {
     ESP_LOGI(TAG, "Initializing theme engine");
 
-    // Read theme slot from NVS
-    uint8_t theme_slot = nvs_cfg_get()->theme_cfg.theme;  // 0 or 1
-
-    esp_err_t ret = theme_load(theme_slot);
+    // Only one theme partition exists (theme_0); there is nothing to select.
+    esp_err_t ret = theme_load(0);
     if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "Failed to load theme from slot %d, using default", theme_slot);
+        ESP_LOGW(TAG, "Failed to load theme from theme_0, using default");
         return theme_load_default();
     }
 
@@ -96,23 +94,28 @@ esp_err_t theme_engine_init(void) {
 }
 
 esp_err_t theme_load(uint8_t slot) {
-    ESP_LOGI(TAG, "Loading theme from slot %d", slot);
+    // Only slot 0 (partition "theme_0") exists. A bad/missing theme falls
+    // back to the built-in default (see theme_load_default()), so a second
+    // slot for A/B rollback was judged unnecessary.
+    if (slot != 0) {
+        ESP_LOGE(TAG, "Theme slot %d does not exist (only theme_0 is available)", slot);
+        return ESP_ERR_NOT_FOUND;
+    }
+    ESP_LOGI(TAG, "Loading theme from theme_0");
 
     // Unload previous theme if any
     if (s_ctx.loaded) {
         theme_unload();
     }
 
-    // Find theme partition
-    const char *partition_name = (slot == 0) ? "theme_0" : "theme_1";
     s_ctx.partition = esp_partition_find_first(
         ESP_PARTITION_TYPE_DATA,
         ESP_PARTITION_SUBTYPE_DATA_SPIFFS,
-        partition_name
+        "theme_0"
     );
 
     if (!s_ctx.partition) {
-        ESP_LOGE(TAG, "Theme partition '%s' not found", partition_name);
+        ESP_LOGE(TAG, "Theme partition 'theme_0' not found");
         return ESP_ERR_NOT_FOUND;
     }
 

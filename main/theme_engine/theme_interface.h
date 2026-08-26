@@ -77,7 +77,7 @@ esp_err_t theme_engine_init(void);
  * Load theme from specific slot (0 or 1)
  * Used by OTA to switch themes, or for fallback on corruption
  *
- * @param slot Theme partition slot (0 = theme_0, 1 = theme_1)
+ * @param slot Theme partition slot (only 0 = theme_0 exists)
  * @return ESP_OK on success, ESP_ERR_* on failure
  */
 esp_err_t theme_load(uint8_t slot);
