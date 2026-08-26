@@ -135,6 +135,16 @@ lv_obj_t* theme_create_page(const char *page_id) {
         return NULL;
     }
 
+    // CRITICAL: Boot pages are NEVER themed, always use system implementation
+    // These ensure consistent Sky Gauge branding and boot experience
+    if (strcmp(page_id, "logo") == 0 ||
+        strcmp(page_id, "intro") == 0 ||
+        strcmp(page_id, "boot_video") == 0) {
+        ESP_LOGI(TAG, "Page '%s' is a protected boot page, using system implementation", page_id);
+        // Return NULL here - caller should use original ui_ScreenPageLogo_screen_init()
+        return NULL;
+    }
+
     // Search page registry
     for (int i = 0; i < s_ctx.page_count; i++) {
         if (strcmp(s_ctx.pages[i].page_id, page_id) == 0) {

@@ -28,12 +28,13 @@ This branch implements a complete theme partition system that separates UI prese
 ## Key Features
 
 1. **System Pages Preserved**: Settings, OTA, Bluetooth pairing remain in core firmware
-2. **Theme Pages Replaceable**: Gauge displays loaded from theme partition
-3. **OTA Compatible**: Themes can be sent via BLE OTA like firmware
-4. **Dual Slots**: theme_0/theme_1 for safe upgrades (rollback on corruption)
-5. **Color Palette**: 8 themed colors (bg, ring, arc_track, etc.)
-6. **Assets**: Optional 360x360 dial/ring images (memory-mapped from Flash)
-7. **Custom Layouts**: JSON-based page element definitions
+2. **Boot Sequence Protected**: Sky Gauge logo, intro animation, boot video NEVER themed
+3. **Theme Pages Replaceable**: Gauge displays loaded from theme partition
+4. **OTA Compatible**: Themes can be sent via BLE OTA like firmware
+5. **Dual Slots**: theme_0/theme_1 for safe upgrades (rollback on corruption)
+6. **Color Palette**: 8 themed colors (bg, ring, arc_track, etc.)
+7. **Assets**: Optional 360x360 dial/ring images (memory-mapped from Flash)
+8. **Custom Layouts**: JSON-based page element definitions
 
 ## Changes
 
@@ -76,11 +77,15 @@ mkdir -p themes/my_theme/assets
     ...
   },
   "pages": {
-    "system_pages": ["settings", "ota", "bluetooth_pair"],
+    "comment": "Boot pages (logo/intro/boot_video) are protected - never themed",
+    "system_pages": ["logo", "intro", "boot_video", "settings", "ota", "bluetooth_pair"],
     "theme_pages": [...]
   }
 }
 ```
+
+**Important**: `logo`, `intro`, and `boot_video` must **always** be in `system_pages`.
+These ensure Sky Gauge branding and consistent boot experience.
 
 ### 3. (Optional) Add Assets
 

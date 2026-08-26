@@ -93,6 +93,12 @@ esp_err_t theme_get_info(theme_info_t *info);
  * Create a page by ID (routes to system or theme page based on manifest)
  * Called by UI layer during screen initialization
  *
+ * NOTE: Boot pages are NEVER themed:
+ *   - "logo" (ui_ScreenPageLogo) - Sky Gauge logo screen
+ *   - "intro" (ui_ScreenPageIntro) - RACE AS ONE animation
+ *   - Boot video playback (boot_block_player)
+ * These always use core firmware implementations to ensure consistent boot experience.
+ *
  * @param page_id Page identifier (e.g. "settings", "main_gauge")
  * @return LVGL object for the page, or NULL if not found
  */

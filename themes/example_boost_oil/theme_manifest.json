@@ -22,7 +22,11 @@
     "panel": "0x1A1A1A"
   },
   "pages": {
+    "comment": "Boot pages (logo/intro/boot_video) are NEVER themed - always use Sky Gauge branding",
     "system_pages": [
+      "logo",
+      "intro",
+      "boot_video",
       "settings",
       "ota",
       "vehicle_select",
