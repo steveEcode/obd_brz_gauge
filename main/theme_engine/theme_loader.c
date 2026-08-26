@@ -151,7 +151,10 @@ lv_obj_t* theme_create_page(const char *page_id) {
             ESP_LOGI(TAG, "Creating page '%s' (type: %s)",
                      page_id,
                      s_ctx.pages[i].type == THEME_PAGE_TYPE_SYSTEM ? "system" : "theme");
-            return s_ctx.pages[i].create_fn();
+            if (s_ctx.pages[i].type == THEME_PAGE_TYPE_THEME) {
+                return theme_create_custom_page(page_id);
+            }
+            return s_ctx.pages[i].create_fn ? s_ctx.pages[i].create_fn() : NULL;
         }
     }
 
@@ -434,8 +437,33 @@ static void theme_register_pages(void) {
     // TODO: Register system pages (settings/OTA/bluetooth/etc.)
     // This will be implemented when integrating with existing UI
 
-    // TODO: Register theme pages from manifest
-    // This will parse the "pages" section and create custom pages
+    // Register theme pages declared in the manifest (Phase 2: placeholder page only)
+    if (s_ctx.manifest) {
+        cJSON *pages = cJSON_GetObjectItem(s_ctx.manifest, "pages");
+        cJSON *theme_pages = pages ? cJSON_GetObjectItem(pages, "theme_pages") : NULL;
+        cJSON *page = NULL;
+        cJSON_ArrayForEach(page, theme_pages) {
+            if (s_ctx.page_count >= (int)(sizeof(s_ctx.pages) / sizeof(s_ctx.pages[0]))) {
+                ESP_LOGW(TAG, "Too many theme pages, ignoring the rest");
+                break;
+            }
+            cJSON *id = cJSON_GetObjectItem(page, "id");
+            if (!id || !cJSON_IsString(id)) {
+                continue;
+            }
+            // Protected boot pages can never be declared as theme pages
+            if (strcmp(id->valuestring, "logo") == 0 ||
+                strcmp(id->valuestring, "intro") == 0 ||
+                strcmp(id->valuestring, "boot_video") == 0) {
+                ESP_LOGW(TAG, "Theme tried to override protected page '%s', ignoring", id->valuestring);
+                continue;
+            }
+            theme_page_entry_t *entry = &s_ctx.pages[s_ctx.page_count++];
+            entry->page_id = id->valuestring;
+            entry->type = THEME_PAGE_TYPE_THEME;
+            entry->create_fn = NULL;  // custom pages are built by theme_create_page() directly
+        }
+    }
 
     ESP_LOGI(TAG, "Registered %d pages", s_ctx.page_count);
 }
