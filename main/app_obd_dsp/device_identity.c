@@ -32,6 +32,8 @@
 #define OBD_GAUGE_OTA_SLOTS         2u
 #define OBD_GAUGE_BOOTMEDIA_SLOTS   1u
 #define OBD_GAUGE_BOOTMEDIA_FORMAT   1u
+#define OBD_GAUGE_THEME_SLOTS       1u
+#define OBD_GAUGE_THEME_PARTITION_SIZE  (4u * 1024u * 1024u)
 
 static const device_identity_t s_identity = {
     .board_name = OBD_GAUGE_BOARD_NAME,
@@ -79,7 +81,8 @@ const char *device_identity_manifest_json(void)
              "\"psram_mb\":%u,"
              "\"ota_slots\":%u,"
              "\"bootmedia_slots\":%u,"
-             "\"bootmedia_format\":%u"
+             "\"bootmedia_format\":%u,"
+             "\"theme\":{\"slots\":%u,\"partition_size\":%u,\"writable\":true}"
              "},"
              "\"firmware\":{"
              "\"project\":\"%s\","
@@ -104,6 +107,8 @@ const char *device_identity_manifest_json(void)
              s_identity.ota_slots,
              s_identity.bootmedia_slots,
              s_identity.bootmedia_format_version,
+             OBD_GAUGE_THEME_SLOTS,
+             OBD_GAUGE_THEME_PARTITION_SIZE,
              project_name,
              project_version,
              OBD_GAUGE_BUILD_TAG,

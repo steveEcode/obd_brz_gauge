@@ -9,9 +9,17 @@
 #include <ctype.h>
 #include "bsp_obd_dsp/nvs_storage.h"
 #include "export_path/ui_theme.h"
+#include "src/misc/lv_fs.h"
 
 #define TAG "theme_engine"
 #define THEME_MANIFEST_MAX_SIZE  (16 * 1024)  // 16KB for JSON manifest
+
+// Exact-match schema version this firmware's parser understands. No
+// range/semver comparison — the format has only ever been "1.0", and a
+// mismatch (older or newer) means this loader may not understand new
+// element types the manifest relies on, so it's safer to refuse and fall
+// back to the default theme than to silently misrender.
+#define THEME_SCHEMA_VERSION_SUPPORTED "1.0"
 
 // Widget kinds a layout.json element can bind live OBD data to. Kept as an
 // enum + shared params struct (instead of a per-widget-type function
@@ -32,7 +40,43 @@ typedef struct {
     int32_t range_max;
     int32_t divisor;           // label only: value/divisor is split into whole.fraction
     char format[24];           // label only: printf-style, e.g. "%d.%02d" or "%d PSI"
+    int32_t anchor_x;          // label only: design x anchor, re-applied after every
+                                // text update since center/right alignment depends on
+                                // the newly rendered width, not the "--" placeholder's
+    uint8_t align;              // label only: 0=left, 1=center, 2=right
 } theme_binding_t;
+
+// A single named, memory-mapped image asset from the manifest's "assets"
+// object. dial_background/ring_overlay are also mapped into this table (in
+// addition to the dedicated dial_img/ring_img fields, which stay for
+// theme_get_asset()'s "dial"/"ring" back-compat lookup) so "image" layout
+// elements can address them the same way as any other imported image.
+#define THEME_MAX_NAMED_ASSETS 16
+typedef struct {
+    char name[32];
+    const void *data;
+    esp_partition_mmap_handle_t handle;
+    lv_img_dsc_t img;
+} theme_named_asset_t;
+
+// A compiled LVGL binary font ("lv_font_bin" asset), mmap'd from flash like
+// any other named asset. Kept separate from theme_named_asset_t because it's
+// read through lv_fs (see theme_font_fs_*) rather than handed to LVGL as a
+// raw lv_img_dsc_t pointer.
+#define THEME_MAX_NAMED_FONTS 16
+typedef struct {
+    char name[40];
+    const void *data;
+    esp_partition_mmap_handle_t handle;
+    size_t size;
+} theme_named_font_t;
+
+// A font actually loaded via lv_font_load(), cached by asset name so pages
+// with multiple labels sharing one custom font don't reload it per-label.
+typedef struct {
+    char name[40];
+    lv_font_t *font;
+} theme_loaded_font_t;
 
 // Internal theme context
 typedef struct {
@@ -54,12 +98,40 @@ typedef struct {
     lv_img_dsc_t dial_img;
     lv_img_dsc_t ring_img;
 
+    // Generic named assets (superset of dial_background/ring_overlay above,
+    // keyed by whatever name pack_theme.py assigned in the manifest's
+    // "assets" object) -- lets layout.json "image" elements reference any
+    // imported image by name, not just the two built-in dial/ring slots.
+    theme_named_asset_t named_assets[THEME_MAX_NAMED_ASSETS];
+    uint8_t named_asset_count;
+
+    // Compiled LVGL binary fonts (format == "lv_font_bin" in the manifest's
+    // "assets" object), mmap'd the same way as named_assets above but kept
+    // in a separate table since lv_font_load() reads them through the "F:"
+    // lv_fs_drv_t (theme_font_fs_*) instead of being handed a raw pointer.
+    theme_named_font_t named_fonts[THEME_MAX_NAMED_FONTS];
+    uint8_t named_font_count;
+
+    // Fonts actually lv_font_load()'ed so far (lazy, keyed by asset name) --
+    // avoids reloading the same .bin once per label when several labels on
+    // a page share one custom font. Freed in theme_unload().
+    theme_loaded_font_t loaded_fonts[THEME_MAX_NAMED_FONTS];
+    uint8_t loaded_font_count;
+
     // Color palette (8 themed colors)
     uint32_t colors[UI_COLOR__COUNT];
 
     // Page registry
     theme_page_entry_t pages[32];
     uint8_t page_count;
+
+    // Ordered list of theme-declared page ids (subset of `pages` with
+    // type == THEME_PAGE_TYPE_THEME, kept separately so UI navigation can
+    // walk "page N of the active theme" without caring about future system
+    // pages mixed into the same registry). Strings point into s_ctx.manifest,
+    // valid until the next theme_load()/theme_unload().
+    const char *theme_page_ids[32];
+    uint8_t theme_page_count;
 
     // Data bindings (for theme_update_data), populated while building a
     // custom page from layout.json
@@ -75,6 +147,99 @@ static esp_err_t theme_parse_manifest(void);
 static esp_err_t theme_load_assets(void);
 static void theme_register_pages(void);
 static lv_obj_t* theme_create_custom_page(const char *page_id);
+static const char* theme_json_str(cJSON *obj, const char *key, const char *fallback);
+static void theme_font_fs_register(void);
+static const theme_named_font_t* theme_find_named_font(const char *name);
+static const lv_font_t* theme_load_custom_font(const char *font_asset);
+
+// ============================================================
+//  Memory-backed lv_fs_drv_t for lv_font_load()
+// ============================================================
+//
+// lv_font_load() reads its .bin through LVGL's virtual filesystem, not a
+// raw pointer -- unlike images, which theme_find_named_asset() hands to
+// LVGL directly as an lv_img_dsc_t. The bytes are already mmap'd flash
+// (same as image assets), so this driver is a thin adapter: open_cb looks
+// the path up in named_fonts[] and returns a small in-memory cursor,
+// read/seek/tell operate purely on that cursor, close_cb frees it. No real
+// file I/O and no sdkconfig change needed (lv_fs.c is unconditionally
+// compiled by LVGL's own CMakeLists).
+#define THEME_FONT_FS_LETTER 'F'
+
+typedef struct {
+    const uint8_t *data;
+    size_t size;
+    size_t pos;
+} theme_font_fs_file_t;
+
+static void* theme_font_fs_open(lv_fs_drv_t *drv, const char *path, lv_fs_mode_t mode) {
+    (void)drv;
+    if (mode != LV_FS_MODE_RD) {
+        return NULL;  // fonts are read-only assets
+    }
+    const theme_named_font_t *entry = theme_find_named_font(path);
+    if (!entry) {
+        ESP_LOGW(TAG, "Font fs: unknown font asset '%s'", path);
+        return NULL;
+    }
+    theme_font_fs_file_t *file = lv_mem_alloc(sizeof(theme_font_fs_file_t));
+    if (!file) {
+        return NULL;
+    }
+    file->data = (const uint8_t *)entry->data;
+    file->size = entry->size;
+    file->pos = 0;
+    return file;
+}
+
+static lv_fs_res_t theme_font_fs_close(lv_fs_drv_t *drv, void *file_p) {
+    (void)drv;
+    lv_mem_free(file_p);
+    return LV_FS_RES_OK;
+}
+
+static lv_fs_res_t theme_font_fs_read(lv_fs_drv_t *drv, void *file_p, void *buf, uint32_t btr, uint32_t *br) {
+    (void)drv;
+    theme_font_fs_file_t *file = (theme_font_fs_file_t *)file_p;
+    size_t remaining = file->size - file->pos;
+    size_t to_read = btr < remaining ? btr : remaining;
+    memcpy(buf, file->data + file->pos, to_read);
+    file->pos += to_read;
+    *br = (uint32_t)to_read;
+    return LV_FS_RES_OK;
+}
+
+static lv_fs_res_t theme_font_fs_seek(lv_fs_drv_t *drv, void *file_p, uint32_t pos, lv_fs_whence_t whence) {
+    (void)drv;
+    theme_font_fs_file_t *file = (theme_font_fs_file_t *)file_p;
+    size_t base;
+    switch (whence) {
+        case LV_FS_SEEK_CUR: base = file->pos; break;
+        case LV_FS_SEEK_END: base = file->size; break;
+        default: base = 0; break;
+    }
+    size_t new_pos = base + pos;
+    file->pos = new_pos > file->size ? file->size : new_pos;
+    return LV_FS_RES_OK;
+}
+
+static lv_fs_res_t theme_font_fs_tell(lv_fs_drv_t *drv, void *file_p, uint32_t *pos_p) {
+    (void)drv;
+    *pos_p = (uint32_t)((theme_font_fs_file_t *)file_p)->pos;
+    return LV_FS_RES_OK;
+}
+
+static void theme_font_fs_register(void) {
+    static lv_fs_drv_t drv;
+    lv_fs_drv_init(&drv);
+    drv.letter = THEME_FONT_FS_LETTER;
+    drv.open_cb = theme_font_fs_open;
+    drv.close_cb = theme_font_fs_close;
+    drv.read_cb = theme_font_fs_read;
+    drv.seek_cb = theme_font_fs_seek;
+    drv.tell_cb = theme_font_fs_tell;
+    lv_fs_drv_register(&drv);
+}
 
 // ============================================================
 //  Public API Implementation
@@ -82,6 +247,7 @@ static lv_obj_t* theme_create_custom_page(const char *page_id);
 
 esp_err_t theme_engine_init(void) {
     ESP_LOGI(TAG, "Initializing theme engine");
+    theme_font_fs_register();
 
     // Only one theme partition exists (theme_0); there is nothing to select.
     esp_err_t ret = theme_load(0);
@@ -288,6 +454,18 @@ void theme_update_data(const obd_snapshot_t *obd) {
             } else {
                 lv_label_set_text_fmt(bind->widget, bind->format, value);
             }
+            if (bind->align != 0) {
+                // Center/right alignment is anchored to the rendered text
+                // width, which changes with every value (e.g. "5" vs "145")
+                // -- theme_build_label_element() only computes this once at
+                // page-build time against the "--" placeholder, so it has
+                // to be redone here or the label visibly drifts left/right
+                // as the OBD value's digit count changes.
+                lv_obj_update_layout(bind->widget);
+                int32_t w = lv_obj_get_width(bind->widget);
+                int32_t new_x = (bind->align == 1) ? (bind->anchor_x - w / 2) : (bind->anchor_x - w);
+                lv_obj_set_x(bind->widget, new_x);
+            }
             break;
         }
         }
@@ -317,6 +495,67 @@ const lv_img_dsc_t* theme_get_asset(const char *asset_name) {
     return NULL;
 }
 
+// Looks up a named asset by its exact packer-assigned name (as opposed to
+// theme_get_asset()'s fixed "dial"/"ring" aliases). Used by layout.json
+// "image" elements, which reference arbitrary imported images by name.
+static const lv_img_dsc_t* theme_find_named_asset(const char *name) {
+    for (int i = 0; i < s_ctx.named_asset_count; i++) {
+        if (strcmp(s_ctx.named_assets[i].name, name) == 0) {
+            return &s_ctx.named_assets[i].img;
+        }
+    }
+    return NULL;
+}
+
+// Looks up a compiled font asset ("lv_font_bin") by its packer-assigned
+// name. Used by theme_font_fs_open() (via lv_font_load()'s "F:<name>" path)
+// and theme_load_custom_font() below.
+static const theme_named_font_t* theme_find_named_font(const char *name) {
+    for (int i = 0; i < s_ctx.named_font_count; i++) {
+        if (strcmp(s_ctx.named_fonts[i].name, name) == 0) {
+            return &s_ctx.named_fonts[i];
+        }
+    }
+    return NULL;
+}
+
+// Loads (or returns the cached) lv_font_t for a custom font asset name, so
+// a page with several labels sharing one custom font only pays
+// lv_font_load()'s cost once. Returns NULL if the asset doesn't exist or
+// fails to parse -- callers fall back to a built-in Montserrat size rather
+// than failing the whole label.
+static const lv_font_t* theme_load_custom_font(const char *font_asset) {
+    for (int i = 0; i < s_ctx.loaded_font_count; i++) {
+        if (strcmp(s_ctx.loaded_fonts[i].name, font_asset) == 0) {
+            return s_ctx.loaded_fonts[i].font;
+        }
+    }
+
+    if (!theme_find_named_font(font_asset)) {
+        ESP_LOGW(TAG, "Custom font: unknown font asset '%s'", font_asset);
+        return NULL;
+    }
+
+    char path[48];
+    snprintf(path, sizeof(path), "%c:%s", THEME_FONT_FS_LETTER, font_asset);
+    lv_font_t *font = lv_font_load(path);
+    if (!font) {
+        ESP_LOGW(TAG, "Custom font: failed to load '%s'", font_asset);
+        return NULL;
+    }
+
+    if (s_ctx.loaded_font_count >= THEME_MAX_NAMED_FONTS) {
+        ESP_LOGW(TAG, "Loaded-font cache full, not caching '%s' (still usable this call)", font_asset);
+        return font;
+    }
+    theme_loaded_font_t *slot = &s_ctx.loaded_fonts[s_ctx.loaded_font_count];
+    strncpy(slot->name, font_asset, sizeof(slot->name) - 1);
+    slot->name[sizeof(slot->name) - 1] = '\0';
+    slot->font = font;
+    s_ctx.loaded_font_count++;
+    return font;
+}
+
 bool theme_has_page(const char *page_id) {
     for (int i = 0; i < s_ctx.page_count; i++) {
         if (strcmp(s_ctx.pages[i].page_id, page_id) == 0) {
@@ -326,6 +565,17 @@ bool theme_has_page(const char *page_id) {
     return false;
 }
 
+uint8_t theme_page_list_count(void) {
+    return s_ctx.theme_page_count;
+}
+
+const char* theme_page_list_at(uint8_t index) {
+    if (index >= s_ctx.theme_page_count) {
+        return NULL;
+    }
+    return s_ctx.theme_page_ids[index];
+}
+
 void theme_unload(void) {
     if (!s_ctx.loaded) {
         return;
@@ -333,17 +583,30 @@ void theme_unload(void) {
 
     ESP_LOGI(TAG, "Unloading theme '%s'", s_ctx.info.name);
 
-    // Unmap assets
-    if (s_ctx.dial_handle) {
-        esp_partition_munmap(s_ctx.dial_handle);
-        s_ctx.dial_handle = 0;
-        s_ctx.dial_data = NULL;
+    // Unmap every named asset. dial_handle/ring_handle (when set) are just
+    // copies of a named_assets[] entry's handle -- unmap only through this
+    // table so each mapping is torn down exactly once.
+    for (int i = 0; i < s_ctx.named_asset_count; i++) {
+        if (s_ctx.named_assets[i].handle) {
+            esp_partition_munmap(s_ctx.named_assets[i].handle);
+        }
     }
+    s_ctx.dial_handle = 0;
+    s_ctx.dial_data = NULL;
+    s_ctx.ring_handle = 0;
+    s_ctx.ring_data = NULL;
 
-    if (s_ctx.ring_handle) {
-        esp_partition_munmap(s_ctx.ring_handle);
-        s_ctx.ring_handle = 0;
-        s_ctx.ring_data = NULL;
+    // Free every lv_font_load()'ed custom font, then unmap its backing
+    // memory -- same handle-per-slot lifecycle as named_assets above.
+    for (int i = 0; i < s_ctx.loaded_font_count; i++) {
+        if (s_ctx.loaded_fonts[i].font) {
+            lv_font_free(s_ctx.loaded_fonts[i].font);
+        }
+    }
+    for (int i = 0; i < s_ctx.named_font_count; i++) {
+        if (s_ctx.named_fonts[i].handle) {
+            esp_partition_munmap(s_ctx.named_fonts[i].handle);
+        }
     }
 
     // Free manifest
@@ -408,6 +671,21 @@ static esp_err_t theme_parse_manifest(void) {
         return ESP_ERR_INVALID_ARG;
     }
 
+    // Reject a schema_version this loader doesn't understand rather than
+    // risk silently misrendering element types added by a newer packer
+    // (e.g. "image" elements on firmware that predates them). A missing
+    // field is treated the same as a mismatch -- fail closed.
+    cJSON *schema_version = cJSON_GetObjectItem(s_ctx.manifest, "schema_version");
+    if (!schema_version || !cJSON_IsString(schema_version) ||
+        strcmp(schema_version->valuestring, THEME_SCHEMA_VERSION_SUPPORTED) != 0) {
+        ESP_LOGE(TAG, "Unsupported theme schema_version '%s' (firmware supports '%s')",
+                 (schema_version && cJSON_IsString(schema_version)) ? schema_version->valuestring : "(missing)",
+                 THEME_SCHEMA_VERSION_SUPPORTED);
+        cJSON_Delete(s_ctx.manifest);
+        s_ctx.manifest = NULL;
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
     // Extract theme metadata
     cJSON *theme_obj = cJSON_GetObjectItem(s_ctx.manifest, "theme");
     if (theme_obj) {
@@ -453,6 +731,16 @@ static esp_err_t theme_parse_manifest(void) {
     return ESP_OK;
 }
 
+// Maps a packer-assigned "format" string to the matching LVGL color format.
+// Defaults to true-color (no alpha) for anything unrecognized, matching the
+// original dial_background behavior.
+static lv_img_cf_t theme_asset_color_format(const char *format) {
+    if (format && strcmp(format, "rgba8888") == 0) {
+        return LV_IMG_CF_TRUE_COLOR_ALPHA;
+    }
+    return LV_IMG_CF_TRUE_COLOR;
+}
+
 static esp_err_t theme_load_assets(void) {
     cJSON *assets = cJSON_GetObjectItem(s_ctx.manifest, "assets");
     if (!assets) {
@@ -460,61 +748,92 @@ static esp_err_t theme_load_assets(void) {
         return ESP_OK;  // Not an error, theme may have no assets
     }
 
-    // Load dial background
-    cJSON *dial = cJSON_GetObjectItem(assets, "dial_background");
-    if (dial) {
-        cJSON *offset_obj = cJSON_GetObjectItem(dial, "offset");
-        cJSON *size_obj = cJSON_GetObjectItem(dial, "size");
-
-        if (offset_obj && size_obj) {
-            size_t offset = offset_obj->valueint;
-            size_t size = size_obj->valueint;
-
-            esp_err_t ret = esp_partition_mmap(
-                s_ctx.partition, offset, size,
-                ESP_PARTITION_MMAP_DATA,
-                &s_ctx.dial_data, &s_ctx.dial_handle
-            );
-
-            if (ret == ESP_OK) {
-                s_ctx.dial_img.header.w = 360;
-                s_ctx.dial_img.header.h = 360;
-                s_ctx.dial_img.header.cf = LV_IMG_CF_TRUE_COLOR;
-                s_ctx.dial_img.data = (uint8_t*)s_ctx.dial_data;
-                s_ctx.dial_img.data_size = size;
-                ESP_LOGI(TAG, "Dial background loaded: %zu bytes @ 0x%zx", size, offset);
-            } else {
-                ESP_LOGW(TAG, "Failed to mmap dial background: %s", esp_err_to_name(ret));
-            }
+    // Every entry in "assets" (not just the two original built-ins) gets
+    // mmap'd into the generic named-asset table, so layout.json "image"
+    // elements can reference any imported image by its packer-assigned
+    // name. dial_background/ring_overlay additionally get mirrored into
+    // the dedicated dial_img/ring_img fields for theme_get_asset()'s
+    // existing "dial"/"ring" lookup.
+    cJSON *asset = NULL;
+    cJSON_ArrayForEach(asset, assets) {
+        const char *name = asset->string;
+        if (!name) {
+            continue;
         }
-    }
 
-    // Load ring overlay (similar logic)
-    cJSON *ring = cJSON_GetObjectItem(assets, "ring_overlay");
-    if (ring) {
-        cJSON *offset_obj = cJSON_GetObjectItem(ring, "offset");
-        cJSON *size_obj = cJSON_GetObjectItem(ring, "size");
+        cJSON *offset_obj = cJSON_GetObjectItem(asset, "offset");
+        cJSON *size_obj = cJSON_GetObjectItem(asset, "size");
+        cJSON *width_obj = cJSON_GetObjectItem(asset, "width");
+        cJSON *height_obj = cJSON_GetObjectItem(asset, "height");
+        const char *format = theme_json_str(asset, "format", NULL);
+        if (!offset_obj || !size_obj) {
+            ESP_LOGW(TAG, "Asset '%s' missing offset/size, skipping", name);
+            continue;
+        }
 
-        if (offset_obj && size_obj) {
-            size_t offset = offset_obj->valueint;
-            size_t size = size_obj->valueint;
+        size_t offset = (size_t)offset_obj->valueint;
+        size_t size = (size_t)size_obj->valueint;
 
-            esp_err_t ret = esp_partition_mmap(
+        // Compiled fonts go into named_fonts[] (read via lv_fs by
+        // theme_load_custom_font()), not the image asset table below.
+        if (format && strcmp(format, "lv_font_bin") == 0) {
+            if (s_ctx.named_font_count >= THEME_MAX_NAMED_FONTS) {
+                ESP_LOGW(TAG, "Named font table full, skipping '%s'", name);
+                continue;
+            }
+            theme_named_font_t *font_slot = &s_ctx.named_fonts[s_ctx.named_font_count];
+            esp_err_t font_ret = esp_partition_mmap(
                 s_ctx.partition, offset, size,
                 ESP_PARTITION_MMAP_DATA,
-                &s_ctx.ring_data, &s_ctx.ring_handle
+                &font_slot->data, &font_slot->handle
             );
-
-            if (ret == ESP_OK) {
-                s_ctx.ring_img.header.w = 360;
-                s_ctx.ring_img.header.h = 360;
-                s_ctx.ring_img.header.cf = LV_IMG_CF_TRUE_COLOR_ALPHA;
-                s_ctx.ring_img.data = (uint8_t*)s_ctx.ring_data;
-                s_ctx.ring_img.data_size = size;
-                ESP_LOGI(TAG, "Ring overlay loaded: %zu bytes @ 0x%zx", size, offset);
-            } else {
-                ESP_LOGW(TAG, "Failed to mmap ring overlay: %s", esp_err_to_name(ret));
+            if (font_ret != ESP_OK) {
+                ESP_LOGW(TAG, "Failed to mmap font asset '%s': %s", name, esp_err_to_name(font_ret));
+                continue;
             }
+            strncpy(font_slot->name, name, sizeof(font_slot->name) - 1);
+            font_slot->name[sizeof(font_slot->name) - 1] = '\0';
+            font_slot->size = size;
+            s_ctx.named_font_count++;
+            ESP_LOGI(TAG, "Font asset '%s' loaded: %zu bytes @ 0x%zx", name, size, offset);
+            continue;
+        }
+
+        if (s_ctx.named_asset_count >= THEME_MAX_NAMED_ASSETS) {
+            ESP_LOGW(TAG, "Named asset table full, skipping '%s'", name);
+            continue;
+        }
+
+        theme_named_asset_t *slot = &s_ctx.named_assets[s_ctx.named_asset_count];
+        esp_err_t ret = esp_partition_mmap(
+            s_ctx.partition, offset, size,
+            ESP_PARTITION_MMAP_DATA,
+            &slot->data, &slot->handle
+        );
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "Failed to mmap asset '%s': %s", name, esp_err_to_name(ret));
+            continue;
+        }
+
+        strncpy(slot->name, name, sizeof(slot->name) - 1);
+        slot->name[sizeof(slot->name) - 1] = '\0';
+        slot->img.header.w = width_obj ? width_obj->valueint : 360;
+        slot->img.header.h = height_obj ? height_obj->valueint : 360;
+        slot->img.header.cf = theme_asset_color_format(format);
+        slot->img.data = (const uint8_t *)slot->data;
+        slot->img.data_size = size;
+        s_ctx.named_asset_count++;
+        ESP_LOGI(TAG, "Asset '%s' loaded: %zu bytes @ 0x%zx", name, size, offset);
+
+        // Back-compat mirror for theme_get_asset("dial"/"ring")
+        if (strcmp(name, "dial_background") == 0) {
+            s_ctx.dial_data = slot->data;
+            s_ctx.dial_handle = slot->handle;
+            s_ctx.dial_img = slot->img;
+        } else if (strcmp(name, "ring_overlay") == 0) {
+            s_ctx.ring_data = slot->data;
+            s_ctx.ring_handle = slot->handle;
+            s_ctx.ring_img = slot->img;
         }
     }
 
@@ -523,11 +842,12 @@ static esp_err_t theme_load_assets(void) {
 
 static void theme_register_pages(void) {
     s_ctx.page_count = 0;
+    s_ctx.theme_page_count = 0;
 
     // TODO: Register system pages (settings/OTA/bluetooth/etc.)
     // This will be implemented when integrating with existing UI
 
-    // Register theme pages declared in the manifest (Phase 2: placeholder page only)
+    // Register theme pages declared in the manifest, in manifest order.
     if (s_ctx.manifest) {
         cJSON *pages = cJSON_GetObjectItem(s_ctx.manifest, "pages");
         cJSON *theme_pages = pages ? cJSON_GetObjectItem(pages, "theme_pages") : NULL;
@@ -552,10 +872,14 @@ static void theme_register_pages(void) {
             entry->page_id = id->valuestring;
             entry->type = THEME_PAGE_TYPE_THEME;
             entry->create_fn = NULL;  // custom pages are built by theme_create_page() directly
+
+            if (s_ctx.theme_page_count < (int)(sizeof(s_ctx.theme_page_ids) / sizeof(s_ctx.theme_page_ids[0]))) {
+                s_ctx.theme_page_ids[s_ctx.theme_page_count++] = id->valuestring;
+            }
         }
     }
 
-    ESP_LOGI(TAG, "Registered %d pages", s_ctx.page_count);
+    ESP_LOGI(TAG, "Registered %d pages (%d theme pages)", s_ctx.page_count, s_ctx.theme_page_count);
 }
 
 // Parses "0xRRGGBB" / "RRGGBB" into an lv_color_t; falls back to `fallback`
@@ -574,7 +898,8 @@ static int32_t theme_json_int(cJSON *obj, const char *key, int32_t fallback) {
     if (!v || !cJSON_IsNumber(v)) {
         return fallback;
     }
-    return v->valueint;
+    // Use valuedouble and round to handle floating point coordinates from the designer
+    return (int32_t)(v->valuedouble + 0.5);
 }
 
 static const char* theme_json_str(cJSON *obj, const char *key, const char *fallback) {
@@ -618,12 +943,26 @@ static void theme_add_binding(cJSON *elem, lv_obj_t *widget, theme_binding_kind_
         strncpy(bind->format, "%d", sizeof(bind->format) - 1);
     }
     bind->format[sizeof(bind->format) - 1] = '\0';
+
+    bind->anchor_x = theme_json_int(elem, "x", 0);
+    const char *align_str = theme_json_str(elem, "align", "left");
+    if (strcmp(align_str, "center") == 0) bind->align = 1;
+    else if (strcmp(align_str, "right") == 0) bind->align = 2;
+    else bind->align = 0;
 }
 
 static void theme_build_arc_element(lv_obj_t *parent, cJSON *elem) {
     lv_obj_t *arc = lv_arc_create(parent);
-    lv_obj_set_pos(arc, theme_json_int(elem, "x", 0), theme_json_int(elem, "y", 0));
-    lv_obj_set_size(arc, theme_json_int(elem, "width", 100), theme_json_int(elem, "height", 100));
+
+    // Enable manual positioning - ignore parent's layout management
+    lv_obj_add_flag(arc, LV_OBJ_FLAG_IGNORE_LAYOUT);
+
+    int32_t x = theme_json_int(elem, "x", 0);
+    int32_t y = theme_json_int(elem, "y", 0);
+    int32_t width = theme_json_int(elem, "width", 100);
+    int32_t height = theme_json_int(elem, "height", 100);
+
+    lv_obj_set_size(arc, width, height);
     lv_obj_clear_flag(arc, LV_OBJ_FLAG_CLICKABLE);
 
     int32_t range_min = theme_json_int(elem, "range_min", 0);
@@ -642,12 +981,27 @@ static void theme_build_arc_element(lv_obj_t *parent, cJSON *elem) {
     lv_obj_set_style_arc_color(arc, fg_color, LV_PART_INDICATOR);
     lv_obj_set_style_arc_width(arc, line_width, LV_PART_INDICATOR);
     lv_obj_set_style_bg_opa(arc, LV_OPA_TRANSP, LV_PART_KNOB);
+    // LVGL's default theme rounds both arc ends (arc_rounded=true) the same
+    // way lv_bar defaults to a pill radius -- the designer renders square-cut
+    // ends, so this must be forced off here too (same fix as theme_build_bar_element's radius override below).
+    lv_obj_set_style_arc_rounded(arc, false, LV_PART_MAIN);
+    lv_obj_set_style_arc_rounded(arc, false, LV_PART_INDICATOR);
+
+    // Remove any padding on the Arc itself
+    lv_obj_set_style_pad_all(arc, 0, 0);
+
+    // Set position AFTER all Arc config functions (they can reset position like lv_img_set_zoom did)
+    lv_obj_set_pos(arc, x, y);
 
     theme_add_binding(elem, arc, BINDING_KIND_ARC, range_min, range_max);
 }
 
 static void theme_build_bar_element(lv_obj_t *parent, cJSON *elem) {
     lv_obj_t *bar = lv_bar_create(parent);
+
+    // Enable manual positioning - ignore parent's layout management
+    lv_obj_add_flag(bar, LV_OBJ_FLAG_IGNORE_LAYOUT);
+
     lv_obj_set_pos(bar, theme_json_int(elem, "x", 0), theme_json_int(elem, "y", 0));
     lv_obj_set_size(bar, theme_json_int(elem, "width", 100), theme_json_int(elem, "height", 20));
 
@@ -661,6 +1015,13 @@ static void theme_build_bar_element(lv_obj_t *parent, cJSON *elem) {
     lv_obj_set_style_bg_color(bar, bg_color, LV_PART_MAIN);
     lv_obj_set_style_bg_color(bar, fg_color, LV_PART_INDICATOR);
 
+    // LVGL's default theme gives lv_bar a pill-shaped radius on both parts;
+    // the designer's bars default to square corners, so this must be set
+    // explicitly (0 unless the layout requests one) or the two diverge.
+    int32_t radius = theme_json_int(elem, "radius", 0);
+    lv_obj_set_style_radius(bar, radius, LV_PART_MAIN);
+    lv_obj_set_style_radius(bar, radius, LV_PART_INDICATOR);
+
     // "segments" (a stepped look, like the example theme's 10-block oil
     // pressure meter) is a purely visual grouping of the same bar — LVGL's
     // bar doesn't natively support discrete blocks, so this is intentionally
@@ -673,16 +1034,26 @@ static void theme_build_bar_element(lv_obj_t *parent, cJSON *elem) {
 static void theme_build_label_element(lv_obj_t *parent, cJSON *elem) {
     lv_obj_t *label = lv_label_create(parent);
 
+    // Enable manual positioning - ignore parent's layout management
+    lv_obj_add_flag(label, LV_OBJ_FLAG_IGNORE_LAYOUT);
+
     lv_color_t color = theme_json_color(elem, "color", theme_get_color(UI_COLOR_TEXT_PRIMARY));
     lv_obj_set_style_text_color(label, color, LV_PART_MAIN);
 
     int32_t font_size = theme_json_int(elem, "font_size", 16);
-    const lv_font_t *font;
-    if (font_size >= 48) font = &lv_font_montserrat_48;
-    else if (font_size >= 32) font = &lv_font_montserrat_32;
-    else if (font_size >= 26) font = &lv_font_montserrat_26;
-    else if (font_size >= 14) font = &lv_font_montserrat_14;
-    else font = &lv_font_montserrat_12;
+    const char *font_asset = theme_json_str(elem, "font_asset", NULL);
+    const lv_font_t *font = font_asset ? theme_load_custom_font(font_asset) : NULL;
+    if (!font) {
+        // Falls back here both when no font_asset was set, and when a
+        // font_asset was set but failed to load (missing/corrupt bin) --
+        // graceful degradation, same posture as theme_load_default().
+        if (font_size >= 48) font = &lv_font_montserrat_48;
+        else if (font_size >= 32) font = &lv_font_montserrat_32;
+        else if (font_size >= 26) font = &lv_font_montserrat_26;
+        else if (font_size >= 16) font = &lv_font_montserrat_16;
+        else if (font_size >= 14) font = &lv_font_montserrat_14;
+        else font = &lv_font_montserrat_12;
+    }
     lv_obj_set_style_text_font(label, font, LV_PART_MAIN);
 
     const char *data_source = theme_json_str(elem, "data_source", NULL);
@@ -704,6 +1075,10 @@ static void theme_build_label_element(lv_obj_t *parent, cJSON *elem) {
     int32_t x = theme_json_int(elem, "x", 0);
     int32_t y = theme_json_int(elem, "y", 0);
     const char *align = theme_json_str(elem, "align", "left");
+
+    // Remove any padding on the Label itself
+    lv_obj_set_style_pad_all(label, 0, 0);
+
     lv_obj_update_layout(label);
     int32_t w = lv_obj_get_width(label);
     if (strcmp(align, "center") == 0) {
@@ -715,7 +1090,53 @@ static void theme_build_label_element(lv_obj_t *parent, cJSON *elem) {
     }
 }
 
+// "image" element: places a named, packer-imported asset at x/y sized to
+// width/height, with an optional rotation. Missing/unknown asset names are
+// logged and skipped rather than failing the whole page, consistent with
+// how a full binding table or an unknown element type is handled above.
+static void theme_build_image_element(lv_obj_t *parent, cJSON *elem) {
+    const char *asset_name = theme_json_str(elem, "asset", NULL);
+    if (!asset_name) {
+        ESP_LOGW(TAG, "Image element missing 'asset' field, skipping");
+        return;
+    }
+
+    const lv_img_dsc_t *img = theme_find_named_asset(asset_name);
+    if (!img) {
+        ESP_LOGW(TAG, "Image element references unknown asset '%s', skipping", asset_name);
+        return;
+    }
+
+    lv_obj_t *img_obj = lv_img_create(parent);
+    lv_img_set_src(img_obj, img);
+
+    // Enable manual positioning - ignore parent's layout management
+    lv_obj_add_flag(img_obj, LV_OBJ_FLAG_IGNORE_LAYOUT);
+
+    int32_t x = theme_json_int(elem, "x", 0);
+    int32_t y = theme_json_int(elem, "y", 0);
+    int32_t width = theme_json_int(elem, "width", img->header.w);
+    int32_t height = theme_json_int(elem, "height", img->header.h);
+    int32_t rotation = theme_json_int(elem, "rotation", 0);
+
+    // Set size and position directly - avoid lv_img_set_zoom which resets position
+    lv_obj_set_size(img_obj, width, height);
+    lv_obj_set_pos(img_obj, x, y);
+
+    // Apply rotation if needed
+    if (rotation != 0) {
+        lv_img_set_angle(img_obj, rotation * 10);
+    }
+
+    (void)height;  // zoom is uniform (single scale factor), height is derived from width's ratio
+}
+
 static lv_obj_t* theme_create_custom_page(const char *page_id) {
+    // Clear old bindings before creating new page to prevent use-after-free
+    // when theme_update_data() timer fires after the old page is deleted
+    s_ctx.binding_count = 0;
+    memset(s_ctx.bindings, 0, sizeof(s_ctx.bindings));
+
     lv_obj_t *page = lv_obj_create(NULL);
     lv_obj_set_size(page, 360, 360);
     lv_obj_clear_flag(page, LV_OBJ_FLAG_SCROLLABLE);
@@ -724,12 +1145,19 @@ static lv_obj_t* theme_create_custom_page(const char *page_id) {
     lv_obj_set_style_bg_color(page, theme_get_color(UI_COLOR_BG), 0);
     lv_obj_set_style_bg_opa(page, LV_OPA_COVER, 0);
 
+    // Remove default padding - LVGL objects have default padding that offsets
+    // child positions. Without this, Arc and Label elements appear at wrong
+    // positions even though lv_obj_set_pos() is called with correct coordinates.
+    lv_obj_set_style_pad_all(page, 0, 0);
+
     // Draw dial background if available
     const lv_img_dsc_t *dial = theme_get_asset("dial");
     if (dial) {
         lv_obj_t *bg_img = lv_img_create(page);
         lv_img_set_src(bg_img, dial);
-        lv_obj_align(bg_img, LV_ALIGN_CENTER, 0, 0);
+        // Don't use lv_obj_align - it activates alignment mode for the whole container
+        // Instead, manually center it: (360-360)/2 = 0, so just set to (0,0)
+        lv_obj_set_pos(bg_img, 0, 0);
     }
 
     // Find this page's layout data location in the manifest
@@ -802,6 +1230,8 @@ static lv_obj_t* theme_create_custom_page(const char *page_id) {
             theme_build_bar_element(page, elem);
         } else if (strcmp(type, "label") == 0) {
             theme_build_label_element(page, elem);
+        } else if (strcmp(type, "image") == 0) {
+            theme_build_image_element(page, elem);
         } else {
             ESP_LOGW(TAG, "Unknown layout element type '%s', skipping", type);
             continue;

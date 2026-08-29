@@ -42,6 +42,7 @@
 #include "mbedtls/base64.h"
 
 #include "app_obd_dsp/boot_media_mount.h"
+#include "app_obd_dsp/theme_mount.h"
 #include "app_obd_dsp/device_identity.h"
 #include "bsp_obd_dsp/rs485_brake_temp.h"
 
@@ -90,6 +91,7 @@ typedef enum {
     RECV_KIND_NONE = 0,
     RECV_KIND_FIRMWARE,
     RECV_KIND_BOOTMEDIA,
+    RECV_KIND_THEME,
 } recv_kind_t;
 
 typedef struct {
@@ -869,6 +871,290 @@ static esp_err_t firmware_handler(httpd_req_t *req)
     return ESP_OK;
 }
 
+// POST /ota/theme/prepare
+// App 在上传分块之前调用一次，仅验证分区容量和 PSRAM。
+// 这里绝不擦除 Flash，旧主题会保留到新数据完整校验通过。
+static esp_err_t theme_prepare_handler(httpd_req_t *req)
+{
+    if (!validate_token(req)) {
+        return send_err(req, "unauthorized");
+    }
+    if (!theme_mount()) {
+        return send_err(req, "mount failed");
+    }
+
+    char size_str[16] = {0};
+    if (httpd_req_get_hdr_value_str(req, "X-OTA-Size", size_str, sizeof(size_str)) != ESP_OK) {
+        return send_err(req, "missing prepare size");
+    }
+
+    uint32_t total_size = (uint32_t)strtoul(size_str, NULL, 10);
+    if (total_size == 0) {
+        return send_err(req, "invalid prepare size");
+    }
+
+    size_t partition_size = theme_get_partition_size();
+    if (total_size > partition_size) {
+        char err_msg[80];
+        snprintf(err_msg, sizeof(err_msg), "theme too large: partition=%zu need=%lu",
+                 partition_size, (unsigned long)total_size);
+        return send_err(req, err_msg);
+    }
+
+    // Deliberately do NOT erase here. A multi-megabyte erase in an HTTP handler
+    // blocks the ESP32 flash cache long enough to collapse the SoftAP TCP connection.
+    // Keeping the old theme also makes an interrupted upload non-destructive.
+    // Erase happens only after full SHA verify.
+    size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    size_t psram_free = heap_caps_get_free_size(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    ESP_LOGI(TAG, "theme prepare: total=%lu partition=%zu PSRAM free=%zu largest=%zu",
+             (unsigned long)total_size, partition_size, psram_free, largest);
+    if (largest < total_size) {
+        return send_err(req, "no memory for theme buffer");
+    }
+
+    // Consume the tiny placeholder body so a keep-alive socket cannot carry
+    // unread prepare data into the first upload request.
+    char discard[32];
+    int remaining = req->content_len;
+    while (remaining > 0) {
+        int received = httpd_req_recv(req, discard, remaining > (int)sizeof(discard) ? (int)sizeof(discard) : remaining);
+        if (received <= 0) {
+            return send_err(req, "prepare receive failed");
+        }
+        remaining -= received;
+    }
+
+    char json[128];
+    snprintf(json, sizeof(json),
+             "{\"ok\":true,\"partitionSize\":%zu,\"psramFree\":%zu,\"largestBlock\":%zu}",
+             partition_size, psram_free, largest);
+    return send_json_response(req, 200, json);
+}
+
+// POST /ota/theme — 分块上传 theme.bin (一个自包含的 4MB blob，和 firmware 一样
+// 没有 manifest/media 分段，写入前整块擦除 theme_0，再一次性写入)。
+// 分块协议与 firmware_handler 完全一致：X-OTA-SHA256/X-OTA-Size/X-Offset/X-Last。
+static esp_err_t theme_handler(httpd_req_t *req)
+{
+    int64_t handler_start_us = esp_timer_get_time();
+
+    if (!validate_token(req)) {
+        return send_err(req, "unauthorized");
+    }
+
+    char sha_hex[65] = {0};
+    char size_str[16] = {0};
+    char offset_str[16] = {0};
+    char last_str[8] = {0};
+    char content_type[64] = {0};
+    if (httpd_req_get_hdr_value_str(req, "X-OTA-SHA256", sha_hex, sizeof(sha_hex)) != ESP_OK ||
+        httpd_req_get_hdr_value_str(req, "X-OTA-Size", size_str, sizeof(size_str)) != ESP_OK) {
+        return send_err(req, "missing headers");
+    }
+
+    bool is_base64 = false;
+    if (httpd_req_get_hdr_value_str(req, "Content-Type", content_type, sizeof(content_type)) == ESP_OK) {
+        is_base64 = (strstr(content_type, "base64") != NULL);
+    }
+
+    uint32_t expected_size = (uint32_t)strtoul(size_str, NULL, 10);
+    uint32_t chunk_offset = 0;
+    bool is_last = false;
+    if (httpd_req_get_hdr_value_str(req, "X-Offset", offset_str, sizeof(offset_str)) == ESP_OK) {
+        chunk_offset = (uint32_t)strtoul(offset_str, NULL, 10);
+    }
+    if (httpd_req_get_hdr_value_str(req, "X-Last", last_str, sizeof(last_str)) == ESP_OK) {
+        is_last = (strcmp(last_str, "1") == 0);
+    }
+
+    uint8_t expected_sha[32];
+    if (!parse_hex_sha(sha_hex, expected_sha) || expected_size == 0 || chunk_offset > expected_size) {
+        return send_err(req, "invalid headers");
+    }
+    if (!is_base64 && (uint32_t)req->content_len > expected_size - chunk_offset) {
+        return send_err(req, "invalid chunk size");
+    }
+
+    if (chunk_offset == 0) {
+        ota_wifi_server_release_bt();
+        recv_reset();
+        if (!theme_mount()) {
+            return send_err(req, "mount failed");
+        }
+        if (expected_size > theme_get_partition_size()) {
+            return send_err(req, "theme too large");
+        }
+        if (!allocate_upload_buffer(expected_size, "theme")) {
+            recv_reset();
+            return send_err(req, "no memory for theme buffer");
+        }
+
+        s_recv.kind = RECV_KIND_THEME;
+        s_recv.expected_size = expected_size;
+        s_recv.received_size = 0;
+        memcpy(s_recv.expected_sha, expected_sha, sizeof(expected_sha));
+        sha_init();
+        notify_status(OTA_WIFI_STATE_RECEIVING, "theme receiving (PSRAM)", 0, expected_size);
+    } else if (s_recv.kind != RECV_KIND_THEME || !s_recv.upload_buf ||
+               s_recv.expected_size != expected_size || s_recv.received_size != chunk_offset ||
+               memcmp(s_recv.expected_sha, expected_sha, sizeof(expected_sha)) != 0) {
+        ESP_LOGE(TAG, "theme chunk out of sequence: offset=%lu expected=%lu kind=%d",
+                 (unsigned long)chunk_offset, (unsigned long)s_recv.received_size, s_recv.kind);
+        return send_err(req, "unexpected chunk offset");
+    }
+
+    int64_t after_init_us = esp_timer_get_time();
+    ESP_LOGI(TAG, "theme chunk begin: offset=%lu content_len=%d last=%d total=%lu (init +%lld ms)",
+             (unsigned long)chunk_offset, req->content_len, is_last,
+             (unsigned long)expected_size, (after_init_us - handler_start_us) / 1000);
+
+    int sock_fd = httpd_req_to_sockfd(req);
+    if (sock_fd < 0) {
+        ESP_LOGE(TAG, "theme: invalid socket fd");
+        recv_reset();
+        return send_err(req, "invalid socket");
+    }
+
+    int rcvbuf_size = 256 * 1024;
+    setsockopt(sock_fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf_size, sizeof(rcvbuf_size));
+    int nodelay = 1;
+    setsockopt(sock_fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+
+    size_t recv_cap = 0;
+    char *recv_buf = alloc_recv_buf(&recv_cap);
+    uint8_t *decode_buf = NULL;
+    if (!recv_buf) {
+        recv_reset();
+        return send_err(req, "no memory");
+    }
+    if (is_base64) {
+        decode_buf = heap_caps_malloc(recv_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!decode_buf) {
+            free(recv_buf);
+            recv_reset();
+            return send_err(req, "no memory");
+        }
+    }
+
+    int remaining = req->content_len;
+    bool failed = false;
+    uint32_t chunk_received = 0;
+    unsigned consecutive_timeouts = 0;
+
+    while (remaining > 0 && !failed) {
+        int to_read = remaining > (int)recv_cap ? (int)recv_cap : remaining;
+        int received = httpd_req_recv(req, recv_buf, to_read);
+
+        if (received == HTTPD_SOCK_ERR_TIMEOUT) {
+            consecutive_timeouts++;
+            if (consecutive_timeouts >= 3) {
+                ESP_LOGE(TAG, "theme recv timeout limit reached");
+                break;
+            }
+            continue;
+        }
+        if (received <= 0) {
+            ESP_LOGE(TAG, "theme recv failed: received=%d offset=%lu chunk_received=%lu remaining=%d",
+                     received, (unsigned long)chunk_offset,
+                     (unsigned long)chunk_received, remaining);
+            failed = true;
+            break;
+        }
+        consecutive_timeouts = 0;
+
+        const uint8_t *data;
+        size_t data_len;
+        if (is_base64) {
+            size_t decode_len = 0;
+            int ret = mbedtls_base64_decode(decode_buf, recv_cap, &decode_len,
+                                            (const unsigned char *)recv_buf, received);
+            if (ret != 0) {
+                ESP_LOGE(TAG, "base64 decode failed: %d", ret);
+                failed = true;
+                break;
+            }
+            data = decode_buf;
+            data_len = decode_len;
+        } else {
+            data = (const uint8_t *)recv_buf;
+            data_len = received;
+        }
+
+        if (data_len > expected_size - chunk_offset - chunk_received) {
+            ESP_LOGE(TAG, "theme decoded chunk exceeds payload");
+            failed = true;
+            break;
+        }
+        memcpy(s_recv.upload_buf + chunk_offset + chunk_received, data, data_len);
+        sha_update(data, data_len);
+        chunk_received += data_len;
+        remaining -= received;
+        s_recv.received_size = chunk_offset + chunk_received;
+        if (s_recv.received_size % OTA_PROGRESS_STEP == 0) {
+            report_progress();
+        }
+    }
+    free(recv_buf);
+    if (decode_buf) free(decode_buf);
+
+    if (failed) {
+        uint32_t received_size = s_recv.received_size;
+        recv_reset();
+        notify_status(OTA_WIFI_STATE_ERROR, "theme receive failed", received_size, expected_size);
+        return send_err(req, "receive failed");
+    }
+
+    if (!is_last && s_recv.received_size < s_recv.expected_size) {
+        char json[96];
+        snprintf(json, sizeof(json), "{\"ok\":true,\"nextOffset\":%lu}",
+                 (unsigned long)s_recv.received_size);
+        return send_json_response(req, 200, json);
+    }
+
+    if (s_recv.received_size != s_recv.expected_size) {
+        uint32_t received_size = s_recv.received_size;
+        recv_reset();
+        notify_status(OTA_WIFI_STATE_ERROR, "theme size mismatch", received_size, expected_size);
+        return send_err(req, "size mismatch");
+    }
+    if (!sha_finish_matches()) {
+        uint32_t received_size = s_recv.received_size;
+        recv_reset();
+        notify_status(OTA_WIFI_STATE_ERROR, "theme sha mismatch", received_size, expected_size);
+        return send_err(req, "sha mismatch");
+    }
+
+    // Network phase complete -- acknowledge before any flash work so the
+    // TCP response leaves the radio before SoftAP is torn down.
+    notify_status(OTA_WIFI_STATE_RECEIVING, "theme installing", expected_size, expected_size);
+    esp_err_t response_err = send_json_response(
+        req, 200, "{\"ok\":true,\"message\":\"theme received, installing\"}");
+    if (response_err != ESP_OK) {
+        ESP_LOGW(TAG, "theme final response failed: %s", esp_err_to_name(response_err));
+    }
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_wifi_stop();
+    vTaskDelay(pdMS_TO_TICKS(200));
+
+    esp_err_t err = theme_erase_all() ? ESP_OK : ESP_FAIL;
+    if (err == ESP_OK) {
+        err = theme_raw_write(0, s_recv.upload_buf, expected_size);
+    }
+
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "theme install complete, rebooting");
+        notify_status(OTA_WIFI_STATE_DONE, "theme updated, rebooting", expected_size, expected_size);
+    } else {
+        ESP_LOGE(TAG, "theme install failed after upload: %s", esp_err_to_name(err));
+        notify_status(OTA_WIFI_STATE_ERROR, "theme install failed", expected_size, expected_size);
+    }
+    recv_reset();
+    vTaskDelay(pdMS_TO_TICKS(300));
+    esp_restart();
+    return ESP_OK;
+}
+
 // POST /ota/bootmedia/prepare
 // App 在上传分块之前调用一次，仅验证分区容量和 PSRAM。
 // 这里绝不擦除 Flash，旧动画会保留到新数据完整校验通过。
@@ -1428,7 +1714,7 @@ bool ota_wifi_server_start(ota_wifi_info_t *info, ota_wifi_status_cb_t callback)
     config.recv_wait_timeout = 2;                  // 2s per recv call, Content-Length模式下不应该超时
     config.send_wait_timeout = 300;
     // Reduce httpd memory usage
-    config.max_uri_handlers = 14;                    // 11 handlers (incl. OPTIONS preflight for POST routes)
+    config.max_uri_handlers = 16;                    // 13 handlers (incl. OPTIONS preflight for POST routes)
     config.max_resp_headers = 4;                     // minimal headers
     config.max_open_sockets = 7;                     // max allowed by LWIP_MAX_SOCKETS (10 - 3 internal)
     config.backlog_conn = 5;                         // accept队列长度
@@ -1534,6 +1820,34 @@ bool ota_wifi_server_start(ota_wifi_info_t *info, ota_wifi_status_cb_t callback)
         .handler = options_handler,
     };
     httpd_register_uri_handler(s_httpd, &bootmedia_opt_uri);
+
+    httpd_uri_t theme_prepare_uri = {
+        .uri = "/ota/theme/prepare",
+        .method = HTTP_POST,
+        .handler = theme_prepare_handler,
+    };
+    httpd_register_uri_handler(s_httpd, &theme_prepare_uri);
+
+    httpd_uri_t theme_prepare_opt_uri = {
+        .uri = "/ota/theme/prepare",
+        .method = HTTP_OPTIONS,
+        .handler = options_handler,
+    };
+    httpd_register_uri_handler(s_httpd, &theme_prepare_opt_uri);
+
+    httpd_uri_t theme_uri = {
+        .uri = "/ota/theme",
+        .method = HTTP_POST,
+        .handler = theme_handler,
+    };
+    httpd_register_uri_handler(s_httpd, &theme_uri);
+
+    httpd_uri_t theme_opt_uri = {
+        .uri = "/ota/theme",
+        .method = HTTP_OPTIONS,
+        .handler = options_handler,
+    };
+    httpd_register_uri_handler(s_httpd, &theme_opt_uri);
 
     // 填充 info
     strncpy(info->ssid, s_ap_ssid, sizeof(info->ssid) - 1);

@@ -32,7 +32,7 @@ except ImportError:
     print("Install with: pip install Pillow")
 
 PARTITION_SIZE = 4 * 1024 * 1024  # 4MB, must match theme_0 in partitions.csv
-MANIFEST_RESERVED_SIZE = 8 * 1024  # First 8KB reserved for manifest JSON
+MANIFEST_RESERVED_SIZE = 16 * 1024  # First 16KB reserved for manifest JSON (must match THEME_MANIFEST_MAX_SIZE in theme_loader.c)
 
 
 def rgb888_to_rgb565(r: int, g: int, b: int) -> int:

@@ -106,6 +106,25 @@ esp_err_t theme_get_info(theme_info_t *info);
 lv_obj_t* theme_create_page(const char *page_id);
 
 /**
+ * Number of theme-declared pages (manifest.pages.theme_pages[]) in the
+ * currently loaded theme, in manifest order. 0 if no theme loaded or the
+ * theme declares no custom pages.
+ */
+uint8_t theme_page_list_count(void);
+
+/**
+ * Page id at `index` in the theme's declared page list (0-based, manifest
+ * order). Used by the UI layer to drive next/prev navigation across
+ * however many pages the active theme declares, instead of a single
+ * hardcoded "main_gauge" id.
+ *
+ * @param index Index into the theme's page list
+ * @return page_id string (owned by the theme engine, valid until the next
+ *         theme_load()/theme_unload()), or NULL if index is out of range
+ */
+const char* theme_page_list_at(uint8_t index);
+
+/**
  * Update all theme pages with new OBD data
  * Called periodically (e.g. every 50ms) by data layer
  *
