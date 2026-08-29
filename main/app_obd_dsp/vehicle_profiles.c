@@ -240,6 +240,28 @@ static const vehicle_profile_t s_profiles[] = {
         .has_boost = true,                 // B48 turbo, boost pressure via standard 010B
     },
     {
+        // MINI R55 Clubman (2008-2014, N14/N18 1.6T or N16 1.6 NA)
+        // Uses standard OBD2 PIDs: RPM (01 0C), Speed (01 0D), Coolant (01 05), Oil Temp (01 5C),
+        // Throttle (01 11), Fuel Level (01 2F), Engine Load (01 04).
+        // Oil temp: try MINI Mode 22 PID 5822 first, fallback to standard 01 5C.
+        .name = "MINI R55",
+        .final_drive_ratio = 3.650f,       // R55 Cooper S 6MT final drive ratio (varies by trim)
+        .tire_rolling_radius_m = 0.306f,   // 195/55R16 or 205/50R17 depending on trim
+        .gear_count = 6,
+        .gear_ratios = {0, 3.308f, 1.913f, 1.233f, 0.967f, 0.806f, 0.684f},  // Getrag GS6-55BG 6MT
+        .gear_tolerance = 0.15f,
+        .oil_temp_strategy = {
+            .primary = OIL_TEMP_MODE_MINI_22_5822,  // MINI/BMW Mode 22 PID 5822, °C = A-60
+            .secondary = OIL_TEMP_MODE_PID_5C,      // Standard 01 5C fallback
+            .tertiary = OIL_TEMP_MODE_NONE,
+        },
+        .has_boost = true,                 // N14/N18 turbo (Cooper S), set false for N16 NA base model if needed
+        .forced_protocol = 6,              // ISO 15765-4 CAN 11-bit 500k
+        .obd_functional_addr = true,       // 7DF functional addressing
+        .obd_timeout = 0x0A,
+        .poll_gap_ms = 1,
+    },
+    {
         // Porsche Gen2: 987.2/997.2 (2009-2012, DFI 9A1; NA; OBD fallback)
         .name = "POS 997.2",
         .final_drive_ratio = 3.44f,        // 997.2 PDK final drive ratio (user measured)
