@@ -158,9 +158,6 @@ static bool bump_wifi_rx_buffers(wifi_init_config_t *cfg)
     }
     cfg->ampdu_rx_enable = 1;
 
-    ESP_LOGI(TAG, "WiFi RX tuned for upload: static_rx=%d dynamic_rx=%d rx_ba_win=%d "
-                  "(internal free %zu)",
-             cfg->static_rx_buf_num, cfg->dynamic_rx_buf_num, cfg->rx_ba_win, internal_free);
     return true;
 }
 
@@ -176,8 +173,6 @@ void ota_wifi_server_release_bt(void)
         return;
     }
     s_bt_released = true;
-
-    size_t before = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 
     // Stop advertising first: tearing down bluedroid with an advert running
     // leaves the controller busy and makes the disable path return an error.
@@ -206,10 +201,6 @@ void ota_wifi_server_release_bt(void)
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
         ESP_LOGW(TAG, "bt mem release: %s", esp_err_to_name(err));
     }
-
-    size_t after = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    ESP_LOGI(TAG, "BT released for WiFi OTA: internal heap %zu -> %zu (+%d B), coex off",
-             before, after, (int)(after - before));
 }
 
 /* Socket staging buffer — internal DRAM preferred, PSRAM as fallback. */
@@ -272,6 +263,11 @@ static esp_err_t wifi_runtime_prepare(wifi_mode_t *current_mode)
         if (err != ESP_OK) {
             return err;
         }
+
+        // Suppress verbose WiFi driver logs during OTA
+        esp_log_level_set("wifi", ESP_LOG_WARN);
+        esp_log_level_set("wifi_init", ESP_LOG_WARN);
+
         s_wifi_owned = true;
         *current_mode = WIFI_MODE_NULL;
         return ESP_OK;
@@ -1694,16 +1690,7 @@ bool ota_wifi_server_start(ota_wifi_info_t *info, ota_wifi_status_cb_t callback)
     // retransmits, and every retransmit costs an RTO on this link.
     esp_wifi_set_max_tx_power(80);
 
-    // 优化TCP参数以提升大文件上传性能
-    // 注意：这些是编译时配置，运行时无法修改，但可以通过日志提醒用户
-    ESP_LOGI(TAG, "TCP window size hint: increase CONFIG_LWIP_TCP_WND_DEFAULT and "
-                  "CONFIG_LWIP_TCP_SND_BUF_DEFAULT in sdkconfig for better throughput");
-
     // 启动 HTTP 服务器
-    ESP_LOGI(TAG, "heap before httpd: internal=%lu / total=%lu, stack=%u caps=INTERNAL",
-             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
-             (unsigned long)heap_caps_get_free_size(MALLOC_CAP_8BIT),
-             (unsigned)OTA_WIFI_STACK_SIZE);
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.lru_purge_enable = true;
     config.stack_size = OTA_WIFI_STACK_SIZE;
