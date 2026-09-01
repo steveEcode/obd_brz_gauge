@@ -928,6 +928,38 @@ static esp_err_t theme_prepare_handler(httpd_req_t *req)
     return send_json_response(req, 200, json);
 }
 
+// POST /ota/theme/erase — 立即擦除整个主题分区，不接收任何 body。
+// 与 theme_prepare_handler 不同：这里*会*擦除 Flash，供 App 端"格式化主题分区"
+// 功能使用，擦除后设备下次启动 theme_engine_init() 会因 manifest 解析失败而
+// 自动回退到内建默认主题（见 theme_loader.c）。
+static esp_err_t theme_erase_handler(httpd_req_t *req)
+{
+    if (!validate_token(req)) {
+        return send_err(req, "unauthorized");
+    }
+    if (!theme_mount()) {
+        return send_err(req, "mount failed");
+    }
+
+    // Consume the tiny placeholder body so a keep-alive socket cannot carry
+    // unread bytes into the next request (same reasoning as theme_prepare_handler).
+    char discard[32];
+    int remaining = req->content_len;
+    while (remaining > 0) {
+        int received = httpd_req_recv(req, discard, remaining > (int)sizeof(discard) ? (int)sizeof(discard) : remaining);
+        if (received <= 0) {
+            break;
+        }
+        remaining -= received;
+    }
+
+    if (!theme_erase_all()) {
+        return send_err(req, "erase failed");
+    }
+
+    return send_json_response(req, 200, "{\"ok\":true}");
+}
+
 // POST /ota/theme — 分块上传 theme.bin (一个自包含的 4MB blob，和 firmware 一样
 // 没有 manifest/media 分段，写入前整块擦除 theme_0，再一次性写入)。
 // 分块协议与 firmware_handler 完全一致：X-OTA-SHA256/X-OTA-Size/X-Offset/X-Last。
@@ -1701,7 +1733,7 @@ bool ota_wifi_server_start(ota_wifi_info_t *info, ota_wifi_status_cb_t callback)
     config.recv_wait_timeout = 2;                  // 2s per recv call, Content-Length模式下不应该超时
     config.send_wait_timeout = 300;
     // Reduce httpd memory usage
-    config.max_uri_handlers = 16;                    // 13 handlers (incl. OPTIONS preflight for POST routes)
+    config.max_uri_handlers = 20;                    // 18 handlers (incl. OPTIONS preflight for POST routes), +2 headroom
     config.max_resp_headers = 4;                     // minimal headers
     config.max_open_sockets = 7;                     // max allowed by LWIP_MAX_SOCKETS (10 - 3 internal)
     config.backlog_conn = 5;                         // accept队列长度
@@ -1821,6 +1853,20 @@ bool ota_wifi_server_start(ota_wifi_info_t *info, ota_wifi_status_cb_t callback)
         .handler = options_handler,
     };
     httpd_register_uri_handler(s_httpd, &theme_prepare_opt_uri);
+
+    httpd_uri_t theme_erase_uri = {
+        .uri = "/ota/theme/erase",
+        .method = HTTP_POST,
+        .handler = theme_erase_handler,
+    };
+    httpd_register_uri_handler(s_httpd, &theme_erase_uri);
+
+    httpd_uri_t theme_erase_opt_uri = {
+        .uri = "/ota/theme/erase",
+        .method = HTTP_OPTIONS,
+        .handler = options_handler,
+    };
+    httpd_register_uri_handler(s_httpd, &theme_erase_opt_uri);
 
     httpd_uri_t theme_uri = {
         .uri = "/ota/theme",
