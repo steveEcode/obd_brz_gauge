@@ -115,23 +115,53 @@ Full feature lists: [中文](docs/README.zh-CN.md#功能概览) ·
 
 ## Quick Start / 快速开始
 
+### Build from source / 从源码编译
+
 ```bash
+git clone https://github.com/steveEcode/obd_brz_gauge.git
+cd obd_brz_gauge
+git checkout theme-upgrade
 idf.py set-target esp32s3
 idf.py build
 idf.py -p PORT flash monitor
 ```
 
-Requires ESP-IDF 5.1+. Flashing pre-built binaries instead:
-[firmware/README.md](firmware/README.md).
-需要 ESP-IDF 5.1 以上。想直接烧预编译固件见 [firmware/README.md](firmware/README.md)。
+### Flash pre-built firmware / 烧录预编译固件
 
-> ⚠️ **Flash address changes**:
-> - **main branch**: `bootmedia.bin` at `0x620000`
-> - **theme-upgrade branch**: `bootmedia.bin` at `0xA20000` (moved to make room for 4MB theme partition)
-> 
-> Update older scripts accordingly. See [docs/BRANCH_COMPARISON.md](docs/BRANCH_COMPARISON.md).
-> 
-> 烧录地址已变更，旧脚本需同步修改。详见[分支对比文档](docs/BRANCH_COMPARISON.md)。
+Complete first-time flash (erases entire chip):
+
+```bash
+esptool.py --chip esp32s3 -p PORT -b 460800 --before default_reset --after hard_reset \
+  write_flash --flash_mode dio --flash_freq 80m --flash_size 16MB \
+  0x0 firmware/release/bootloader/bootloader.bin \
+  0x8000 firmware/release/partition_table/partition-table.bin \
+  0xf000 firmware/release/ota_data_initial.bin \
+  0x20000 firmware/release/obd_brz_gauge.bin \
+  0xA20000 firmware/release/bootmedia.bin
+```
+
+完整首次烧录（擦除整个芯片）：
+
+```bash
+esptool.py --chip esp32s3 -p PORT -b 460800 --before default_reset --after hard_reset \
+  write_flash --flash_mode dio --flash_freq 80m --flash_size 16MB \
+  0x0 firmware/release/bootloader/bootloader.bin \
+  0x8000 firmware/release/partition_table/partition-table.bin \
+  0xf000 firmware/release/ota_data_initial.bin \
+  0x20000 firmware/release/obd_brz_gauge.bin \
+  0xA20000 firmware/release/bootmedia.bin
+```
+
+**Notes / 说明:**
+- Replace `PORT` with your serial port (e.g., `COM3` on Windows, `/dev/ttyUSB0` on Linux, `/dev/cu.usbserial-*` on macOS)
+- Requires [esptool.py](https://github.com/espressif/esptool) installed: `pip install esptool`
+- First flash erases all data including NVS settings
+- For subsequent OTA updates, use the companion mobile app
+
+- 将 `PORT` 替换为你的串口（Windows: `COM3`，Linux: `/dev/ttyUSB0`，macOS: `/dev/cu.usbserial-*`）
+- 需要安装 [esptool.py](https://github.com/espressif/esptool)：`pip install esptool`
+- 首次烧录会擦除所有数据（包括 NVS 设置）
+- 后续升级请使用配套手机 App 进行 OTA 更新
 
 ## Repository Layout / 目录结构
 
