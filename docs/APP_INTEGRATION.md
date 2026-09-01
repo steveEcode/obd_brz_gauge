@@ -32,6 +32,8 @@ The firmware exposes a read-only BLE GATT service for compatibility checks:
 
 ### Expected fields / 约定字段
 
+#### main branch / main 分支
+
 ```json
 {
   "device": {
@@ -58,6 +60,33 @@ The firmware exposes a read-only BLE GATT service for compatibility checks:
   }
 }
 ```
+
+#### theme-upgrade branch / theme-upgrade 分支 (streamlined)
+
+```json
+{
+  "device": {
+    "board": "Waveshare ESP32-S3-Touch-LCD-1.85",
+    "variant": "obd_brz_gauge",
+    "lcd": "ST77916",
+    "screen": { "w": 360, "h": 360, "bpp": 16 },
+    "flash_mb": 16,
+    "psram_mb": 8,
+    "ota_slots": 2,
+    "bootmedia_slots": 1,
+    "bootmedia_format": 1
+  },
+  "firmware": {
+    "build_tag": "theme-upgrade-1234-abcd1234",
+    "branch": "theme-upgrade",
+    "count": 1234
+  }
+}
+```
+
+**Note**: The `theme-upgrade` branch returns a streamlined manifest (removed unused fields: `project`, `version`, `git`, `built`, `idf`, `slot`) to ensure the response stays under 512 bytes and prevents truncation.
+
+**注意**：`theme-upgrade` 分支返回精简的清单（移除了 App 不使用的字段），确保响应不超过 512 字节，避免截断。
 
 The app should reject updates when any required hardware field differs from the manifest baked into the selected release.
 
@@ -159,6 +188,22 @@ For faster transfers, the device supports BLE handshake + WiFi data transfer:
 - `X-OTA-Size`: 总大小（manifest + bin）
 - `X-OTA-Manifest-Size`: manifest 大小
 - Body: `[manifest][bin]` 拼接数据
+
+**POST /ota/theme/prepare** (theme-upgrade branch only)
+- Prepares theme upload but doesn't erase Flash
+- Returns mount status
+
+**POST /ota/theme** (theme-upgrade branch only)
+- `X-OTA-SHA256`: Theme SHA256（64 字符 hex）
+- `X-OTA-Size`: Theme size（4MB max）
+- `X-Offset`: Chunk offset（分块上传）
+- `X-Last`: `1` if last chunk, `0` otherwise
+- Body: theme.bin chunk data
+
+**POST /ota/theme/erase** (theme-upgrade branch only)
+- Immediately erases entire theme partition
+- No body required
+- Device falls back to built-in default theme on next boot
 
 **GET /ota/status**
 - 返回: `{"state":"ready|receiving|done|error","received":12345,"expected":67890}`

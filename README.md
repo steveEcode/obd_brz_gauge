@@ -20,6 +20,24 @@ touch UI with LVGL.
 
 ---
 
+## ⚠️ Branch Notice / 分支说明
+
+This repository has two main branches with **incompatible partition layouts**:
+
+- **`main`** — Stable branch, themes compiled into firmware
+- **`theme-upgrade`** — Experimental branch with runtime-loadable themes (4MB theme partition)
+
+⚠️ You **cannot** OTA upgrade between branches. See [docs/BRANCH_COMPARISON.md](docs/BRANCH_COMPARISON.md) for details.
+
+本仓库有两个主要分支，**分区布局不兼容**：
+
+- **`main`** — 稳定分支，主题编译进固件
+- **`theme-upgrade`** — 实验分支，支持运行时加载主题（4MB 主题分区）
+
+⚠️ 两个分支之间**无法通过 OTA 互相升级**。详见 [docs/BRANCH_COMPARISON.md](docs/BRANCH_COMPARISON.md)。
+
+---
+
 ## 📖 Documentation / 文档索引
 
 **Start here / 从这里开始**
@@ -28,6 +46,7 @@ touch UI with LVGL.
 |----------|----------------------|
 | [docs/README.zh-CN.md](docs/README.zh-CN.md) | **完整中文说明** — 功能、依赖、编译烧录、适配要点 |
 | [docs/README.en.md](docs/README.en.md) | **Full English guide** — features, requirements, build and flash |
+| [docs/BRANCH_COMPARISON.md](docs/BRANCH_COMPARISON.md) | **Branch differences** — main vs theme-upgrade partition layouts / 分支差异对比 |
 | [docs/APP_INTEGRATION.md](docs/APP_INTEGRATION.md) | App/device manifest, firmware validation, single-slot boot animation / App 对接、硬件校验、单槽开机动画 |
 | [firmware/README.md](firmware/README.md) | Pre-built binaries and flash addresses / 预编译固件与烧录地址 |
 | [CHANGELOG.md](CHANGELOG.md) | Changelog / 更新日志（中英双语） |
@@ -106,8 +125,13 @@ Requires ESP-IDF 5.1+. Flashing pre-built binaries instead:
 [firmware/README.md](firmware/README.md).
 需要 ESP-IDF 5.1 以上。想直接烧预编译固件见 [firmware/README.md](firmware/README.md)。
 
-> ⚠️ The bootmedia flash address changed from `0x420000` to **`0x620000`**.
-> Update older scripts. / 烧录地址已变更，旧脚本需同步修改。
+> ⚠️ **Flash address changes**:
+> - **main branch**: `bootmedia.bin` at `0x620000`
+> - **theme-upgrade branch**: `bootmedia.bin` at `0xA20000` (moved to make room for 4MB theme partition)
+> 
+> Update older scripts accordingly. See [docs/BRANCH_COMPARISON.md](docs/BRANCH_COMPARISON.md).
+> 
+> 烧录地址已变更，旧脚本需同步修改。详见[分支对比文档](docs/BRANCH_COMPARISON.md)。
 
 ## Repository Layout / 目录结构
 
