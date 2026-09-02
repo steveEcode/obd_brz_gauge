@@ -8,6 +8,7 @@
 #include "ui_ext.h"
 #include "ui_disp_item.h"
 #include "ui_theme.h"
+#include "theme_engine/theme_interface.h"
 #include "app_obd_dsp/app_event.h"
 #include <driver/gpio.h>
 #include "bsp_obd_dsp/bsp_board.h"
@@ -65,6 +66,14 @@ lv_obj_t * ui_GearPageArcLabelGearNumText;
 lv_obj_t * ui_ImageGearBlackEar;
 // CUSTOM VARIABLES
 
+
+// SCREEN: ui_ScreenPageThemeGauge (theme-partition custom gauge page; only
+// reachable if the active theme declares a "main_gauge" theme page — see
+// theme_engine/theme_interface.h. Not SquareLine-generated, hand-written below.)
+void ui_ScreenPageThemeGauge_screen_init(void);
+lv_obj_t * ui_ScreenPageThemeGauge;
+void ui_event_theme_gauge_background(lv_event_t * e);
+uint8_t ui_theme_gauge_page_index = 0;  // Current theme page index
 
 // SCREEN: ui_ScreenPageRpm
 void ui_ScreenPageRpm_screen_init(void);
@@ -423,7 +432,8 @@ static uint32_t ui_refresh_period_ms_for_screen(lv_obj_t *scr,
     }
 
     if (scr == ui_ScreenPageGear || scr == ui_ScreenPageRpm ||
-        scr == ui_ScreenPageSpeed || scr == ui_ScreenPageNeedle) {
+        scr == ui_ScreenPageSpeed || scr == ui_ScreenPageNeedle ||
+        scr == ui_ScreenPageThemeGauge) {
         return 16;
     }
     if (scr == ui_ScreenPageTemp || scr == ui_ScreenPageInfo ||
@@ -447,7 +457,41 @@ static bool ui_screen_updates_live_data(lv_obj_t *scr)
     return scr == ui_ScreenPageGear || scr == ui_ScreenPageRpm ||
            scr == ui_ScreenPageSpeed || scr == ui_ScreenPageNeedle ||
            scr == ui_ScreenPageTemp || scr == ui_ScreenPageOilPressure ||
-           scr == ui_ScreenPageInfo;
+           scr == ui_ScreenPageInfo || scr == ui_ScreenPageThemeGauge;
+}
+
+// Converts the core firmware's live OBD snapshot into the ABI-stable struct
+// theme_engine consumes, applying the unit conversions the two structs don't
+// share (boost 0.1bar->0.01bar, oil pressure bar->PSI, battery mV->0.1V) and
+// clamping into the narrower target field widths. Invalid-sentinel fields are
+// passed through as 0 rather than propagating e.g. -32768 into a uint8_t.
+static void ui_build_theme_snapshot(obd_snapshot_t *out,
+                                     int16_t clt, int16_t oil, int16_t oilp_x10,
+                                     int32_t bat_mv, int16_t boost_x10, int16_t afr_x100,
+                                     uint16_t usRpm, uint16_t ucSpeed, int16_t tps,
+                                     enGear eGear, bool gear_unknown)
+{
+    memset(out, 0, sizeof(*out));
+    out->rpm = usRpm;
+    out->speed = (ucSpeed > 255) ? 255 : (uint8_t)ucSpeed;
+    out->boost = (boost_x10 <= -32768) ? 0 : (int16_t)(boost_x10 * 10);
+    out->coolant_temp = (clt < 0) ? 0 : (clt > 255 ? 255 : (uint8_t)clt);
+    if (oilp_x10 < 0) {
+        out->oil_pressure = 0;
+    } else {
+        int32_t psi = (int32_t)(oilp_x10 * 1.45038f / 10.0f + 0.5f);
+        out->oil_pressure = (psi > 255) ? 255 : (uint8_t)psi;
+    }
+    out->gear = gear_unknown ? (int8_t)127 : (int8_t)eGear;
+    if (bat_mv < 0) {
+        out->battery_voltage = 0;
+    } else {
+        int32_t dv = bat_mv / 100;
+        out->battery_voltage = (dv > 255) ? 255 : (uint8_t)dv;
+    }
+    out->oil_temp = (oil < 0) ? 0 : (oil > 255 ? 255 : (uint8_t)oil);
+    out->afr = (afr_x100 < 0) ? 0 : (uint16_t)afr_x100;
+    out->throttle = (tps < 0) ? 0 : (tps > 100 ? 100 : (uint8_t)tps);
 }
 
 void my_timerMain(lv_timer_t * timer)
@@ -549,6 +593,17 @@ void my_timerMain(lv_timer_t * timer)
         ucSpeed = (uint16_t)(SWEEP_SPEED_PEAK * sweep_ratio); // uint16_t so it can hold 999
         eGear   = (enGear)((int)(6.0f * sweep_ratio + 0.5f)); // up to 6th gear
         s_gear_unknown = false;
+        // Temp/Info/Chart pages animate their own data item via disp_item_sweep_value();
+        // the theme-gauge page (ui_build_theme_snapshot below) has no such per-item logic
+        // and just forwards these locals as-is, so without this they'd stay frozen at the
+        // 0 they were declared with above (real OBD reads are skipped while IN_SWEEP).
+        clt       = (int16_t)disp_item_sweep_value(DISP_ITEM_CLT, sweep_ratio);
+        oil       = (int16_t)disp_item_sweep_value(DISP_ITEM_OIL, sweep_ratio);
+        oilp_x10  = (int16_t)disp_item_sweep_value(DISP_ITEM_OILP, sweep_ratio);
+        bat_mv    = disp_item_sweep_value(DISP_ITEM_BAT, sweep_ratio);
+        boost_x10 = (int16_t)disp_item_sweep_value(DISP_ITEM_BOOST, sweep_ratio);
+        afr_x100  = (int16_t)disp_item_sweep_value(DISP_ITEM_AFR, sweep_ratio);
+        tps       = (int16_t)disp_item_sweep_value(DISP_ITEM_TPS, sweep_ratio);
     }
     /*Gear page: refresh only while this page is actually shown, no idle background updates*/
     if (scr == ui_ScreenPageGear) {
@@ -569,6 +624,13 @@ void my_timerMain(lv_timer_t * timer)
                 lv_arc_set_value(ui_GearPageArcGearNumBack, (uint16_t)g * 100 / gc);
             }
         }
+    }
+    /* Theme-provided gauge page: feed the theme engine's arc/bar/label bindings */
+    if (scr == ui_ScreenPageThemeGauge) {
+        obd_snapshot_t theme_snap;
+        ui_build_theme_snapshot(&theme_snap, clt, oil, oilp_x10, bat_mv, boost_x10, afr_x100,
+                                 usRpm, ucSpeed, tps, eGear, s_gear_unknown);
+        theme_update_data(&theme_snap);
     }
     /*RPM page: direct output, no animation delay (CAN 100Hz data is already clean)*/
     if (scr == ui_ScreenPageRpm) {
@@ -848,6 +910,7 @@ void ui_event_logo_background(lv_event_t * e)
 }
 
 // The Gear/RPM/Speed pages sit at the front of the carousel: Gear→RPM→Speed→Temp→… (swipe left = next / swipe right = previous)
+// Swipe down from Gear enters the theme-provided gauge page (only if the active theme declares one).
 void ui_event_gear_background(lv_event_t * e)
 {
     lv_event_code_t event_code = lv_event_get_code(e);
@@ -860,6 +923,48 @@ void ui_event_gear_background(lv_event_t * e)
         else if(dir == LV_DIR_LEFT) {
             lv_indev_wait_release(lv_indev_get_act());
             _ui_screen_change(&ui_ScreenPageRpm, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageRpm_screen_init);
+        }
+        else if(dir == LV_DIR_BOTTOM && theme_has_page("main_gauge")) {
+            lv_indev_wait_release(lv_indev_get_act());
+            _ui_screen_change(&ui_ScreenPageThemeGauge, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageThemeGauge_screen_init);
+        }
+    }
+}
+
+// Theme-provided gauge page: swipe left/right moves to the next/prev page
+// declared by the active theme. Swiping left past the last theme page goes
+// to the Info page (version/settings). Swiping right from the first theme
+// page also goes to Info page (creating a loop: theme pages ↔ Info).
+void ui_event_theme_gauge_background(lv_event_t * e)
+{
+    lv_event_code_t event_code = lv_event_get_code(e);
+    if(event_code == LV_EVENT_GESTURE) {
+        lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
+        uint8_t page_count = theme_page_list_count();
+
+        if(dir == LV_DIR_LEFT) {
+            lv_indev_wait_release(lv_indev_get_act());
+            if (ui_theme_gauge_page_index + 1 < page_count) {
+                // Move to next theme page
+                ui_theme_gauge_page_index++;
+                ui_ScreenPageThemeGauge = NULL;  // Let _ui_screen_change delete the old screen
+                _ui_screen_change(&ui_ScreenPageThemeGauge, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageThemeGauge_screen_init);
+            } else {
+                // Past the last theme page → go to Info page (version/settings)
+                _ui_screen_change(&ui_ScreenPageEasterEgg, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageEasterEgg_screen_init);
+            }
+        }
+        else if(dir == LV_DIR_RIGHT) {
+            lv_indev_wait_release(lv_indev_get_act());
+            if (ui_theme_gauge_page_index > 0) {
+                // Move to previous theme page
+                ui_theme_gauge_page_index--;
+                ui_ScreenPageThemeGauge = NULL;  // Let _ui_screen_change delete the old screen
+                _ui_screen_change(&ui_ScreenPageThemeGauge, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageThemeGauge_screen_init);
+            } else {
+                // Before the first theme page → go to Info page (creating a loop)
+                _ui_screen_change(&ui_ScreenPageEasterEgg, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageEasterEgg_screen_init);
+            }
         }
     }
 }
@@ -1076,14 +1181,19 @@ void ui_event_easter_egg_background(lv_event_t * e)
     }
     if(event_code == LV_EVENT_GESTURE) {
         lv_dir_t dir = lv_indev_get_gesture_dir(lv_indev_get_act());
-        if(dir == LV_DIR_RIGHT) {
-            // the brake-temp page was merged into the chart page; swiping right on the version page returns to the chart page
+        if(dir == LV_DIR_RIGHT || dir == LV_DIR_LEFT) {
             lv_indev_wait_release(lv_indev_get_act());
-            _ui_screen_change(&ui_ScreenPageOilPressure, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageOilPressure_screen_init);
-        }
-        else if(dir == LV_DIR_LEFT) {
-            lv_indev_wait_release(lv_indev_get_act());
-            _ui_screen_change(&ui_ScreenPageGear, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageGear_screen_init);
+            // If a custom theme with pages is loaded, swipe left/right returns to theme pages
+            if (theme_page_list_count() > 0) {
+                // Right swipe goes to last theme page, left swipe goes to first
+                ui_theme_gauge_page_index = (dir == LV_DIR_RIGHT) ? (theme_page_list_count() - 1) : 0;
+                if (ui_ScreenPageThemeGauge) {
+                    lv_obj_del(ui_ScreenPageThemeGauge);
+                    ui_ScreenPageThemeGauge = NULL;
+                }
+                _ui_screen_change(&ui_ScreenPageThemeGauge, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageThemeGauge_screen_init);
+            }
+            // If no theme loaded, do nothing (stay on Info page - no access to default pages)
         }
         else if(dir == LV_DIR_TOP) {
             // swipe up → BLE scan page
@@ -1133,6 +1243,21 @@ void ui_ota_mode_refresh(void)
 
 void ui_init(void)
 {
+    // Initialize theme partition system FIRST (before any UI creation)
+    // This loads the theme from theme_0/theme_1 partition, or falls back to default
+    ESP_LOGI(TAG, "Initializing theme partition system");
+    esp_err_t theme_ret = theme_engine_init();
+    if (theme_ret == ESP_OK) {
+        theme_info_t info;
+        if (theme_get_info(&info) == ESP_OK) {
+            ESP_LOGI(TAG, "Theme loaded: %s v%s by %s", info.name, info.version, info.author);
+        }
+        // Run test to print detailed theme info
+        theme_engine_test();
+    } else {
+        ESP_LOGW(TAG, "Theme partition system initialization failed, using built-in themes");
+    }
+
     // Load the saved UI theme BEFORE any screen is built, so every screen
     // picks up the active theme's colors at creation time.
     ui_theme_init();
@@ -1161,6 +1286,7 @@ void ui_init(void)
     ui_ScreenPageChartConfig = NULL;    // chart data-source selection page lazy-loaded
     ui_ScreenPageChartAlarm = NULL;     // chart alarm settings page lazy-loaded
     ui_ScreenPageIntro = NULL;          // boot animation page lazy-loaded
+    ui_ScreenPageThemeGauge = NULL;     // theme-provided gauge page, lazy-loaded (only reachable if the active theme declares "main_gauge")
     ui____initial_actions0 = lv_obj_create(NULL);
 
     // Pre-create the default boot page: build it before the boot switch so it isn't created synchronously mid-transition and cause a stutter.

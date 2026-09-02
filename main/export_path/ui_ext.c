@@ -22,6 +22,7 @@
 #include "app_obd_dsp/vehicle_profiles.h"
 #include "app_obd_dsp/boot_block_player.h"
 #include "app_obd_dsp/boot_media_mount.h"
+#include "theme_engine/theme_interface.h"
 #include "esp_timer.h"
 #include "esp_random.h"
 #include "lvgl.h"
@@ -248,6 +249,23 @@ static void boot_goto_ble_scan(void)
 static void boot_enter_default_page(void)
 {
     const nvs_user_cfg_t *pg_cfg = nvs_cfg_get();
+
+    // If a custom theme with pages is loaded, boot directly into the first theme page
+    uint8_t page_count = theme_page_list_count();
+    if (page_count > 0) {
+        ui_theme_gauge_page_index = 0;
+        if (ui_ScreenPageThemeGauge) {
+            lv_obj_del(ui_ScreenPageThemeGauge);
+            ui_ScreenPageThemeGauge = NULL;
+        }
+        ui_ScreenPageThemeGauge_screen_init();
+        lv_scr_load_anim(ui_ScreenPageThemeGauge, LV_SCR_LOAD_ANIM_FADE_ON, 300, 0, true);
+        ui_ScreenPageLogo = NULL;
+        imageLogo = NULL;
+        s_boot_done = true;
+        if(s_sweep_pending) { s_sweep_pending = false; s_sweep_step = 1; }
+        return;
+    }
 
     if (pg_cfg->device_role == ESPNOW_ROLE_SLAVE) {
         // Slave: not yet bound to a master → go to the BLE page to pair (ui_ScreenPageBLEScan enters "FIND MASTER" mode automatically per role);

@@ -9,7 +9,8 @@ typedef struct {
     uint8_t  theme;         // UI theme index (0=DEFAULT, registry in ui_theme.c)
     uint32_t user_theme_domiant_color;   // legacy, unused (kept for layout)
     uint32_t user_theme_secondary_color;   // legacy, unused (kept for layout)
-    uint8_t rsv[5];        // reserved for future use
+    uint8_t  theme_slot;    // unused — only one theme partition (theme_0) exists, kept for struct layout
+    uint8_t rsv[4];         // reserved for future use
 } theme_cfg_t;
 
 /*------------------ User configuration (written only when changed) ------------------*/

@@ -1,0 +1,18 @@
+{
+  "generated": "2026-08-26 22:37:42",
+  "themes": [
+    {
+      "id": "boost_oil_example",
+      "title": "TURBO PRO",
+      "description": "Boost gauge with an oil pressure bar underneath, orange and yellow color scheme. Example theme for the theme partition system.",
+      "author": "example",
+      "version": "1.0.0",
+      "preview": "boost_oil_example/preview.png",
+      "bin": {
+        "path": "boost_oil_example/theme.bin",
+        "size": 4194304,
+        "sha256": "6e62eeb8da85478fb2309173e26d410d5bfcd74dfca8f980991c447b1db22ae2"
+      }
+    }
+  ]
+}
