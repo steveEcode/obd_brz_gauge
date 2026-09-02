@@ -37,10 +37,17 @@ esp_err_t esp_lcd_touch_new_i2c_cst816(i2c_master_bus_handle_t i2c_bus, const es
 #define ESP_LCD_TOUCH_IO_I2C_CST816S_ADDRESS    (0x15)
 
 // I2C settings
-#define I2C_Touch_SDA_IO            1               /*!< GPIO number used for I2C master data  */
-#define I2C_Touch_SCL_IO            3               /*!< GPIO number used for I2C master clock */
+#if CONFIG_OBD_HW_VERSION_V2_NEW || CONFIG_OBD_HW_VERSION_V3_NEW
+#define I2C_Touch_SDA_IO            7               /*!< GPIO number used for I2C master data  (new boards) */
+#define I2C_Touch_SCL_IO            8               /*!< GPIO number used for I2C master clock (new boards) */
+#define I2C_Touch_INT_IO            41              /*!< GPIO number used for I2C master data  */
+#define I2C_Touch_RST_IO            40              /*!< GPIO number used for I2C master clock */
+#else
+#define I2C_Touch_SDA_IO            11               /*!< GPIO number used for I2C master data  */
+#define I2C_Touch_SCL_IO            10               /*!< GPIO number used for I2C master clock */
 #define I2C_Touch_INT_IO            4               /*!< GPIO number used for I2C master data  */
-#define I2C_Touch_RST_IO            -1              /*!< GPIO number used for I2C master clock */
+#define I2C_Touch_RST_IO            -1              /*!< GPIO number used for I2C master clock (EXIO1) */
+#endif
 #define I2C_Touch_MASTER_FREQ_HZ    400000          /*!< I2C master clock frequency */
 
 extern esp_lcd_touch_handle_t tp;

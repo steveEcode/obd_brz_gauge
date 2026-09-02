@@ -28,12 +28,30 @@
 
 #define ESP_PANEL_HOST_SPI_ID_DEFAULT       (SPI2_HOST)
 #define ESP_PANEL_LCD_SPI_MODE              (0)                   // 0/1/2/3, typically set to 0
-#define ESP_PANEL_LCD_SPI_CLK_HZ            (80 * 1000 * 1000)    // Should be an integer divisor of 80M, typically set to 40M
+#if CONFIG_OBD_HW_VERSION_V2_NEW || CONFIG_OBD_HW_VERSION_V3_NEW
+#define ESP_PANEL_LCD_SPI_CLK_HZ            (50 * 1000 * 1000)    // New panels: match reference driver (scr_st77916.h TFT_SPI_FREQ_HZ = 50MHz)
+#else
+#define ESP_PANEL_LCD_SPI_CLK_HZ            (80 * 1000 * 1000)    // Waveshare panel validated at 80MHz
+#endif
 #define ESP_PANEL_LCD_SPI_TRANS_QUEUE_SZ    (10)                  // Typically set to 10
 #define ESP_PANEL_LCD_SPI_CMD_BITS          (32)                  // Typically set to 32
 #define ESP_PANEL_LCD_SPI_PARAM_BITS        (8)                   // Typically set to 8
 
 #define ESP_PANEL_LCD_SPI_IO_TE             (18)
+
+#if CONFIG_OBD_HW_VERSION_V2_NEW || CONFIG_OBD_HW_VERSION_V3_NEW
+/* New boards (V2/V3): same pins, only the ST77916 init sequence differs (v1/v2).
+   LCD reset is a direct GPIO; no TCA9554 IO expander / ADS1115. */
+#define ESP_PANEL_LCD_SPI_IO_SCK            (9)
+#define ESP_PANEL_LCD_SPI_IO_DATA0          (11)
+#define ESP_PANEL_LCD_SPI_IO_DATA1          (12)
+#define ESP_PANEL_LCD_SPI_IO_DATA2          (13)
+#define ESP_PANEL_LCD_SPI_IO_DATA3          (14)
+#define ESP_PANEL_LCD_SPI_IO_CS             (10)
+#define EXAMPLE_LCD_PIN_NUM_RST             (47)    // direct GPIO
+#define EXAMPLE_LCD_PIN_NUM_BK_LIGHT        (15)
+#else
+/* Waveshare ESP32-S3-Touch-LCD-1.85 */
 #define ESP_PANEL_LCD_SPI_IO_SCK            (40)
 #define ESP_PANEL_LCD_SPI_IO_DATA0          (46)
 #define ESP_PANEL_LCD_SPI_IO_DATA1          (45)
@@ -42,9 +60,12 @@
 #define ESP_PANEL_LCD_SPI_IO_CS             (21)
 #define EXAMPLE_LCD_PIN_NUM_RST             (-1)    // EXIO2
 #define EXAMPLE_LCD_PIN_NUM_BK_LIGHT        (5)
+#endif
 
+#ifndef EXAMPLE_LCD_BK_LIGHT_ON_LEVEL
 #define EXAMPLE_LCD_BK_LIGHT_ON_LEVEL       (1)
 #define EXAMPLE_LCD_BK_LIGHT_OFF_LEVEL !EXAMPLE_LCD_BK_LIGHT_ON_LEVEL
+#endif
 
 // Fits one 40-line render band (28.8KB), transferred in a single transaction per refresh to cut
 // transaction overhead and raise frame rate. (Smaller than the full-frame/43KB that caused
