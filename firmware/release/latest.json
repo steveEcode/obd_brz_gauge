@@ -1,15 +1,15 @@
 {
-  "version": "theme-upgrade-85-8994317",
+  "version": "theme-upgrade-87-cd9b9a0",
   "channel": "theme-upgrade",
   "branch": "feature/theme-partition-system",
-  "commit": "8994317",
-  "count": 85,
-  "build_date": "2026-09-02T15:30:00+08:00",
+  "commit": "cd9b9a0",
+  "count": 87,
+  "build_date": "2026-09-02T16:33:00+08:00",
   "files": {
     "bootloader": {
       "filename": "bootloader.bin",
       "size": 20912,
-      "sha256": "4709abe18476cd202ddecfec56e0b5f1dccecedd9089928079f7b1d1682694c6"
+      "sha256": "0c85d571fb15ccae27d84e5a072b45aa8838b74199d1752a34c8dcde06e68c2d"
     },
     "partition_table": {
       "filename": "partition-table.bin",
@@ -24,7 +24,7 @@
     "firmware": {
       "filename": "firmware.bin",
       "size": 2259792,
-      "sha256": "7526ecf75ccbef6f1e74928aacd06434e17babec65b03e9b82116b5aeaa3c50d"
+      "sha256": "32042ee5e6e860922d4b29312b7117e5054dab9019310693a455d74af7943f17"
     },
     "bootmedia": {
       "filename": "bootmedia.bin",
@@ -39,5 +39,5 @@
     "firmware": "0x20000",
     "bootmedia": "0xa20000"
   },
-  "notes": "Fixed swipe back from version page when no theme loaded"
+  "notes": "Fixed version page swipe back and WiFi OOM in master/slave mode"
 }
