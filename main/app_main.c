@@ -38,6 +38,7 @@
 #include "app_obd_dsp/vehicle_profiles.h"
 #include "export_path/ui_ext.h"
 #include "app_obd_dsp/app_event.h"
+#include "theme_engine/theme_interface.h"
 
 // ===== Triple-gauge roles =====
 // Normally select master/slave via "Settings page -> swipe down to the MULTI-GAUGE page" (stored in NVS device_role, effective after reboot); one firmware is enough.
@@ -278,7 +279,10 @@ void app_main(void)
     extern TaskHandle_t g_lvgl_task_handle;
     g_lvgl_task_handle = s_lvgl_task_handle;
 
-    /* 7. Start UI */
+    /* 6.5 Initialize Bluetooth stack BEFORE UI to claim internal RAM early */
+    elm327_ble_ensure_stack_init();
+
+    /* 7. Start UI (theme loading will use PSRAM since BT already claimed internal RAM) */
     if (lvgl_lock(-1)) {
         ui_init();
         ui_ext_init();
@@ -289,7 +293,6 @@ void app_main(void)
     /* 7.5 Mount bootmedia SPIFFS early (saves ~300ms of black screen) */
     boot_media_mount();
     boot_media_recover_previous_if_needed();
-    elm327_ble_ensure_stack_init();
 
     /* 8. Branch by role: master (connects to ELM327 for readings + ESP-NOW broadcast) / slave (only receives and displays the master's data) */
     uint8_t dev_role = user_cfg->device_role;
@@ -308,6 +311,8 @@ void app_main(void)
             ESP_LOGD(TAG, "Bound master MAC at boot: %02x:%02x:%02x:%02x:%02x:%02x (0=unbound)",
                      bm[0], bm[1], bm[2], bm[3], bm[4], bm[5]);
         }
+        /* Slave: start BLE GATTS for pairing immediately after ESP-NOW receive setup */
+        racechrono_ble_diy_start(user_cfg->rc_enabled);
     } else {
         /* ---- Master / standalone: both run the full BLE OBD chain; the only difference is whether ESP-NOW (=WiFi) starts ----
            STANDALONE: does not start WiFi/ESP-NOW; existing devices (already set to master/slave) are unaffected. */
@@ -358,14 +363,11 @@ void app_main(void)
             espnow_link_start_master();
         }
 
+        /* 9.9 Start RaceChrono BLE GATTS immediately after ESP-NOW (Master/Standalone) to claim memory before theme loads */
+        racechrono_ble_diy_start(user_cfg->rc_enabled);
+
         /* 10. Mileage statistics task (only the master counts, to avoid double counting by the slave) */
         vMileageDataStatisticTask();
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(500));
-    // Slave: skip RaceChrono BLE GATTS service (only needs BLE client for master pairing)
-    if (dev_role != ESPNOW_ROLE_SLAVE) {
-        racechrono_ble_diy_start(user_cfg->rc_enabled);
     }
 
     BaseType_t valid_task_started = xTaskCreate(mark_app_valid_task, "ota_valid", 4096, NULL, tskIDLE_PRIORITY + 1, NULL);

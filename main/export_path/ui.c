@@ -1269,16 +1269,40 @@ void ui_init(void)
                                                false, LV_FONT_DEFAULT);
     lv_disp_set_theme(dispp, theme);
     ui_ScreenPageLogo_screen_init();
-    // The Main 3-in-1 page stays removed; the Speed/RPM/Gear pages are restored
-    ui_ScreenPageGear_screen_init();
-    ui_ScreenPageRpm_screen_init();
-    ui_ScreenPageSpeed_screen_init();
-    ui_ScreenPageTemp_screen_init();
-    // The standalone brake-temp page was merged into the generic chart page and is no longer created (its data can be selected on the chart page)
-    ui_ScreenPageOilPressure_screen_init();   // generic chart page (configured internally via chart_source_idx)
+
+    // MEMORY OPTIMIZATION: Conditionally create screens based on theme availability
+    // If custom theme is loaded, skip built-in gauge pages (Gear/Rpm/Speed/Temp/Needle/OilPressure)
+    // and rely on theme-provided pages instead. This saves ~40-60KB RAM for Master mode.
+    bool has_custom_theme = false;
+    theme_info_t theme_info;
+    if (theme_get_info(&theme_info) == ESP_OK) {
+        if (theme_info.id[0] != '\0' && strcmp(theme_info.id, "default") != 0) {
+            has_custom_theme = true;
+            ESP_LOGI(TAG, "Custom theme detected - skipping built-in gauge pages to save RAM");
+        }
+    }
+
+    if (!has_custom_theme) {
+        // No custom theme - create built-in gauge pages
+        ui_ScreenPageGear_screen_init();
+        ui_ScreenPageRpm_screen_init();
+        ui_ScreenPageSpeed_screen_init();
+        ui_ScreenPageTemp_screen_init();
+        ui_ScreenPageOilPressure_screen_init();
+        ui_ScreenPageNeedle_screen_init();
+    } else {
+        // Custom theme loaded - defer built-in gauge pages (only create if explicitly accessed)
+        ui_ScreenPageGear = NULL;
+        ui_ScreenPageRpm = NULL;
+        ui_ScreenPageSpeed = NULL;
+        ui_ScreenPageTemp = NULL;
+        ui_ScreenPageOilPressure = NULL;
+        ui_ScreenPageNeedle = NULL;
+    }
+
+    // System pages are always created (needed for settings/BLE/etc regardless of theme)
     ui_ScreenPageOilWarn_screen_init();
     ui_ScreenPageODBProtocal_screen_init();
-    ui_ScreenPageNeedle_screen_init();
     // The Info page is lazy-loaded on demand; its screen pointer must be initialized to NULL
     ui_ScreenPageInfo = NULL;
     ui_ScreenPageTempCustom = NULL;
