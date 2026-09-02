@@ -1,38 +1,55 @@
 {
-  "version": "theme-upgrade-90-2d10276",
-  "channel": "theme-upgrade",
-  "branch": "feature/theme-partition-system",
-  "commit": "2d10276",
-  "count": 90,
-  "build_date": "2026-09-02T18:14:00+08:00",
+  "device": {
+    "board": "Waveshare ESP32-S3-Touch-LCD-1.85",
+    "variant": "obd_brz_gauge",
+    "lcd": "ST77916",
+    "screen": {
+      "w": 360,
+      "h": 360,
+      "bpp": 16
+    },
+    "flash_mb": 16,
+    "psram_mb": 8,
+    "ota_slots": 2,
+    "bootmedia_slots": 1,
+    "bootmedia_format": 1
+  },
+  "firmware": {
+    "project": "obd_brz_gauge",
+    "version": "1",
+    "build_tag": "main-93-a5a7821d15e2",
+    "git": "a5a7821d15e2",
+    "branch": "main",
+    "count": 93,
+    "built": "Sep 03 2026 02:20:25",
+    "idf": "v5.5.3",
+    "slot": "ota_0"
+  },
   "files": {
-    "bootloader": {
-      "sha256": "0f4eeb3341273c60eafde6da4428676f58a3aa7a920ad10c04913cf2ae2df202",
-      "size": 20912
-    },
-    "partition_table": {
-      "sha256": "ba78ab5a4b72825fe8896557852c35efe90750866aeb0603644a69154a6b7e7f",
-      "size": 3072
-    },
-    "ota_data_initial": {
-      "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f",
-      "size": 8192
-    },
     "firmware": {
-      "sha256": "5f54c9d5d7885ce43c33a80976716dc9184ba6dfad82cce8c55f9e3bcbb73679",
-      "size": 2259792
+      "path": "obd_brz_gauge.bin",
+      "size": 2260032,
+      "sha256": "c6e5090740dd89d101c97583c0346985c3bfce13aad58195d72199a68a1dfccb"
     },
     "bootmedia": {
-      "sha256": "4aa616a626570eb77ff6dba6d8e9d362e128df9905613f7c4dfd1ae011c77df0",
-      "size": 6160384
+      "path": "bootmedia.bin",
+      "size": 6160384,
+      "sha256": "4aa616a626570eb77ff6dba6d8e9d362e128df9905613f7c4dfd1ae011c77df0"
+    },
+    "partition_table": {
+      "path": "partition_table/partition-table.bin",
+      "size": 3072,
+      "sha256": "ba78ab5a4b72825fe8896557852c35efe90750866aeb0603644a69154a6b7e7f"
+    },
+    "bootloader": {
+      "path": "bootloader/bootloader.bin",
+      "size": 20912,
+      "sha256": "f3a5f002589a54931c2c541f9ba28174b0b194d179caa1d914d167c8416f7b6f"
+    },
+    "ota_data_initial": {
+      "path": "ota_data_initial.bin",
+      "size": 8192,
+      "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f"
     }
-  },
-  "flash_offsets": {
-    "bootloader": "0x0",
-    "partition_table": "0x8000",
-    "ota_data_initial": "0xf000",
-    "firmware": "0x20000",
-    "bootmedia": "0xa20000"
-  },
-  "notes": "Fixed 16MB flash size config and enabled Bluetooth (Bluedroid + BLE)"
+  }
 }
