@@ -1,70 +1,43 @@
 {
-  "device": {
-    "board": "Waveshare ESP32-S3-Touch-LCD-1.85",
-    "variant": "obd_brz_gauge",
-    "lcd": "ST77916",
-    "screen": {
-      "w": 360,
-      "h": 360,
-      "bpp": 16
-    },
-    "flash_mb": 16,
-    "psram_mb": 8,
-    "ota_slots": 2,
-    "bootmedia_slots": 1,
-    "bootmedia_format": 1
-  },
-  "firmware": {
-    "build_tag": "theme-upgrade-81-a598ac3",
-    "branch": "theme-upgrade",
-    "count": 81
-  },
+  "version": "theme-upgrade-85-8994317",
+  "channel": "theme-upgrade",
+  "branch": "feature/theme-partition-system",
+  "commit": "8994317",
+  "count": 85,
+  "build_date": "2026-09-02T15:30:00+08:00",
   "files": {
     "bootloader": {
-      "path": "bootloader/bootloader.bin",
-      "offset": "0x0",
-      "sha256": "f581a1ac190c959a80b76aabfbfaf54ca8f9f2ce8e91cdd3bba2e9dd1e45b3e3",
-      "size": 20912
+      "filename": "bootloader.bin",
+      "size": 20912,
+      "sha256": "4709abe18476cd202ddecfec56e0b5f1dccecedd9089928079f7b1d1682694c6"
     },
     "partition_table": {
-      "path": "partition_table/partition-table.bin",
-      "offset": "0x8000",
-      "sha256": "ba78ab5a4b72825fe8896557852c35efe90750866aeb0603644a69154a6b7e7f",
-      "size": 3072
+      "filename": "partition-table.bin",
+      "size": 3072,
+      "sha256": "ba78ab5a4b72825fe8896557852c35efe90750866aeb0603644a69154a6b7e7f"
     },
     "ota_data_initial": {
-      "path": "ota_data_initial.bin",
-      "offset": "0xf000",
-      "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f",
-      "size": 8192
+      "filename": "ota_data_initial.bin",
+      "size": 8192,
+      "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f"
     },
     "firmware": {
-      "path": "obd_brz_gauge.bin",
-      "offset": "0x20000",
-      "sha256": "112ceab2fe7315d1579afa2fffa2b60922bb1e07a34c95afdb6b87f99251071e",
-      "size": 2259696
+      "filename": "firmware.bin",
+      "size": 2259792,
+      "sha256": "7526ecf75ccbef6f1e74928aacd06434e17babec65b03e9b82116b5aeaa3c50d"
     },
     "bootmedia": {
-      "path": "bootmedia.bin",
-      "offset": "0xA20000",
-      "sha256": "4aa616a626570eb77ff6dba6d8e9d362e128df9905613f7c4dfd1ae011c77df0",
-      "size": 6160384
+      "filename": "bootmedia.bin",
+      "size": 6160384,
+      "sha256": "4aa616a626570eb77ff6dba6d8e9d362e128df9905613f7c4dfd1ae011c77df0"
     }
   },
-  "notes": {
-    "branch": "theme-upgrade",
-    "features": [
-      "Runtime-loadable themes from 4MB Flash partition",
-      "Theme OTA update support via /ota/theme API",
-      "Streamlined device manifest (under 512 bytes)",
-      "WiFi logs suppressed during OTA (WARN level only)",
-      "Theme erase endpoint for partition formatting"
-    ],
-    "partition_changes": [
-      "Added theme_0 partition at 0x620000 (4MB)",
-      "Moved bootmedia from 0x620000 to 0xA20000",
-      "Reduced bootmedia from 9.875MB to 5.875MB"
-    ],
-    "compatibility": "NOT compatible with main branch - full flash required to switch"
-  }
+  "flash_offsets": {
+    "bootloader": "0x0",
+    "partition_table": "0x8000",
+    "ota_data_initial": "0xf000",
+    "firmware": "0x20000",
+    "bootmedia": "0xa20000"
+  },
+  "notes": "Fixed swipe back from version page when no theme loaded"
 }
