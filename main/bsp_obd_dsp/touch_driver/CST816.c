@@ -1,6 +1,7 @@
 #include "bsp_obd_dsp/touch_driver/CST816.h"
 #include "bsp_obd_dsp/exio/TCA9554PWR.h"
 #include "bsp_obd_dsp/lcd_driver/ST77916.h"
+#include "bsp_obd_dsp/i2c_driver/I2C_Driver.h"
 
 #define POINT_NUM_MAX       (1)
 
@@ -160,11 +161,22 @@ static esp_err_t del(esp_lcd_touch_handle_t tp)
 
 static esp_err_t reset(esp_lcd_touch_handle_t tp)
 {
-
+#if CONFIG_OBD_HW_VERSION_V2_NEW || CONFIG_OBD_HW_VERSION_V3_NEW
+    /* New boards: touch reset is a direct GPIO (I2C_Touch_RST_IO), which
+       esp_lcd_touch_new_i2c_cst816 already configured as an output. */
+    if (tp->config.rst_gpio_num != GPIO_NUM_NC) {
+        gpio_set_level(tp->config.rst_gpio_num, 0);
+        vTaskDelay(pdMS_TO_TICKS(10));
+        gpio_set_level(tp->config.rst_gpio_num, 1);
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+#else
+    /* Waveshare board: touch reset is wired to the TCA9554 IO expander (EXIO1). */
     Set_EXIO(TCA9554_EXIO1,false);
     vTaskDelay(pdMS_TO_TICKS(10));
     Set_EXIO(TCA9554_EXIO1,true);
     vTaskDelay(pdMS_TO_TICKS(50));
+#endif
 
     return ESP_OK;
 }
@@ -202,31 +214,14 @@ static esp_err_t i2c_write_bytes(esp_lcd_touch_handle_t tp, uint16_t reg, uint8_
     return i2c_master_transmit(s_touch_dev, buf, len + 1, 1000);
 }
 
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-/**
- * @brief Initialize touch I2C bus using new API
- */
-static i2c_master_bus_handle_t s_touch_i2c_bus = NULL;
-
-static esp_err_t Touch_I2C_Init(void)
-{
-    i2c_master_bus_config_t bus_config = {
-        .clk_source = I2C_CLK_SRC_DEFAULT,
-        .i2c_port = -1,
-        .scl_io_num = I2C_Touch_SCL_IO,
-        .sda_io_num = I2C_Touch_SDA_IO,
-        .glitch_ignore_cnt = 7,
-        .flags.enable_internal_pullup = true,
-    };
-
-    return i2c_new_master_bus(&bus_config, &s_touch_i2c_bus);
-}
-
 void Touch_Init(void)
 {
-    ESP_ERROR_CHECK(Touch_I2C_Init());
-    ESP_LOGD(TAG, "I2C initialized successfully");
+    // The touch controller shares the same physical I2C bus (SCL=10, SDA=11) as the
+    // TCA9554 IO expander, so reuse the bus created by I2C_Init() instead of creating a
+    // second master bus on the same pins (that triggers "GPIO is not usable, maybe
+    // conflict with others" and leaves both buses fighting over the pins).
+    i2c_master_bus_handle_t i2c_bus = I2C_GetBusHandle();
+    ESP_ERROR_CHECK(i2c_bus ? ESP_OK : ESP_ERR_INVALID_STATE);
 
     esp_lcd_touch_config_t tp_cfg = {
         .x_max = EXAMPLE_LCD_WIDTH,
@@ -242,5 +237,5 @@ void Touch_Init(void)
 
     /* Initialize touch directly via I2C master bus + device */
     ESP_LOGD(TAG, "Initialize touch controller CST816");
-    ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_cst816(s_touch_i2c_bus, &tp_cfg, &tp));
+    ESP_ERROR_CHECK(esp_lcd_touch_new_i2c_cst816(i2c_bus, &tp_cfg, &tp));
 }

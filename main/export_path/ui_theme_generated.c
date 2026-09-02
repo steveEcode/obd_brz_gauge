@@ -14,7 +14,7 @@
 
 #include "ui_theme.h"
 
-// slot 0 — themes/builtin/default/theme.toml
+// slot 0 — themes\builtin\default\theme.toml
 // Original black face with a white bezel ring.
 // author: steveEcode
 static const ui_theme_t s_theme_default = {
@@ -33,7 +33,7 @@ static const ui_theme_t s_theme_default = {
     .bezel = { .style_id = 0 },
 };
 
-// slot 1 — themes/builtin/amber/theme.toml
+// slot 1 — themes\builtin\amber\theme.toml
 // Classic warm amber, dark brown face.
 // author: steveEcode
 static const ui_theme_t s_theme_amber = {
@@ -52,7 +52,7 @@ static const ui_theme_t s_theme_amber = {
     .bezel = { .style_id = 0 },
 };
 
-// slot 2 — themes/builtin/ocean/theme.toml
+// slot 2 — themes\builtin\ocean\theme.toml
 // Cool cyan-blue on a near-black face.
 // author: steveEcode
 static const ui_theme_t s_theme_ocean = {
