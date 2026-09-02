@@ -1192,8 +1192,10 @@ void ui_event_easter_egg_background(lv_event_t * e)
                     ui_ScreenPageThemeGauge = NULL;
                 }
                 _ui_screen_change(&ui_ScreenPageThemeGauge, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageThemeGauge_screen_init);
+            } else {
+                // No theme loaded, return to Gear page
+                _ui_screen_change(&ui_ScreenPageGear, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageGear_screen_init);
             }
-            // If no theme loaded, do nothing (stay on Info page - no access to default pages)
         }
         else if(dir == LV_DIR_TOP) {
             // swipe up → BLE scan page
