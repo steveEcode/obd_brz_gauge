@@ -284,6 +284,7 @@ void app_main(void)
 
     /* 7. Start UI - Logo displayed first, then theme loading */
     // Step 1: Show logo immediately (before theme loading)
+    ESP_LOGI(TAG, "Creating and displaying logo page");
     if (lvgl_lock(-1)) {
         lv_disp_t * dispp = lv_disp_get_default();
         lv_theme_t * theme = lv_theme_default_init(dispp, lv_palette_main(LV_PALETTE_BLUE), lv_palette_main(LV_PALETTE_RED),
@@ -295,6 +296,7 @@ void app_main(void)
         lv_disp_load_scr(ui_ScreenPageLogo);
         lvgl_unlock();  // Release lock so logo can be rendered immediately
     }
+    ESP_LOGI(TAG, "Logo page displayed, starting theme load");
 
     // Step 2: Load theme and create other UI elements (logo already visible)
     if (lvgl_lock(-1)) {
