@@ -23,7 +23,9 @@
 
 /* Waveshare BSP drivers */
 #include "bsp_obd_dsp/i2c_driver/I2C_Driver.h"
+#if CONFIG_OBD_HW_VERSION_V1_WAVESHARE
 #include "bsp_obd_dsp/exio/TCA9554PWR.h"
+#endif
 #include "bsp_obd_dsp/lcd_driver/ST77916.h"       // internally includes CST816.h & TCA9554PWR.h
 
 /* Application layer */
@@ -33,7 +35,9 @@
 #include "bsp_obd_dsp/racechrono_ble_diy.h"
 #include "app_obd_dsp/boot_media_mount.h"
 #include "bsp_obd_dsp/rs485_brake_temp.h"
+#if CONFIG_OBD_HW_VERSION_V1_WAVESHARE
 #include "bsp_obd_dsp/ads1115_oil_pressure.h"
+#endif
 #include "app_obd_dsp/obd_data_cache.h"
 #include "app_obd_dsp/vehicle_profiles.h"
 #include "export_path/ui_ext.h"
@@ -207,17 +211,19 @@ void app_main(void)
              user_cfg->vehicle_profile_idx, vehicle_profile_get_active()->name,
              stat->odometer_m, stat->trip_m, stat->max_speed_kmh, stat->avg_speed_kmh, stat->run_time_s);
 
-    /* 2. I2C bus 0 init (used by the TCA9554 IO expander, SCL=10 SDA=11) */
+    /* 2. I2C bus init (used by the TCA9554 IO expander + CST816 touch on V1, CST816 touch only on V2/V3) */
     I2C_Init();
 
-    /* 3. IO expander init (TCA9554PWR, I2C address 0x20) */
+    /* 3. IO expander init (TCA9554PWR, I2C address 0x20) — V1 board only; V2/V3 have no expander */
+#if CONFIG_OBD_HW_VERSION_V1_WAVESHARE
     EXIO_Init();
+#endif
 
     /* 4. LCD + backlight + touch combined init
      *    LCD_Init() internally calls, in order:
-     *      ST77916_Init() → TCA9554 EXIO2 reset → QSPI SPI bus & ST77916 panel driver
-     *      Backlight_Init() → LEDC PWM backlight (GPIO 5)
-     *      Touch_Init() → I2C_NUM_1 (SDA=1, SCL=3) CST816 touch driver
+     *      ST77916_Init() → reset (V1: TCA9554 EXIO2; V2/V3: direct GPIO 47) → QSPI SPI bus & ST77916 panel driver
+     *      Backlight_Init() → LEDC PWM backlight (V1: GPIO 5; V2/V3: GPIO 15)
+     *      Touch_Init() → reuses I2C bus CST816 touch driver (V1: SCL=10 SDA=11; V2/V3: SCL=8 SDA=7)
      *    After completion panel_handle / tp are both globally valid variables
      */
     LCD_SetFlushCallback(notify_lvgl_flush_ready, &disp_drv);
@@ -367,18 +373,26 @@ void app_main(void)
             ESP_LOGD(TAG, "No saved BLE device, waiting for user selection");
         }
 
-        /* 9. Start RS485 brake temperature acquisition */
+        /* 9. Start RS485 brake temperature acquisition (V1 board only).
+           V2/V3 have no RS485 hardware; also, its UART pins (TX=13/RX=12 from
+           CONFIG_OBD_RS485_*) collide with the LCD QSPI DATA2/DATA1 lines, so
+           it must never run on the new boards. */
+#if CONFIG_OBD_HW_VERSION_V1_WAVESHARE
         rs485_brake_temp_start();
+#endif
 
-        /* 9.5 Start oil pressure acquisition (direct ESP32 ADC connection).
+        /* 9.5 Start oil pressure acquisition (external ADS1115 ADC — V1 board only).
            Skip the external ADS1115 ADC for profiles that read oil pressure over OBD
-           (e.g. Supra A90 — DID 4436, BMW E — DID 586F), to avoid the ADC overwriting OBD data. */
+           (e.g. Supra A90 — DID 4436, BMW E — DID 586F), to avoid the ADC overwriting OBD data.
+           V2/V3 boards have no ADS1115. */
+#if CONFIG_OBD_HW_VERSION_V1_WAVESHARE
         {
             const vehicle_profile_t *vp = vehicle_profile_get_active();
             if (!(vp && vp->obd_oil_pressure_did != 0)) {
                 oil_pressure_start();
             }
         }
+#endif
 
         /* 9.8 Start ESP-NOW broadcast (sends this unit's OBD data cache to the slave) -- MASTER only;
                STANDALONE skips it; WiFi is never initialized (saves RF/power and does not interfere with BLE). */

@@ -4,6 +4,25 @@ menu "OBD DSP Configuration"
     # Touch: CST816 (I2C)
     # IO Expander: TCA9554PWR
 
+    choice OBD_HW_VERSION
+        prompt "OBD display hardware version"
+        default OBD_HW_VERSION_V1_WAVESHARE
+        help
+            Select which display board this firmware is built for.
+            The two new boards share the same pins (LCD QSPI + CST816 touch on
+            their own I2C bus), but use different ST77916 init sequences and
+            carry no TCA9554 IO expander / ADS1115 oil-pressure ADC.
+
+        config OBD_HW_VERSION_V1_WAVESHARE
+            bool "V1: Waveshare ESP32-S3-Touch-LCD-1.85 (ST77916 v2 init + TCA9554 + ADS1115)"
+
+        config OBD_HW_VERSION_V2_NEW
+            bool "V2: New board A (ST77916 v1 init, direct GPIO, no TCA9554/ADS1115)"
+
+        config OBD_HW_VERSION_V3_NEW
+            bool "V3: New board B (ST77916 v2 init, direct GPIO, no TCA9554/ADS1115)"
+    endchoice
+
     config OBD_RS485_TX_GPIO
         int "RS485 TX GPIO"
         range 0 48
