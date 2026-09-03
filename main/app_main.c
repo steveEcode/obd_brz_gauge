@@ -282,9 +282,23 @@ void app_main(void)
     /* 6.5 Initialize Bluetooth stack BEFORE UI to claim internal RAM early */
     elm327_ble_ensure_stack_init();
 
-    /* 7. Start UI (theme loading will use PSRAM since BT already claimed internal RAM) */
+    /* 7. Start UI - Logo displayed first, then theme loading */
+    // Step 1: Show logo immediately (before theme loading)
     if (lvgl_lock(-1)) {
-        ui_init();
+        lv_disp_t * dispp = lv_disp_get_default();
+        lv_theme_t * theme = lv_theme_default_init(dispp, lv_palette_main(LV_PALETTE_BLUE), lv_palette_main(LV_PALETTE_RED),
+                                                   false, LV_FONT_DEFAULT);
+        lv_disp_set_theme(dispp, theme);
+        extern void ui_ScreenPageLogo_screen_init(void);
+        extern lv_obj_t * ui_ScreenPageLogo;
+        ui_ScreenPageLogo_screen_init();
+        lv_disp_load_scr(ui_ScreenPageLogo);
+        lvgl_unlock();  // Release lock so logo can be rendered immediately
+    }
+
+    // Step 2: Load theme and create other UI elements (logo already visible)
+    if (lvgl_lock(-1)) {
+        ui_init();  // Now loads theme with logo already displayed
         ui_ext_init();
         lvgl_unlock();
     }

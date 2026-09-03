@@ -1245,14 +1245,9 @@ void ui_ota_mode_refresh(void)
 
 void ui_init(void)
 {
-    // OPTIMIZATION: Create and display logo FIRST, before theme loading
-    // This ensures both Master (with 2MB theme) and Slave show logo simultaneously
-    lv_disp_t * dispp = lv_disp_get_default();
-    lv_theme_t * theme = lv_theme_default_init(dispp, lv_palette_main(LV_PALETTE_BLUE), lv_palette_main(LV_PALETTE_RED),
-                                               false, LV_FONT_DEFAULT);
-    lv_disp_set_theme(dispp, theme);
-    ui_ScreenPageLogo_screen_init();
-    lv_disp_load_scr(ui_ScreenPageLogo);  // Show logo immediately
+    // OPTIMIZATION: Logo is already created and displayed by app_main.c before this function
+    // to ensure both Master (with 2MB theme) and Slave show logo simultaneously.
+    // Here we only load theme and create other UI elements.
 
     // Initialize theme partition system AFTER logo is visible
     // This loads the theme from theme_0/theme_1 partition, or falls back to default
