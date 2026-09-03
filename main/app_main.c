@@ -290,7 +290,7 @@ void app_main(void)
     }
     app_event_init();
 
-    /* 7.5 Mount bootmedia SPIFFS early (saves ~300ms of black screen) */
+    /* 7.5 Mount bootmedia SPIFFS and start animation BEFORE role-specific init (prevents Master black screen delay) */
     boot_media_mount();
     boot_media_recover_previous_if_needed();
 
