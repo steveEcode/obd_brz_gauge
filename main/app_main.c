@@ -296,8 +296,14 @@ void app_main(void)
         lv_disp_load_scr(ui_ScreenPageLogo);
         lvgl_unlock();  // Release lock so logo can be rendered immediately
     }
-    ESP_LOGI(TAG, "Logo page displayed, starting theme load");
+    ESP_LOGI(TAG, "Logo page displayed, yielding to LVGL task");
 
+    // Force task switch to LVGL so it can render logo before we lock again
+    // taskYIELD() doesn't work because main_task priority (5) > LVGL priority (4)
+    // Use vTaskDelay(1) to force scheduler to run lower priority tasks
+    vTaskDelay(1);
+
+    ESP_LOGI(TAG, "Starting theme load");
     // Step 2: Load theme and create other UI elements (logo already visible)
     if (lvgl_lock(-1)) {
         ui_init();  // Now loads theme with logo already displayed
