@@ -1245,7 +1245,16 @@ void ui_ota_mode_refresh(void)
 
 void ui_init(void)
 {
-    // Initialize theme partition system FIRST (before any UI creation)
+    // OPTIMIZATION: Create and display logo FIRST, before theme loading
+    // This ensures both Master (with 2MB theme) and Slave show logo simultaneously
+    lv_disp_t * dispp = lv_disp_get_default();
+    lv_theme_t * theme = lv_theme_default_init(dispp, lv_palette_main(LV_PALETTE_BLUE), lv_palette_main(LV_PALETTE_RED),
+                                               false, LV_FONT_DEFAULT);
+    lv_disp_set_theme(dispp, theme);
+    ui_ScreenPageLogo_screen_init();
+    lv_disp_load_scr(ui_ScreenPageLogo);  // Show logo immediately
+
+    // Initialize theme partition system AFTER logo is visible
     // This loads the theme from theme_0/theme_1 partition, or falls back to default
     ESP_LOGI(TAG, "Initializing theme partition system");
     esp_err_t theme_ret = theme_engine_init();
@@ -1263,12 +1272,6 @@ void ui_init(void)
     // Load the saved UI theme BEFORE any screen is built, so every screen
     // picks up the active theme's colors at creation time.
     ui_theme_init();
-
-    lv_disp_t * dispp = lv_disp_get_default();
-    lv_theme_t * theme = lv_theme_default_init(dispp, lv_palette_main(LV_PALETTE_BLUE), lv_palette_main(LV_PALETTE_RED),
-                                               false, LV_FONT_DEFAULT);
-    lv_disp_set_theme(dispp, theme);
-    ui_ScreenPageLogo_screen_init();
 
     // MEMORY OPTIMIZATION: Conditionally create screens based on theme availability
     // If custom theme is loaded, skip built-in gauge pages (Gear/Rpm/Speed/Temp/Needle/OilPressure)
@@ -1320,8 +1323,6 @@ void ui_init(void)
     if (nvs_cfg_get()->default_page == 1 && ui_ScreenPageInfo == NULL) {
         ui_ScreenPageInfo_screen_init();
     }
-
-    lv_disp_load_scr(ui_ScreenPageLogo);
 
     lv_timer_create(my_timerMain,
                     ui_refresh_period_ms_for_screen(lv_scr_act(), false, false, false),
