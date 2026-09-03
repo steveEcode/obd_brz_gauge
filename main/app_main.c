@@ -298,10 +298,11 @@ void app_main(void)
     }
     ESP_LOGI(TAG, "Logo page displayed, yielding to LVGL task");
 
-    // Force task switch to LVGL so it can render logo before we lock again
-    // taskYIELD() doesn't work because main_task priority (5) > LVGL priority (4)
-    // Use vTaskDelay(1) to force scheduler to run lower priority tasks
-    vTaskDelay(1);
+    // Force LVGL to flush the logo to screen immediately
+    // Give LVGL task multiple chances to complete rendering
+    for (int i = 0; i < 3; i++) {
+        vTaskDelay(1);  // Each delay allows one LVGL task iteration
+    }
 
     ESP_LOGI(TAG, "Starting theme load");
     // Step 2: Load theme and create other UI elements (logo already visible)
