@@ -69,6 +69,7 @@ esp_err_t nvs_storage_init(void)
     ESP_ERROR_CHECK(err);
 
     load_blob(NS_CFG, KEY_CFG, &s_cfg, sizeof(s_cfg));
+
     // Mileage/trip stats are no longer persisted (see s_stat declaration); stay {0} and start fresh each boot.
     {   // Chart alarm thresholds: load if present in NVS; otherwise keep static defaults (don't overwrite to 0).
         nvs_handle_t h; size_t sz = sizeof(s_chart_alarm);

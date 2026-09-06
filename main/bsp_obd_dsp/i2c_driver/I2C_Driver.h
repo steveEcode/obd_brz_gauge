@@ -8,8 +8,13 @@
 
 
 /********************* I2C *********************/
+#if CONFIG_OBD_HW_VERSION_V2_NEW || CONFIG_OBD_HW_VERSION_V3_NEW
+#define I2C_SCL_IO                  8          /*!< GPIO number used for I2C master clock (new boards) */
+#define I2C_SDA_IO                  7          /*!< GPIO number used for I2C master data  (new boards) */
+#else
 #define I2C_SCL_IO                  10         /*!< GPIO number used for I2C master clock */
 #define I2C_SDA_IO                  11         /*!< GPIO number used for I2C master data  */
+#endif
 #define I2C_MASTER_FREQ_HZ          400000    /*!< I2C master clock frequency */
 #define I2C_MASTER_TIMEOUT_MS       1000
 

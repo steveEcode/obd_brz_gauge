@@ -64,6 +64,12 @@ extern lv_obj_t * ui_GearPageArcLabelGearNumText;
 extern lv_obj_t * ui_ImageGearBlackEar;
 // CUSTOM VARIABLES
 
+// SCREEN: ui_ScreenPageThemeGauge (theme-partition custom gauge page)
+void ui_ScreenPageThemeGauge_screen_init(void);
+extern lv_obj_t * ui_ScreenPageThemeGauge;
+void ui_event_theme_gauge_background(lv_event_t * e);
+extern uint8_t ui_theme_gauge_page_index;  // Current theme page index
+
 // SCREEN: ui_ScreenPageRpm
 void ui_ScreenPageRpm_screen_init(void);
 extern lv_obj_t * ui_ScreenPageRpm;

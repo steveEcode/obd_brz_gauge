@@ -253,6 +253,9 @@ static void rs485_temp_task(void *arg)
                                         NULL,
                                         0));
 
+    // DE/RE is disabled when CONFIG_OBD_RS485_DE_RE_GPIO < 0 (e.g. -1). Guard at
+    // compile time so the constant shift below is never evaluated with an invalid count.
+#if CONFIG_OBD_RS485_DE_RE_GPIO >= 0
     if (rs485_has_de_re()) {
         gpio_config_t io_conf = {
             .pin_bit_mask = (1ULL << (uint64_t)s_de_re_gpio),
@@ -263,6 +266,7 @@ static void rs485_temp_task(void *arg)
         };
         ESP_ERROR_CHECK(gpio_config(&io_conf));
     }
+#endif
     rs485_set_tx_mode(false);
 
     s_uart_baud_cur = s_cfg.baud;

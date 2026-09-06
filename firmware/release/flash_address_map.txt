@@ -1,5 +1,15 @@
-0x000000 bootloader/bootloader.bin
-0x008000 partition_table/partition-table.bin
-0x00F000 ota_data_initial.bin
-0x020000 obd_brz_gauge.bin
-0x620000 bootmedia.bin
+# Flash Address Map for obd_brz_gauge
+# ESP32-S3 16MB Flash Layout
+
+0x0        bootloader/bootloader.bin       (Bootloader)
+0x8000     partition_table/partition-table.bin  (Partition Table)
+0xF000     ota_data_initial.bin            (OTA Data Initial)
+0x20000    firmware.bin                    (Application Firmware - OTA_0)
+0x320000   [OTA_1 slot - not flashed initially]
+0x620000   [theme_0 partition - 4MB - optional, loaded at runtime]
+0xA20000   bootmedia.bin                   (Boot Animation - 5.875MB)
+
+# Layout features:
+# - OTA dual-slot support (OTA_0 and OTA_1)
+# - theme_0 partition at 0x620000 (4MB) for custom themes
+# - bootmedia partition at 0xA20000 (5.875MB) for boot animation

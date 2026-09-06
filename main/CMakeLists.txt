@@ -87,6 +87,7 @@ idf_component_register(SRC_DIRS
                     "bsp_obd_dsp/exio"
                     "bsp_obd_dsp/i2c_driver"
                     "bsp_obd_dsp/touch_driver"
+                    "theme_engine"
                     INCLUDE_DIRS
                     "."
                     REQUIRES
@@ -97,6 +98,7 @@ idf_component_register(SRC_DIRS
                     mbedtls
                     nvs_flash
                     app_update
+                    json
                     driver)
 
 # Auto-generate the bootmedia SPIFFS image; flashed together via idf.py flash

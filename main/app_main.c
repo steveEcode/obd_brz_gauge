@@ -23,7 +23,9 @@
 
 /* Waveshare BSP drivers */
 #include "bsp_obd_dsp/i2c_driver/I2C_Driver.h"
+#if CONFIG_OBD_HW_VERSION_V1_WAVESHARE
 #include "bsp_obd_dsp/exio/TCA9554PWR.h"
+#endif
 #include "bsp_obd_dsp/lcd_driver/ST77916.h"       // internally includes CST816.h & TCA9554PWR.h
 
 /* Application layer */
@@ -34,11 +36,14 @@
 #include "bsp_obd_dsp/racechrono_ble_diy.h"
 #include "app_obd_dsp/boot_media_mount.h"
 #include "bsp_obd_dsp/rs485_brake_temp.h"
+#if CONFIG_OBD_HW_VERSION_V1_WAVESHARE
 #include "bsp_obd_dsp/ads1115_oil_pressure.h"
+#endif
 #include "app_obd_dsp/obd_data_cache.h"
 #include "app_obd_dsp/vehicle_profiles.h"
 #include "export_path/ui_ext.h"
 #include "app_obd_dsp/app_event.h"
+#include "theme_engine/theme_interface.h"
 
 // ===== Triple-gauge roles =====
 // Normally select master/slave via "Settings page -> swipe down to the MULTI-GAUGE page" (stored in NVS device_role, effective after reboot); one firmware is enough.
@@ -207,17 +212,19 @@ void app_main(void)
              user_cfg->vehicle_profile_idx, vehicle_profile_get_active()->name,
              stat->odometer_m, stat->trip_m, stat->max_speed_kmh, stat->avg_speed_kmh, stat->run_time_s);
 
-    /* 2. I2C bus 0 init (used by the TCA9554 IO expander, SCL=10 SDA=11) */
+    /* 2. I2C bus init (used by the TCA9554 IO expander + CST816 touch on V1, CST816 touch only on V2/V3) */
     I2C_Init();
 
-    /* 3. IO expander init (TCA9554PWR, I2C address 0x20) */
+    /* 3. IO expander init (TCA9554PWR, I2C address 0x20) — V1 board only; V2/V3 have no expander */
+#if CONFIG_OBD_HW_VERSION_V1_WAVESHARE
     EXIO_Init();
+#endif
 
     /* 4. LCD + backlight + touch combined init
      *    LCD_Init() internally calls, in order:
-     *      ST77916_Init() → TCA9554 EXIO2 reset → QSPI SPI bus & ST77916 panel driver
-     *      Backlight_Init() → LEDC PWM backlight (GPIO 5)
-     *      Touch_Init() → I2C_NUM_1 (SDA=1, SCL=3) CST816 touch driver
+     *      ST77916_Init() → reset (V1: TCA9554 EXIO2; V2/V3: direct GPIO 47) → QSPI SPI bus & ST77916 panel driver
+     *      Backlight_Init() → LEDC PWM backlight (V1: GPIO 5; V2/V3: GPIO 15)
+     *      Touch_Init() → reuses I2C bus CST816 touch driver (V1: SCL=10 SDA=11; V2/V3: SCL=8 SDA=7)
      *    After completion panel_handle / tp are both globally valid variables
      */
     LCD_SetFlushCallback(notify_lvgl_flush_ready, &disp_drv);
@@ -279,18 +286,43 @@ void app_main(void)
     extern TaskHandle_t g_lvgl_task_handle;
     g_lvgl_task_handle = s_lvgl_task_handle;
 
-    /* 7. Start UI */
+    /* 6.5 Initialize Bluetooth stack BEFORE UI to claim internal RAM early */
+    elm327_ble_ensure_stack_init();
+
+    /* 7. Start UI - Logo displayed first, then theme loading */
+    // Step 1: Show logo immediately (before theme loading)
+    ESP_LOGI(TAG, "Creating and displaying logo page");
     if (lvgl_lock(-1)) {
-        ui_init();
+        lv_disp_t * dispp = lv_disp_get_default();
+        lv_theme_t * theme = lv_theme_default_init(dispp, lv_palette_main(LV_PALETTE_BLUE), lv_palette_main(LV_PALETTE_RED),
+                                                   false, LV_FONT_DEFAULT);
+        lv_disp_set_theme(dispp, theme);
+        extern void ui_ScreenPageLogo_screen_init(void);
+        extern lv_obj_t * ui_ScreenPageLogo;
+        ui_ScreenPageLogo_screen_init();
+        lv_disp_load_scr(ui_ScreenPageLogo);
+        lvgl_unlock();  // Release lock so logo can be rendered immediately
+    }
+    ESP_LOGI(TAG, "Logo page displayed, yielding to LVGL task");
+
+    // Force LVGL to flush the logo to screen immediately
+    // Give LVGL task multiple chances to complete rendering
+    for (int i = 0; i < 3; i++) {
+        vTaskDelay(1);  // Each delay allows one LVGL task iteration
+    }
+
+    ESP_LOGI(TAG, "Starting theme load");
+    // Step 2: Load theme and create other UI elements (logo already visible)
+    if (lvgl_lock(-1)) {
+        ui_init();  // Now loads theme with logo already displayed
         ui_ext_init();
         lvgl_unlock();
     }
     app_event_init();
 
-    /* 7.5 Mount bootmedia SPIFFS early (saves ~300ms of black screen) */
+    /* 7.5 Mount bootmedia SPIFFS and start animation BEFORE role-specific init (prevents Master black screen delay) */
     boot_media_mount();
     boot_media_recover_previous_if_needed();
-    elm327_ble_ensure_stack_init();
 
     /* 8. Branch by role: master (connects to ELM327 for readings + ESP-NOW broadcast) / slave (only receives and displays the master's data) */
     uint8_t dev_role = user_cfg->device_role;
@@ -309,6 +341,8 @@ void app_main(void)
             ESP_LOGD(TAG, "Bound master MAC at boot: %02x:%02x:%02x:%02x:%02x:%02x (0=unbound)",
                      bm[0], bm[1], bm[2], bm[3], bm[4], bm[5]);
         }
+        /* Slave: start BLE GATTS for pairing immediately after ESP-NOW receive setup */
+        racechrono_ble_diy_start(user_cfg->rc_enabled);
     } else {
         /* ---- Master / standalone: both run the full BLE OBD chain; the only difference is whether ESP-NOW (=WiFi) starts ----
            STANDALONE: does not start WiFi/ESP-NOW; existing devices (already set to master/slave) are unaffected. */
@@ -346,18 +380,26 @@ void app_main(void)
             ESP_LOGD(TAG, "No saved BLE device, waiting for user selection");
         }
 
-        /* 9. Start RS485 brake temperature acquisition */
+        /* 9. Start RS485 brake temperature acquisition (V1 board only).
+           V2/V3 have no RS485 hardware; also, its UART pins (TX=13/RX=12 from
+           CONFIG_OBD_RS485_*) collide with the LCD QSPI DATA2/DATA1 lines, so
+           it must never run on the new boards. */
+#if CONFIG_OBD_HW_VERSION_V1_WAVESHARE
         rs485_brake_temp_start();
+#endif
 
-        /* 9.5 Start oil pressure acquisition (direct ESP32 ADC connection).
+        /* 9.5 Start oil pressure acquisition (external ADS1115 ADC — V1 board only).
            Skip the external ADS1115 ADC for profiles that read oil pressure over OBD
-           (e.g. Supra A90 — DID 4436, BMW E — DID 586F), to avoid the ADC overwriting OBD data. */
+           (e.g. Supra A90 — DID 4436, BMW E — DID 586F), to avoid the ADC overwriting OBD data.
+           V2/V3 boards have no ADS1115. */
+#if CONFIG_OBD_HW_VERSION_V1_WAVESHARE
         {
             const vehicle_profile_t *vp = vehicle_profile_get_active();
             if (!(vp && vp->obd_oil_pressure_did != 0)) {
                 oil_pressure_start();
             }
         }
+#endif
 
         /* 9.8 Start ESP-NOW broadcast (sends this unit's OBD data cache to the slave) -- MASTER only;
                STANDALONE skips it; WiFi is never initialized (saves RF/power and does not interfere with BLE). */
@@ -365,14 +407,11 @@ void app_main(void)
             espnow_link_start_master();
         }
 
+        /* 9.9 Start RaceChrono BLE GATTS immediately after ESP-NOW (Master/Standalone) to claim memory before theme loads */
+        racechrono_ble_diy_start(user_cfg->rc_enabled);
+
         /* 10. Mileage statistics task (only the master counts, to avoid double counting by the slave) */
         vMileageDataStatisticTask();
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(500));
-    // Slave: skip RaceChrono BLE GATTS service (only needs BLE client for master pairing)
-    if (dev_role != ESPNOW_ROLE_SLAVE) {
-        racechrono_ble_diy_start(user_cfg->rc_enabled);
     }
 
     BaseType_t valid_task_started = xTaskCreate(mark_app_valid_task, "ota_valid", 4096, NULL, tskIDLE_PRIORITY + 1, NULL);
