@@ -14,6 +14,7 @@
 #include "bsp_obd_dsp/nvs_storage.h"
 #include "bsp_obd_dsp/lcd_driver/ST77916.h"
 #include "bsp_obd_dsp/elm327_ble_client.h"
+#include "bsp_obd_dsp/wired_can_obd.h"
 #include "bsp_obd_dsp/espnow_link.h"
 #include "bsp_obd_dsp/gauge_pair_ble_client.h"
 #include "bsp_obd_dsp/racechrono_ble_diy.h"
@@ -504,8 +505,11 @@ void my_timerMain(lv_timer_t * timer)
        Slave: never self-triggers, driven by the master's broadcast sweep_step (espnow recv → app_event queue). */
     bool is_slave = (user_cfg->device_role == ESPNOW_ROLE_SLAVE);
     // "connected" signal: slave=master data being received, master=ELM327 BLE connected (shared by status display and the master's sweep trigger)
-    bool ble_now = is_slave ? espnow_link_slave_has_data() : elm327_ble_is_connected();
-    ui_ext_sweep_trigger(ble_now, is_slave);
+    bool signal_now = is_slave ? espnow_link_slave_has_data()
+                      : (user_cfg->obd_source == OBD_SOURCE_WIRED_CAN
+                         ? wired_can_obd_has_fresh_data()
+                         : elm327_ble_is_connected());
+    ui_ext_sweep_trigger(signal_now, is_slave);
     /* ---- Showroom mode: master drives slots, slaves follow (moved to ui_ext.c) ---- */
     ui_ext_showroom_tick(is_slave);
 
@@ -740,7 +744,10 @@ void my_timerMain(lv_timer_t * timer)
         if (is_slave) {
             const char *mname = espnow_link_get_master_name();
             conn_label = "SLAVE";
-            conn_name  = (ble_now && mname[0]) ? mname : "--";
+            conn_name  = (signal_now && mname[0]) ? mname : "--";
+        } else if (user_cfg->obd_source == OBD_SOURCE_WIRED_CAN) {
+            conn_label = "CAN";
+            conn_name  = wired_can_obd_has_fresh_data() ? "Direct" : "Waiting";
         } else {
             const char *dev_name = elm327_ble_get_connected_name();
             if(!dev_name || dev_name[0] == '\0') dev_name = "Not set";
@@ -754,7 +761,7 @@ void my_timerMain(lv_timer_t * timer)
             "Status: %s\n"
             "BUILD %s",
             mode_str, conn_label, conn_name,
-            ble_now ? (is_slave ? "Linked" : "Connected")
+            signal_now ? (is_slave ? "Linked" : "Connected")
                     : (is_slave ? "Waiting" : "Disconnected"),
             OBD_GAUGE_BUILD_TAG);
         if (strcmp(s_last_easteregg_info, info_text) != 0) {
@@ -798,7 +805,7 @@ void my_timerMain(lv_timer_t * timer)
     ui_ext_rpm_flash_tick(usRpm, IN_SWEEP);
 
     if (!ui_ext_showroom_is_active()) {
-        ui_ext_no_signal_update(ble_now);   // showroom mode is a fake-data demo, no NO SIGNAL hint
+        ui_ext_no_signal_update(signal_now);   // showroom mode is a fake-data demo, no NO SIGNAL hint
     }
 
     /* ---- Adaptive refresh rate: data pages run fast, static pages stay slow ----

@@ -29,6 +29,7 @@
 /* Application layer */
 #include "bsp_obd_dsp/bsp_board.h"
 #include "bsp_obd_dsp/elm327_ble_client.h"
+#include "bsp_obd_dsp/wired_can_obd.h"
 #include "bsp_obd_dsp/espnow_link.h"
 #include "bsp_obd_dsp/racechrono_ble_diy.h"
 #include "app_obd_dsp/boot_media_mount.h"
@@ -319,10 +320,16 @@ void app_main(void)
         /* 8.1 Start BLE OBD - auto-connect only when a MAC is already bound in NVS (exact MAC match only, no fuzzy name matching);
                legacy configs with a name but no MAC no longer auto-connect; the user must re-select on the scan page to bind the MAC.
                MASTER starts the Bluetooth stack even without a configured OBD device, so it can broadcast the SkyGauge pairing signal. */
+        bool use_wired_can = (user_cfg->obd_source == OBD_SOURCE_WIRED_CAN);
+        bool wired_can_active = use_wired_can && wired_can_obd_start();
         bool has_obd_mac = (user_cfg->ble_obd_mac[0] | user_cfg->ble_obd_mac[1] |
                             user_cfg->ble_obd_mac[2] | user_cfg->ble_obd_mac[3] |
                             user_cfg->ble_obd_mac[4] | user_cfg->ble_obd_mac[5]) != 0;
-        if (has_obd_mac) {
+        if (use_wired_can && wired_can_active) {
+            ESP_LOGI(TAG, "Direct wired CAN/OBD active; BLE ELM327 auto-connect skipped");
+        } else if (use_wired_can) {
+            ESP_LOGW(TAG, "Wired CAN selected, waiting for ECU data; BLE ELM327 remains off");
+        } else if (has_obd_mac) {
             ESP_LOGD(TAG, "BLE target device: %s (mac=%02x:%02x:%02x:%02x:%02x:%02x, MAC-only match)",
                      user_cfg->ble_device_name,
                      user_cfg->ble_obd_mac[0], user_cfg->ble_obd_mac[1], user_cfg->ble_obd_mac[2],

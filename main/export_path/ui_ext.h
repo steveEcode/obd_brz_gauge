@@ -43,6 +43,7 @@ float ui_ext_sweep_tick(bool is_slave, uint8_t configured_brightness);
 // Called once per tick from my_timerMain: the master triggers the sweep the instant the
 // OBD BLE connects (deferring until boot finishes if needed). No-op for slaves.
 void ui_ext_sweep_trigger(bool ble_now, bool is_slave);
+void ui_ext_sweep_suppress_next_connection(void);
 
 /* ---- Showroom mode ----
    Minimal design: each gauge runs a fixed-timing loop independently, no per-page ESP-NOW sync needed. */

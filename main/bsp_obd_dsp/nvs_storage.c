@@ -148,6 +148,7 @@ esp_err_t nvs_storage_init(void)
     if(s_cfg.default_page > 6) s_cfg.default_page = 0; // 0=Temp,1=Info,2=Chart,3=Needle,4=Gear,5=Rpm,6=Speed (brake temp merged into Chart)
     if(s_cfg.needle_source_idx >= 11) s_cfg.needle_source_idx = 0; // DISP_ITEM_COUNT=11 (CLT..BOOST)
     if(s_cfg.device_role > 2) s_cfg.device_role = ESPNOW_ROLE_STANDALONE; // role: 0=master 1=slave 2=standalone; out-of-range -> standalone
+    if(s_cfg.obd_source > OBD_SOURCE_WIRED_CAN) s_cfg.obd_source = OBD_SOURCE_BLUETOOTH;
     if(s_cfg.chart_source_idx >= 11) s_cfg.chart_source_idx = 8; // chart item out-of-range -> default OILP (old NVS byte 0=CLT is also fine, unify to OILP)
     // Clamp vehicle profile index to the registered profile count (out-of-range -> index 0)
     uint8_t vehicle_count = 0;

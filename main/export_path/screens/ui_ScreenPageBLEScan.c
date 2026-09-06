@@ -6,10 +6,12 @@
 //  - SLAVE: scan and pair with the triple-gauge master ("SkyGauge-XXYY" broadcast), see gauge_pair_ble_client.c
 
 #include "../ui.h"
+#include "../ui_ext.h"
 #include "bsp_obd_dsp/elm327_ble_client.h"
 #include "bsp_obd_dsp/gauge_pair_ble_client.h"
 #include "bsp_obd_dsp/espnow_link.h"
 #include "bsp_obd_dsp/nvs_storage.h"
+#include "bsp_obd_dsp/wired_can_obd.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -39,6 +41,56 @@ static void start_scan(void);
 static void on_device_selected(lv_event_t *e);
 static void on_saved_device_delete(lv_event_t *e);
 static void on_pair_result(bool ok, const char *name, const uint8_t mac[6]);
+
+static void on_source_selected(lv_event_t *e) {
+    uint8_t source = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
+    nvs_user_cfg_t cfg = *nvs_cfg_get();
+    if (cfg.obd_source == source) return;
+
+    if (s_scanning) elm327_ble_scan_only_stop();
+    s_scanning = false;
+    if (source == OBD_SOURCE_WIRED_CAN) {
+        elm327_ble_pause_for_ota();
+    } else {
+        wired_can_obd_stop();
+        ui_ext_sweep_suppress_next_connection();
+        elm327_ble_resume_for_source_selection();
+    }
+    cfg.obd_source = source;
+    nvs_cfg_set(&cfg);
+    if (source == OBD_SOURCE_WIRED_CAN) wired_can_obd_start();
+
+    /* Rebuild this one page so the selected tab/content changes immediately;
+       the rest of the UI and the gauge data stay alive. */
+    lv_obj_t *old_screen = ui_ScreenPageBLEScan;
+    ui_ScreenPageBLEScan = NULL;
+    ui_ScreenPageBLEScan_screen_init();
+    lv_scr_load_anim(ui_ScreenPageBLEScan, LV_SCR_LOAD_ANIM_FADE_ON, 180, 0, false);
+    if (old_screen) lv_obj_del_delayed(old_screen, 220);
+}
+
+static lv_obj_t *create_source_button(lv_obj_t *parent, const char *text,
+                                      uint8_t source, bool selected, int x) {
+    lv_obj_t *btn = lv_btn_create(parent);
+    lv_obj_set_size(btn, 106, 36);
+    lv_obj_align(btn, LV_ALIGN_TOP_MID, x, 72);
+    lv_obj_set_style_radius(btn, 8, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(btn, ui_theme_color_lv(UI_COLOR_PANEL), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(btn, selected ? 255 : 150, LV_PART_MAIN);
+    lv_obj_set_style_border_width(btn, selected ? 2 : 1, LV_PART_MAIN);
+    lv_obj_set_style_border_color(btn, selected ? ui_theme_color_lv(UI_COLOR_ARC_INDICATOR)
+                                                     : lv_color_hex(0x444444), LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(btn, 0, LV_PART_MAIN);
+    lv_obj_add_event_cb(btn, on_source_selected, LV_EVENT_CLICKED, (void *)(uintptr_t)source);
+
+    lv_obj_t *label = lv_label_create(btn);
+    lv_label_set_text(label, text);
+    lv_obj_set_style_text_font(label, &ui_font_FontTypoderSize16, LV_PART_MAIN);
+    lv_obj_set_style_text_color(label, selected ? ui_theme_color_lv(UI_COLOR_TEXT_PRIMARY)
+                                                : ui_theme_color_lv(UI_COLOR_TEXT_SECONDARY), LV_PART_MAIN);
+    lv_obj_center(label);
+    return btn;
+}
 
 // Mutex for LVGL (defined in main)
 extern SemaphoreHandle_t lvgl_mux;
@@ -167,6 +219,7 @@ static void on_device_selected(lv_event_t *e) {
     lv_label_set_text_fmt(s_label_status, "Connecting: %s", name);
     if (s_spinner) lv_obj_clear_flag(s_spinner, LV_OBJ_FLAG_HIDDEN);
 
+    ui_ext_sweep_suppress_next_connection();
     elm327_ble_connect_by_addr(mac, name);
     _ui_screen_change(&ui_ScreenPageTemp, LV_SCR_LOAD_ANIM_FADE_ON, 300, 500, &ui_ScreenPageTemp_screen_init);
 }
@@ -251,7 +304,11 @@ static void start_scan(void) {
 
 void ui_ScreenPageBLEScan_screen_init(void)
 {
-    s_slave_mode = (nvs_cfg_get()->device_role == ESPNOW_ROLE_SLAVE);
+    const nvs_user_cfg_t *saved_cfg = nvs_cfg_get();
+    s_slave_mode = (saved_cfg->device_role == ESPNOW_ROLE_SLAVE);
+    bool bluetooth_selected = (saved_cfg->obd_source == OBD_SOURCE_BLUETOOTH);
+    s_scanning = false;
+    s_list = NULL;
 
     ui_ScreenPageBLEScan = lv_obj_create(NULL);
     lv_obj_clear_flag(ui_ScreenPageBLEScan, LV_OBJ_FLAG_SCROLLABLE);
@@ -265,15 +322,22 @@ void ui_ScreenPageBLEScan_screen_init(void)
 
     // Title
     lv_obj_t *label_title = lv_label_create(ui_ScreenPageBLEScan);
-    lv_label_set_text(label_title, s_slave_mode ? "FIND MASTER" : "BLE SCAN");
+    lv_label_set_text(label_title, s_slave_mode ? "FIND MASTER" : "OBD SOURCE");
     lv_obj_set_style_text_font(label_title, &ui_font_FontTypoderSize20, LV_PART_MAIN);
     lv_obj_set_style_text_color(label_title, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-    lv_obj_align(label_title, LV_ALIGN_TOP_MID, 0, 30);
+    lv_obj_align(label_title, LV_ALIGN_TOP_MID, 0, s_slave_mode ? 30 : 34);
+
+    if (!s_slave_mode) {
+        create_source_button(ui_ScreenPageBLEScan, "CAN", OBD_SOURCE_WIRED_CAN,
+                             !bluetooth_selected, -57);
+        create_source_button(ui_ScreenPageBLEScan, "BLE", OBD_SOURCE_BLUETOOTH,
+                             bluetooth_selected, 57);
+    }
 
     // Scanning spinner (animated)
     s_spinner = lv_spinner_create(ui_ScreenPageBLEScan, 1000, 60);
     lv_obj_set_size(s_spinner, 24, 24);
-    lv_obj_align(s_spinner, LV_ALIGN_TOP_MID, 72, 20);
+    lv_obj_align(s_spinner, LV_ALIGN_TOP_MID, 108, s_slave_mode ? 20 : 110);
     lv_obj_set_style_arc_color(s_spinner, lv_color_hex(0xFFFFFF), LV_PART_INDICATOR);
     lv_obj_set_style_arc_width(s_spinner, 3, LV_PART_INDICATOR);
     lv_obj_set_style_arc_color(s_spinner, lv_color_hex(0x333333), LV_PART_MAIN);
@@ -281,13 +345,60 @@ void ui_ScreenPageBLEScan_screen_init(void)
 
     // Status label
     s_label_status = lv_label_create(ui_ScreenPageBLEScan);
-    lv_label_set_text(s_label_status, "Scanning...");
+    lv_label_set_text(s_label_status, s_slave_mode ? "Scanning..."
+                         : bluetooth_selected ? (elm327_ble_is_connected() ? "BLUETOOTH CONNECTED" : "BLUETOOTH DISCONNECTED")
+                         : (wired_can_obd_has_fresh_data() ? "CAN CONNECTED" : "WAITING FOR CAN"));
     lv_obj_set_style_text_font(s_label_status, &ui_font_FontTypoderSize16, LV_PART_MAIN);
-    lv_obj_set_style_text_color(s_label_status, lv_color_hex(0xAAAAAA), LV_PART_MAIN);
-    lv_obj_align(s_label_status, LV_ALIGN_TOP_MID, 0, 50);
+    lv_obj_set_style_text_color(s_label_status,
+        (!s_slave_mode && bluetooth_selected && !elm327_ble_is_connected()) ? lv_color_hex(0xD89B42)
+        : (!s_slave_mode && !bluetooth_selected && wired_can_obd_has_fresh_data()) ? lv_color_hex(0x25D89A)
+        : lv_color_hex(0xAAAAAA), LV_PART_MAIN);
+    lv_obj_align(s_label_status, LV_ALIGN_TOP_MID, 0, s_slave_mode ? 50 : 116);
+
+    if (!s_slave_mode && !bluetooth_selected) {
+        lv_obj_add_flag(s_spinner, LV_OBJ_FLAG_HIDDEN);
+
+        lv_obj_t *can_panel = lv_obj_create(ui_ScreenPageBLEScan);
+        lv_obj_set_size(can_panel, 230, 120);
+        lv_obj_align(can_panel, LV_ALIGN_CENTER, 0, 24);
+        lv_obj_set_style_radius(can_panel, 12, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(can_panel, ui_theme_color_lv(UI_COLOR_PANEL), LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(can_panel, 210, LV_PART_MAIN);
+        lv_obj_set_style_border_width(can_panel, 1, LV_PART_MAIN);
+        lv_obj_set_style_border_color(can_panel, lv_color_hex(0x444444), LV_PART_MAIN);
+        lv_obj_clear_flag(can_panel, LV_OBJ_FLAG_SCROLLABLE);
+
+        lv_obj_t *can_title = lv_label_create(can_panel);
+        lv_label_set_text(can_title, "TX GPIO43    RX GPIO44");
+        lv_obj_set_width(can_title, 204);
+        lv_label_set_long_mode(can_title, LV_LABEL_LONG_CLIP);
+        lv_obj_set_style_text_align(can_title, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+        lv_obj_set_style_text_font(can_title, &lv_font_montserrat_14, LV_PART_MAIN);
+        lv_obj_set_style_text_color(can_title, ui_theme_color_lv(UI_COLOR_TEXT_PRIMARY), LV_PART_MAIN);
+        lv_obj_align(can_title, LV_ALIGN_TOP_MID, 0, 14);
+
+        lv_obj_t *can_detail = lv_label_create(can_panel);
+        lv_label_set_text(can_detail, wired_can_obd_has_fresh_data() ? "OBD DATA ACTIVE" : "WAITING FOR DATA");
+        lv_obj_set_width(can_detail, 204);
+        lv_label_set_long_mode(can_detail, LV_LABEL_LONG_CLIP);
+        lv_obj_set_style_text_font(can_detail, &lv_font_montserrat_14, LV_PART_MAIN);
+        lv_obj_set_style_text_color(can_detail, wired_can_obd_has_fresh_data() ? lv_color_hex(0x25D89A)
+                                                                               : ui_theme_color_lv(UI_COLOR_TEXT_SECONDARY), LV_PART_MAIN);
+        lv_obj_set_style_text_align(can_detail, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+        lv_obj_align(can_detail, LV_ALIGN_BOTTOM_MID, 0, -22);
+
+        lv_obj_t *label_hint = lv_label_create(ui_ScreenPageBLEScan);
+        lv_label_set_text(label_hint, "Swipe to return");
+        lv_obj_set_style_text_font(label_hint, &lv_font_montserrat_12, LV_PART_MAIN);
+        lv_obj_set_style_text_color(label_hint, lv_color_hex(0x555555), LV_PART_MAIN);
+        lv_obj_align(label_hint, LV_ALIGN_BOTTOM_MID, 0, -34);
+
+        lv_obj_move_foreground(spinner_ring);
+        lv_obj_add_event_cb(ui_ScreenPageBLEScan, ui_event_ble_scan_background, LV_EVENT_GESTURE, NULL);
+        return;
+    }
 
     // ==== SAVED DEVICE SECTION ====
-    const nvs_user_cfg_t *saved_cfg = nvs_cfg_get();
     bool has_saved;
     if (s_slave_mode) {
         const uint8_t *bound_mac = espnow_link_get_bound_master_mac();
@@ -297,17 +408,17 @@ void ui_ScreenPageBLEScan_screen_init(void)
     }
 
     s_label_saved_hdr = lv_label_create(ui_ScreenPageBLEScan);
-    lv_label_set_text(s_label_saved_hdr, "SAVED DEVICE");
+    lv_label_set_text(s_label_saved_hdr, s_slave_mode ? "SAVED DEVICE" : "SAVED");
     lv_obj_set_style_text_font(s_label_saved_hdr, &ui_font_FontTypoderSize16, LV_PART_MAIN);
     lv_obj_set_style_text_color(s_label_saved_hdr, lv_color_hex(0x888888), LV_PART_MAIN);
-    lv_obj_align(s_label_saved_hdr, LV_ALIGN_TOP_MID, 0, 72);
+    lv_obj_align(s_label_saved_hdr, LV_ALIGN_TOP_MID, 0, s_slave_mode ? 72 : 134);
     if (!has_saved) lv_obj_add_flag(s_label_saved_hdr, LV_OBJ_FLAG_HIDDEN);
 
     // Saved device row: name + delete button
     s_saved_panel = lv_obj_create(ui_ScreenPageBLEScan);
     lv_obj_remove_style_all(s_saved_panel);
-    lv_obj_set_size(s_saved_panel, 264, 32);
-    lv_obj_align(s_saved_panel, LV_ALIGN_TOP_MID, 0, 90);
+    lv_obj_set_size(s_saved_panel, s_slave_mode ? 264 : 230, 32);
+    lv_obj_align(s_saved_panel, LV_ALIGN_TOP_MID, 0, s_slave_mode ? 90 : 151);
     lv_obj_set_style_bg_color(s_saved_panel, lv_color_hex(0x222222), LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_bg_opa(s_saved_panel, 255, LV_PART_MAIN | LV_STATE_DEFAULT);
     lv_obj_set_style_radius(s_saved_panel, 6, LV_PART_MAIN | LV_STATE_DEFAULT);
@@ -320,6 +431,10 @@ void ui_ScreenPageBLEScan_screen_init(void)
     lv_label_set_text(s_saved_name_lbl, has_saved ? saved_cfg->ble_device_name : "");
     lv_obj_set_style_text_font(s_saved_name_lbl, &ui_font_FontTypoderSize20, LV_PART_MAIN);
     lv_obj_set_style_text_color(s_saved_name_lbl, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+    if (!s_slave_mode) {
+        lv_obj_set_width(s_saved_name_lbl, 180);
+        lv_label_set_long_mode(s_saved_name_lbl, LV_LABEL_LONG_DOT);
+    }
     lv_obj_align(s_saved_name_lbl, LV_ALIGN_LEFT_MID, 4, 0);
 
     // Delete button inside panel
@@ -341,22 +456,25 @@ void ui_ScreenPageBLEScan_screen_init(void)
     lv_obj_t *divider = lv_obj_create(ui_ScreenPageBLEScan);
     lv_obj_remove_style_all(divider);
     lv_obj_set_size(divider, 240, 1);
-    lv_obj_align(divider, LV_ALIGN_TOP_MID, 0, 128);
+    lv_obj_align(divider, LV_ALIGN_TOP_MID, 0,
+                 s_slave_mode ? 128 : (has_saved ? 189 : 153));
     lv_obj_set_style_bg_color(divider, lv_color_hex(0x444444), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(divider, 255, LV_PART_MAIN);
     lv_obj_clear_flag(divider, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
 
     // ==== NEARBY SCAN SECTION ====
     lv_obj_t *label_nearby = lv_label_create(ui_ScreenPageBLEScan);
-    lv_label_set_text(label_nearby, "NEARBY");
+    lv_label_set_text(label_nearby, s_slave_mode ? "NEARBY" : "NEARBY DEVICES");
     lv_obj_set_style_text_font(label_nearby, &ui_font_FontTypoderSize16, LV_PART_MAIN);
     lv_obj_set_style_text_color(label_nearby, lv_color_hex(0x888888), LV_PART_MAIN);
-    lv_obj_align(label_nearby, LV_ALIGN_TOP_MID, 0, 134);
+    lv_obj_align(label_nearby, LV_ALIGN_TOP_MID, 0,
+                 s_slave_mode ? 134 : (has_saved ? 194 : 160));
 
     // Device list (scan results)
     s_list = lv_list_create(ui_ScreenPageBLEScan);
-    lv_obj_set_size(s_list, 264, 145);
-    lv_obj_align(s_list, LV_ALIGN_TOP_MID, 0, 152);
+    lv_obj_set_size(s_list, s_slave_mode ? 264 : 230, s_slave_mode ? 145 : 76);
+    lv_obj_align(s_list, LV_ALIGN_TOP_MID, 0,
+                 s_slave_mode ? 152 : (has_saved ? 213 : 181));
     lv_obj_set_style_bg_color(s_list, lv_color_hex(0x111111), LV_PART_MAIN);
     lv_obj_set_style_bg_opa(s_list, 255, LV_PART_MAIN);
     lv_obj_set_style_border_width(s_list, 1, LV_PART_MAIN);
@@ -366,11 +484,11 @@ void ui_ScreenPageBLEScan_screen_init(void)
 
     // Hint text at bottom
     lv_obj_t *label_hint = lv_label_create(ui_ScreenPageBLEScan);
-    lv_label_set_text(label_hint, "Tap to connect  Slide to back");
+    lv_label_set_text(label_hint, s_slave_mode ? "Tap to connect  Slide to back" : "Tap a device to connect");
     lv_obj_set_style_text_font(label_hint, &lv_font_montserrat_12, LV_PART_MAIN);
     lv_obj_set_style_text_color(label_hint, lv_color_hex(0x555555), LV_PART_MAIN);
     lv_obj_set_style_text_align(label_hint, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-    lv_obj_align(label_hint, LV_ALIGN_BOTTOM_MID, 0, -15);
+    lv_obj_align(label_hint, LV_ALIGN_BOTTOM_MID, 0, s_slave_mode ? -15 : -34);
 
     // Gesture event for navigation
     lv_obj_move_foreground(spinner_ring);   // bring the ring to the front
@@ -379,4 +497,3 @@ void ui_ScreenPageBLEScan_screen_init(void)
     // Start scanning
     start_scan();
 }
-

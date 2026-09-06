@@ -92,6 +92,9 @@ void elm327_ble_disconnect(void);
 // auto-reconnect on exit. Call from the OTA-mode screen, not the BLE OTA path.
 void elm327_ble_pause_for_ota(void);
 void elm327_ble_resume_after_ota(void);
+// Re-enable BLE without auto-connecting. Used when the user opens the manual
+// source/device selector after wired CAN had paused the Bluetooth stack.
+void elm327_ble_resume_for_source_selection(void);
 
 // Get the currently connected / target device name.
 const char *elm327_ble_get_connected_name(void);

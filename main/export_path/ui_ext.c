@@ -41,6 +41,7 @@ static volatile int  s_sweep_step = 0;
 static int  s_sweep_bl_last = -1;       // backlight (%) already applied during sweep, -1=not sweeping; write LEDC only on change, restore configured brightness at the end
 static bool s_sweep_pending = false;    // BLE connected while the Logo was showing; trigger after the Logo goes away
 static bool s_prev_ble_connected = false;
+static bool s_suppress_next_connection_sweep = false;
 
 /* ================================================================
  *  Showroom mode state
@@ -459,13 +460,20 @@ void ui_ext_sweep_trigger(bool ble_now, bool is_slave)
 {
     if (is_slave) return;
     if (ble_now && !s_prev_ble_connected) {
-        if (s_boot_done) {
+        if (s_suppress_next_connection_sweep) {
+            s_suppress_next_connection_sweep = false;
+        } else if (s_boot_done) {
             s_sweep_step = 1;       // boot animations (Logo/SKY GAUGE/RACE AS ONE) all finished, sweep immediately
         } else {
             s_sweep_pending = true; // boot animation still playing; defer and fire when the default page loads
         }
     }
     s_prev_ble_connected = ble_now;
+}
+
+void ui_ext_sweep_suppress_next_connection(void)
+{
+    s_suppress_next_connection_sweep = true;
 }
 
 float ui_ext_sweep_tick(bool is_slave, uint8_t configured_brightness)

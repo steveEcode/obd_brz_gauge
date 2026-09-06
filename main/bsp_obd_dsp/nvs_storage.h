@@ -3,6 +3,9 @@
 #include <stdbool.h>
 #include "esp_err.h"
 
+#define OBD_SOURCE_BLUETOOTH 0
+#define OBD_SOURCE_WIRED_CAN 1
+
 // Theme config. The index/selectors are real now (see ui_theme.c); the two
 // color fields are legacy and unused, kept only to preserve struct layout.
 typedef struct {
@@ -38,6 +41,7 @@ typedef struct {
     uint8_t rc_enabled;          // RaceChrono BLE service: 0=off (minimal mode), 1=on (full RC+Pair+Info+OTA)
                                  // NOTE: new fields MUST be appended at the END of this struct;
                                  // see the load_blob grow logic comment in nvs_storage.c.
+    uint8_t obd_source;          // OBD_SOURCE_*; appended so existing NVS blobs default to Bluetooth (0)
 } nvs_user_cfg_t;
 
 /*------------------ Runtime statistics (persisted periodically) ------------------*/
