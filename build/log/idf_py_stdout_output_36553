@@ -1,0 +1,230 @@
+Command: /Users/parklu/.espressif/tools/python/v5.5.3/venv/bin/python /Users/parklu/.espressif/v5.5.3/esp-idf/tools/idf_monitor.py -p /dev/cu.usbmodem101 -b 115200 --toolchain-prefix xtensa-esp32s3-elf- --target esp32s3 --revision 0 /Users/parklu/personProject/obd_brz_gauge/build/obd_brz_gauge.elf /Users/parklu/personProject/obd_brz_gauge/build/bootloader/bootloader.elf -m '/Users/parklu/.espressif/tools/python/v5.5.3/venv/bin/python' '/Users/parklu/.espressif/v5.5.3/esp-idf/tools/idf.py'
+ESP-ROM:esp32s3-20210327
+Build:Mar 27 2021
+rst:0x15 (USB_UART_CHIP_RESET),boot:0x2b (SPI_FAST_FLASH_BOOT)
+Saved PC:0x400490e9
+SPIWP:0xee
+mode:DIO, clock div:1
+load:0x3fce2820,len:0x14f0
+load:0x403c8700,len:0xd24
+load:0x403cb700,len:0x2f48
+entry 0x403c8924
+[0;32mI (18) boot: ESP-IDF v5.5.3 2nd stage bootloader[0m
+[0;32mI (18) boot: compile time Sep 22 2026 18:14:16[0m
+[0;32mI (18) boot: Multicore bootloader[0m
+[0;32mI (18) boot: chip revision: v0.2[0m
+[0;32mI (21) boot: efuse block revision: v1.3[0m
+[0;32mI (24) boot.esp32s3: Boot SPI Speed : 80MHz[0m
+[0;32mI (28) boot.esp32s3: SPI Mode       : DIO[0m
+[0;32mI (32) boot.esp32s3: SPI Flash Size : 16MB[0m
+[0;32mI (36) boot: Enabling RNG early entropy source...[0m
+[0;32mI (40) boot: Partition Table:[0m
+[0;32mI (43) boot: ## Label            Usage          Type ST Offset   Length[0m
+[0;32mI (49) boot:  0 nvs              WiFi data        01 02 00009000 00006000[0m
+[0;32mI (56) boot:  1 otadata          OTA data         01 00 0000f000 00002000[0m
+[0;32mI (62) boot:  2 phy_init         RF data          01 01 00011000 00001000[0m
+[0;32mI (69) boot:  3 ota_0            OTA app          00 10 00020000 00300000[0m
+[0;32mI (75) boot:  4 ota_1            OTA app          00 11 00320000 00300000[0m
+[0;32mI (82) boot:  5 theme_0          Unknown data     01 82 00620000 00400000[0m
+[0;32mI (88) boot:  6 bootmedia        Unknown data     01 82 00a20000 005e0000[0m
+[0;32mI (95) boot: End of partition table[0m
+[0;32mI (98) esp_image: segment 0: paddr=00020020 vaddr=3c140020 size=cf6f0h (849648) map[0m
+[0;32mI (255) esp_image: segment 1: paddr=000ef718 vaddr=3fca3100 size=00900h (  2304) load[0m
+[0;32mI (256) esp_image: segment 2: paddr=000f0020 vaddr=42000020 size=133d40h (1260864) map[0m
+[0;32mI (481) esp_image: segment 3: paddr=00223d68 vaddr=3fca3a00 size=058b0h ( 22704) load[0m
+[0;32mI (486) esp_image: segment 4: paddr=00229620 vaddr=40374000 size=1f04ch (127052) load[0m
+[0;32mI (514) esp_image: segment 5: paddr=00248674 vaddr=50000000 size=00020h (    32) load[0m
+[0;32mI (527) boot: Loaded app from partition at offset 0x20000[0m
+[0;32mI (527) boot: Disabling RNG early entropy source...[0m
+[0;32mI (537) octal_psram: vendor id    : 0x0d (AP)[0m
+[0;32mI (537) octal_psram: dev id       : 0x02 (generation 3)[0m
+[0;32mI (538) octal_psram: density      : 0x03 (64 Mbit)[0m
+[0;32mI (543) octal_psram: good-die     : 0x01 (Pass)[0m
+[0;32mI (548) octal_psram: Latency      : 0x01 (Fixed)[0m
+[0;32mI (553) octal_psram: VCC          : 0x01 (3V)[0m
+[0;32mI (558) octal_psram: SRF          : 0x01 (Fast Refresh)[0m
+[0;32mI (564) octal_psram: BurstType    : 0x01 (Hybrid Wrap)[0m
+[0;32mI (570) octal_psram: BurstLen     : 0x01 (32 Byte)[0m
+[0;32mI (575) octal_psram: Readlatency  : 0x02 (10 cycles@Fixed)[0m
+[0;32mI (581) octal_psram: DriveStrength: 0x00 (1/1)[0m
+[0;32mI (587) MSPI Timing: Enter psram timing tuning[0m
+[0;32mI (592) esp_psram: Found 8MB PSRAM device[0m
+[0;32mI (596) esp_psram: Speed: 80MHz[0m
+[0;32mI (600) cpu_start: Multicore app[0m
+[0;32mI (886) esp_psram: SPI SRAM memory test OK[0m
+[0;32mI (894) cpu_start: GPIO 44 and 43 are used as console UART I/O pins[0m
+[0;32mI (895) cpu_start: Pro cpu start user code[0m
+[0;32mI (895) cpu_start: cpu freq: 240000000 Hz[0m
+[0;32mI (900) app_init: Application information:[0m
+[0;32mI (904) app_init: Project name:     obd_brz_gauge[0m
+[0;32mI (910) app_init: App version:      661958e-dirty[0m
+[0;32mI (915) app_init: Compile time:     Sep 22 2026 18:13:34[0m
+[0;32mI (921) app_init: ELF file SHA256:  20117cb33...[0m
+[0;32mI (926) app_init: ESP-IDF:          v5.5.3[0m
+[0;32mI (931) efuse_init: Min chip rev:     v0.0[0m
+[0;32mI (936) efuse_init: Max chip rev:     v0.99 [0m
+[0;32mI (941) efuse_init: Chip rev:         v0.2[0m
+[0;32mI (946) heap_init: Initializing. RAM available for dynamic allocation:[0m
+[0;32mI (953) heap_init: At 3FCBB168 len 0002E5A8 (185 KiB): RAM[0m
+[0;32mI (959) heap_init: At 3FCE9710 len 00005724 (21 KiB): RAM[0m
+[0;32mI (965) heap_init: At 3FCF0000 len 00008000 (32 KiB): DRAM[0m
+[0;32mI (971) heap_init: At 600FE000 len 00001FE8 (7 KiB): RTCRAM[0m
+[0;32mI (978) esp_psram: Adding pool of 8192K of PSRAM memory to heap allocator[0m
+[0;32mI (986) spi_flash: detected chip: winbond[0m
+[0;32mI (990) spi_flash: flash io: dio[0m
+[0;32mI (994) sleep_gpio: Configure to isolate all GPIO pins in sleep state[0m
+[0;32mI (1001) sleep_gpio: Enable automatic switching of GPIO sleep configuration[0m
+[0;32mI (1019) main_task: Started on CPU0[0m
+[0;32mI (1023) esp_psram: Reserving pool of 64K of internal memory for DMA/internal allocations[0m
+[0;32mI (1032) main_task: Calling app_main()[0m
+[0;32mI (1044) NVS: cfg: proto=0 theme=1 profile=0(OBD2 Generic) odo=0 trip=0 max=0 avg=0 run=0[0m
+[0;32mI (1045) obd_dsp: Boot config: intro_enable=2 (0=none, 1=race, 2=video)[0m
+[0;32mI (1434) BLE_INIT: BT controller compile version [1bb2f50][0m
+[0;32mI (1434) BLE_INIT: Using main XTAL as clock source[0m
+[0;32mI (1435) BLE_INIT: Feature Config, ADV:1, BLE_50:1, DTM:1, SCAN:1, CCA:0, SMP:1, CONNECT:1[0m
+[0;32mI (1444) BLE_INIT: Bluetooth MAC: 30:ed:a0:ad:a0:ea[0m
+[0;32mI (1450) phy_init: phy_version 711,97bcf0a2,Aug 25 2025,19:04:10[0m
+[0;32mI (1510) obd_dsp: Creating and displaying logo page[0m
+[0;32mI (1516) obd_dsp: Logo page displayed, yielding to LVGL task[0m
+[0;32mI (1552) obd_dsp: Starting theme load[0m
+[0;32mI (1552) ui: Initializing theme partition system[0m
+[0;32mI (1554) theme_engine: Initializing theme engine[0m
+[0;32mI (1559) theme_engine: Loading theme from theme_0[0m
+[0;31mE (1567) theme_engine: Failed to parse theme manifest JSON[0m
+[0;31mE (1571) theme_engine: Failed to parse theme manifest[0m
+[0;33mW (1577) theme_engine: Failed to load theme from theme_0, using default[0m
+[0;32mI (1584) theme_engine: Loading default theme[0m
+[0;32mI (1589) theme_engine: Registered 0 pages (0 theme pages)[0m
+[0;32mI (1595) theme_engine: Default theme loaded[0m
+[0;32mI (1600) ui: Theme loaded: DEFAULT v1.0.0 by builtin[0m
+[0;32mI (1605) theme_test: === Theme Engine Test ===[0m
+[0;32mI (1611) theme_test:   Theme ID: default[0m
+[0;32mI (1615) theme_test:   Name: DEFAULT[0m
+[0;32mI (1619) theme_test:   Version: 1.0.0[0m
+[0;32mI (1624) theme_test:   Author: builtin[0m
+[0;32mI (1628) theme_test:   Colors:[0m
+[0;32mI (1632) theme_test:     Role 0: 0x000000[0m
+[0;32mI (1637) theme_test:     Role 1: 0xFFFFFF[0m
+[0;32mI (1641) theme_test:     Role 2: 0x313031[0m
+[0;32mI (1646) theme_test:     Role 3: 0xFFFFFF[0m
+[0;32mI (1651) theme_test:     Role 4: 0xFFFFFF[0m
+[0;32mI (1655) theme_test:     Role 5: 0x8B898B[0m
+[0;32mI (1660) theme_test:     Role 6: 0xFF1010[0m
+[0;32mI (1665) theme_test:     Role 7: 0x212021[0m
+[0;32mI (1669) theme_test:   Assets:[0m
+[0;32mI (1673) theme_test:     dial: not available[0m
+[0;32mI (1678) theme_test:     ring: not available[0m
+[0;32mI (1683) theme_test:   Protected pages:[0m
+[0;32mI (1688) theme_test:     logo: can theme = NO (correct)[0m
+[0;32mI (1693) theme_test:     intro: can theme = NO (correct)[0m
+[0;32mI (1699) theme_test:     boot_video: can theme = NO (correct)[0m
+[0;32mI (1706) theme_test: === Theme Engine Test Complete ===[0m
+[0;32mI (1757) obd_dsp: Device role: STANDALONE (BLE/OBD, no WiFi/ESP-NOW)[0m
+[0;32mI (1759) racechrono_diy: GATTS registered (minimal: Info+OTA only, adv off until OTA mode, name=SkyGarageRC)[0m
+[0;32mI (1762) ota_update: OTA service started[0m
+[0;32mI (1808) racechrono_diy: RaceChrono BLE DIY started (minimal: Info+OTA only)[0m
+[0;32mI (1900) main_task: Returned from app_main()[0m
+[0;33mW (2319) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;32mI (2811) ui_ext: boot_media_mount() succeeded, attempting to create player[0m
+[0;32mI (2812) boot_block: Raw manifest first 64 bytes: �[0m
+[0;32mI (2837) boot_block: Parsed manifest: canvas=0x0 grid=0x0 fps=0 frames=0 format=delta_varint_rgb565_black_v1[0m
+[0;31mE (2963) boot_block: Manifest validation failed: missing required fields[0m
+[0;33mW (3052) boot_block: manifest load failed: /bootmedia/boot_block.txt[0m
+[0;31mE (3136) ui_ext: boot_block_player_create() failed - boot animation will be skipped[0m
+[0;33mW (4379) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (7406) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (8416) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (10435) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (13463) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (14473) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (16492) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;32mI (16900) obd_dsp: Current firmware marked valid[0m
+[0;33mW (19520) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (20530) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (22549) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (25577) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (26587) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (28606) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (31634) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (32644) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (34663) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (37691) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (38701) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (40720) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (43748) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (44758) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (46777) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (49805) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (50815) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (52834) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (55862) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (56872) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (58891) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (61919) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (62929) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (64948) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (67976) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (68986) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (71005) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (74033) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (75043) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (77062) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (80090) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (81100) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (83119) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (86147) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (87157) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (89176) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (92204) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (93214) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (95233) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (98261) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (99271) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (101290) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (104318) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (105328) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (107347) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (110375) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (111385) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (113404) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (116432) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (117442) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (119461) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (122489) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (123499) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (125518) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (128546) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (129556) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (131575) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (134603) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (135613) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (137632) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (140660) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (141670) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (143689) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (146717) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (147727) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (149746) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (152774) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (153784) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (155803) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (158831) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (159841) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (161860) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (164888) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (165898) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (167917) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (170945) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (171955) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (173974) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (177002) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (178012) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (180031) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (183059) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (184069) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (186088) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (189116) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (190126) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m
+[0;33mW (192145) brake_temp: Query fail x3 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (195173) brake_temp: Query fail x6 (st=1): baud=9600 addr=0x01 reg=0x0000 func=0x03[0m
+[0;33mW (196183) brake_temp: RS485 RX timeout: 0 bytes in 500 ms[0m

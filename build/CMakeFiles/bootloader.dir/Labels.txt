@@ -1,0 +1,13 @@
+# Target labels
+ bootloader
+# Source files and their labels
+/Users/parklu/personProject/obd_brz_gauge/build/CMakeFiles/bootloader
+/Users/parklu/personProject/obd_brz_gauge/build/CMakeFiles/bootloader.rule
+/Users/parklu/personProject/obd_brz_gauge/build/CMakeFiles/bootloader-complete.rule
+/Users/parklu/personProject/obd_brz_gauge/build/bootloader-prefix/src/bootloader-stamp/bootloader-build.rule
+/Users/parklu/personProject/obd_brz_gauge/build/bootloader-prefix/src/bootloader-stamp/bootloader-configure.rule
+/Users/parklu/personProject/obd_brz_gauge/build/bootloader-prefix/src/bootloader-stamp/bootloader-download.rule
+/Users/parklu/personProject/obd_brz_gauge/build/bootloader-prefix/src/bootloader-stamp/bootloader-install.rule
+/Users/parklu/personProject/obd_brz_gauge/build/bootloader-prefix/src/bootloader-stamp/bootloader-mkdir.rule
+/Users/parklu/personProject/obd_brz_gauge/build/bootloader-prefix/src/bootloader-stamp/bootloader-patch.rule
+/Users/parklu/personProject/obd_brz_gauge/build/bootloader-prefix/src/bootloader-stamp/bootloader-update.rule

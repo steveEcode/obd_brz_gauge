@@ -1,0 +1,2 @@
+source /Users/parklu/personProject/obd_brz_gauge/build/bootloader/gdbinit/symbols
+source /Users/parklu/personProject/obd_brz_gauge/build/bootloader/gdbinit/connect

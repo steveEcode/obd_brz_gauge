@@ -1,0 +1,6 @@
+source "/Users/parklu/.espressif/v5.5.3/esp-idf/components/bootloader/Kconfig.projbuild"
+source "/Users/parklu/.espressif/v5.5.3/esp-idf/components/esp_app_format/Kconfig.projbuild"
+source "/Users/parklu/.espressif/v5.5.3/esp-idf/components/esp_rom/Kconfig.projbuild"
+source "/Users/parklu/.espressif/v5.5.3/esp-idf/components/esptool_py/Kconfig.projbuild"
+source "/Users/parklu/.espressif/v5.5.3/esp-idf/components/partition_table/Kconfig.projbuild"
+source "/Users/parklu/personProject/obd_brz_gauge/main/Kconfig.projbuild"
