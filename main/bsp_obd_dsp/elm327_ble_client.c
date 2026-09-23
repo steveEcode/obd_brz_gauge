@@ -2383,6 +2383,12 @@ void elm327_ble_resume_after_ota(void) {
     ESP_LOGI(TAG, "BLE resumed after WiFi OTA");
 }
 
+void elm327_ble_resume_for_source_selection(void) {
+    s_ota_paused = false;
+    elm327_ble_ensure_stack_init();
+    ESP_LOGI(TAG, "BLE resumed for manual source selection");
+}
+
 const char *elm327_ble_get_connected_name(void) {
     return s_target_name;
 }
