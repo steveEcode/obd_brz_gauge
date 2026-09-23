@@ -62,6 +62,7 @@ typedef struct __attribute__((packed)) {
 static volatile bool s_linktest_active = false;
 static int64_t s_linktest_start_us = 0;
 static volatile bool s_rx_linktest = false;   // slave side: last received "linked test in progress" flag from the master
+static volatile bool s_rx_linked_en = false;  // slave side: master's rpm_warn_linked_en (mirrored from broadcast flags bit2)
 #define LINKTEST_RISE_MS 5000   // 0 -> peak, slow rise
 #define LINKTEST_HOLD_MS 800    // hold at peak (flash)
 #define LINKTEST_FALL_MS 2500   // peak -> 0, fall back
@@ -129,8 +130,10 @@ static void master_pack(espnow_obd_packet_t *p) {
 
     p->magic   = ESPNOW_MAGIC;
     p->version = ESPNOW_VER;
-    // bit0 = ELM connected; bit1 = linked test in progress (slaves use it to force gradient rendering during TEST)
-    p->flags   = (elm327_ble_is_connected() ? 0x01 : 0x00) | (s_linktest_active ? 0x02 : 0x00);
+    // bit0 = ELM connected; bit1 = linked test in progress; bit2 = rpm_warn_linked_en (slaves mirror this setting from master)
+    p->flags   = (elm327_ble_is_connected() ? 0x01 : 0x00)
+               | (s_linktest_active ? 0x02 : 0x00)
+               | (nvs_cfg_get()->rpm_warn_linked_en ? 0x04 : 0x00);
     p->seq     = ++s_tx_seq;
     obd_data_get_snapshot(&snap);
     p->rpm              = snap.rpm;
@@ -208,7 +211,8 @@ void espnow_link_start_master(void) {
 
 // ========================= Slave =========================
 static void apply_packet(const espnow_obd_packet_t *p) {
-    s_rx_linktest = (p->flags & 0x02) != 0;   // master is running a linked test -> slaves take part in rendering during TEST
+    s_rx_linktest  = (p->flags & 0x02) != 0;   // master is running a linked test -> slaves take part in rendering during TEST
+    s_rx_linked_en = (p->flags & 0x04) != 0;   // master's rpm_warn_linked_en: mirror so slaves render the gradient without manual NVS config
     obd_data_set_rpm(p->rpm);
     obd_data_set_speed(p->speed);
     obd_data_set_coolant_temp(p->coolant_temp);
@@ -414,6 +418,12 @@ void espnow_link_broadcast_threshold(uint16_t thresh) {
 // has LINKED FLASH turned off, guaranteeing "TEST on any gauge syncs all gauges".
 bool espnow_link_linktest_active(void) {
     return s_is_master ? s_linktest_active : s_rx_linktest;
+}
+
+// Whether rpm_warn_linked_en is active on the master: master = local NVS, slave = mirrored from broadcast flags bit2.
+// Slaves use this so the gradient fires without needing manual NVS config on each slave unit.
+bool espnow_link_linked_en(void) {
+    return s_is_master ? (nvs_cfg_get()->rpm_warn_linked_en != 0) : s_rx_linked_en;
 }
 
 // Apply a threshold synced from another gauge (called by the UI task): write local NVS; the master

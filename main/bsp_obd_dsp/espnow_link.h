@@ -62,6 +62,10 @@ void espnow_link_apply_synced_threshold(uint16_t thresh);
 // During TEST every gauge is forced to take part in the rendering.
 bool espnow_link_linktest_active(void);
 
+// Whether rpm_warn_linked_en is active: master = local NVS, slave = mirrored from broadcast flags bit2.
+// Slaves use this so the gradient fires without needing manual NVS config on each slave unit.
+bool espnow_link_linked_en(void);
+
 #ifdef __cplusplus
 }
 #endif

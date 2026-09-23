@@ -546,6 +546,7 @@ bool ui_ext_boot_video_tick(void)
         boot_block_player_set_paths("/bootmedia/boot_block.txt", "/bootmedia/boot_block.bin");
 
         if (boot_media_mount()) {
+            ESP_LOGI(TAG, "boot_media_mount() succeeded, attempting to create player");
             s_boot_video_screen = lv_obj_create(NULL);
             lv_obj_set_style_bg_color(s_boot_video_screen, lv_color_black(), LV_PART_MAIN);
             lv_obj_set_style_bg_opa(s_boot_video_screen, 255, LV_PART_MAIN);
@@ -556,13 +557,15 @@ bool ui_ext_boot_video_tick(void)
             if (boot_block_player_create(s_boot_video_screen, &canvas)) {
                 // no lv_scr_load yet: keep the Logo screen, switch only when playback starts
                 s_boot_video_ready = true;
-                ESP_LOGD(TAG, "Boot video ready (logo kept)");
+                ESP_LOGI(TAG, "Boot video ready (logo kept)");
             } else {
+                ESP_LOGE(TAG, "boot_block_player_create() failed - boot animation will be skipped");
                 lv_obj_del(s_boot_video_screen);
                 s_boot_video_screen = NULL;
                 s_boot_video_done = true;
             }
         } else {
+            ESP_LOGE(TAG, "boot_media_mount() failed - bootmedia partition not accessible");
             s_boot_video_done = true;
         }
     }
@@ -769,7 +772,7 @@ bool ui_ext_rpm_warn_possible(void)
     const nvs_user_cfg_t *cfg = nvs_cfg_get();
     return cfg->rpm_warn_anim_en ||
            (cfg->device_role != ESPNOW_ROLE_STANDALONE &&
-            (cfg->rpm_warn_linked_en || espnow_link_linktest_active()));
+            (espnow_link_linked_en() || espnow_link_linktest_active()));
 }
 
 void ui_ext_rpm_flash_tick(uint16_t usRpm, bool in_sweep)
@@ -778,7 +781,9 @@ void ui_ext_rpm_flash_tick(uint16_t usRpm, bool in_sweep)
     uint16_t warn_thresh = user_cfg->rpm_warn_threshold; // already clamped to [1000,...]/default 6000 in nvs_storage_init()
     // Linked flash and FLASH ANIM are mutually exclusive (the settings page ensures at most one is on); with linked on, the at-threshold strobe does not depend on anim_en.
     // While a link test is running (linktest_active), this unit renders even if LINKED FLASH is off locally, so the all-gauge sync test works.
-    bool linked_on = (user_cfg->rpm_warn_linked_en || espnow_link_linktest_active()) &&
+    // espnow_link_linked_en(): master = local NVS, slave = mirrored from master's broadcast (bit2 in flags).
+    // This ensures slaves render the gradient without needing manual NVS config on each unit.
+    bool linked_on = (espnow_link_linked_en() || espnow_link_linktest_active()) &&
                      (user_cfg->device_role != ESPNOW_ROLE_STANDALONE);
 
     // The linked-test RPM ramp is written by the master into the RPM override layer and broadcast via ESP-NOW; usRpm is the synced value, identical on all three gauges
