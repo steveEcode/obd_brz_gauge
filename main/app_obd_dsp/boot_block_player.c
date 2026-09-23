@@ -90,8 +90,12 @@ static bool manifest_load(boot_block_manifest_t *out) {
     size_t manifest_max = boot_media_raw_manifest_max();
     if (manifest_max > sizeof(raw)) manifest_max = sizeof(raw);
     esp_err_t rerr = boot_media_raw_read_manifest((uint8_t *)raw, manifest_max);
-    if (rerr != ESP_OK) return false;
+    if (rerr != ESP_OK) {
+        ESP_LOGE(TAG, "boot_media_raw_read_manifest failed: %s", esp_err_to_name(rerr));
+        return false;
+    }
     raw[manifest_max - 1] = '\0';
+    ESP_LOGI(TAG, "Raw manifest first 64 bytes: %.64s", raw);
 
     boot_block_manifest_t m = {0};
     strncpy(m.stream_format, BOOT_BLOCK_DEFAULT_STREAM_FORMAT, sizeof(m.stream_format) - 1);
@@ -128,13 +132,23 @@ static bool manifest_load(boot_block_manifest_t *out) {
         else if (strcmp(key, "stream_format") == 0) strncpy(m.stream_format, value, sizeof(m.stream_format) - 1);
     }
 
-    if (!m.canvas_width || !m.canvas_height || !m.grid_width || !m.grid_height || !m.fps || !m.frame_count)
+    ESP_LOGI(TAG, "Parsed manifest: canvas=%ux%u grid=%ux%u fps=%u frames=%u format=%s",
+             m.canvas_width, m.canvas_height, m.grid_width, m.grid_height, m.fps, m.frame_count, m.stream_format);
+
+    if (!m.canvas_width || !m.canvas_height || !m.grid_width || !m.grid_height || !m.fps || !m.frame_count) {
+        ESP_LOGE(TAG, "Manifest validation failed: missing required fields");
         return false;
-    if (m.canvas_width > BOOT_BLOCK_MAX_DIMENSION || m.canvas_height > BOOT_BLOCK_MAX_DIMENSION)
+    }
+    if (m.canvas_width > BOOT_BLOCK_MAX_DIMENSION || m.canvas_height > BOOT_BLOCK_MAX_DIMENSION) {
+        ESP_LOGE(TAG, "Manifest validation failed: canvas too large");
         return false;
+    }
     if (!m.duration_ms) m.duration_ms = ((uint32_t)m.frame_count * 1000u) / m.fps;
     if (strcmp(m.stream_format, BOOT_BLOCK_DEFAULT_STREAM_FORMAT) != 0 &&
-        strcmp(m.stream_format, BOOT_BLOCK_STREAM_FORMAT_V2) != 0) return false;
+        strcmp(m.stream_format, BOOT_BLOCK_STREAM_FORMAT_V2) != 0) {
+        ESP_LOGE(TAG, "Manifest validation failed: unsupported format '%s'", m.stream_format);
+        return false;
+    }
 
     *out = m;
     return true;

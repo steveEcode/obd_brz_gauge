@@ -1,9 +1,0 @@
-Command: /Users/parklu/.espressif/tools/python/v5.5.3/venv/bin/python /Users/parklu/.espressif/v5.5.3/esp-idf/tools/idf_monitor.py -p /dev/cu.usbmodem101 -b 115200 --toolchain-prefix xtensa-esp32s3-elf- --target esp32s3 --revision 0 /Users/parklu/personProject/obd_brz_gauge/build/obd_brz_gauge.elf /Users/parklu/personProject/obd_brz_gauge/build/bootloader/bootloader.elf -m '/Users/parklu/.espressif/tools/python/v5.5.3/venv/bin/python' '/Users/parklu/.espressif/v5.5.3/esp-idf/tools/idf.py'
-[0;33m--- esp-idf-monitor 1.9.0 on /dev/cu.usbmodem101 115200[0m
-[0;33m--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H[0m
-[0m--- 0x400490d5: [0;33musb_uart_device_rx_one_char[0m[0m in [0;32mROM[0m
-[0m--- 0x40044125: [0;33mets_vprintf[0m[0m in [0;32mROM[0m
-[0m--- 0x400441ad: [0;33mets_vprintf[0m[0m in [0;32mROM[0m
-[0m--- 0x400441ad: [0;33mets_vprintf[0m[0m in [0;32mROM[0m
-[0m--- 0x400441ad: [0;33mets_vprintf[0m[0m in [0;32mROM[0m
-[0m

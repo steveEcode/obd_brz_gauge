@@ -1,7 +1,7 @@
 {
     "version":            "1.2",
     "project_name":       "obd_brz_gauge",
-    "project_version":    "c45549d-dirty",
+    "project_version":    "c63153b-dirty",
     "project_path":       "/Users/parklu/personProject/obd_brz_gauge",
     "idf_path":           "/Users/parklu/.espressif/v5.5.3/esp-idf",
     "build_dir":          "/Users/parklu/personProject/obd_brz_gauge/build",
