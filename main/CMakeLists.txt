@@ -98,8 +98,7 @@ idf_component_register(SRC_DIRS
                     mbedtls
                     nvs_flash
                     app_update
-                    json
-                    driver)
+                    json)
 
 # Auto-generate the bootmedia SPIFFS image; flashed together via idf.py flash
 spiffs_create_partition_image(bootmedia ${CMAKE_CURRENT_SOURCE_DIR}/../bootmedia/slot_a FLASH_IN_PROJECT)
