@@ -593,7 +593,8 @@ bool vp_profile_check(const void *blob, size_t len)
 
     for (i = 0; i < p->n_init; i++) {
         if (!cstr_ok(init[i].cmd, sizeof(init[i].cmd)) ||
-            !vp_at_check(init[i].cmd, VP_AT_CTX_INIT, NULL, 0, NULL)) {
+            !vp_at_check(init[i].cmd, VP_AT_CTX_INIT, NULL, 0, NULL) ||
+            (vp_kwp_init_header(init[i].cmd) && p->proto != 4 && p->proto != 5)) {
             return false;
         }
     }

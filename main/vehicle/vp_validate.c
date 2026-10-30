@@ -463,7 +463,8 @@ bool vp_at_check(const char *cmd, vp_at_ctx_t ctx, char *norm, size_t norm_cap,
     a = b + 2;
 
     if (starts(a, "SH")) {
-        ok = vp_classify_tx_header(a + 2, NULL) != VP_HDR_INVALID;
+        ok = vp_classify_tx_header(a + 2, NULL) != VP_HDR_INVALID ||
+             (ctx == VP_AT_CTX_INIT && vp_kwp_init_header(b));
         if (!ok) reason = "header not whitelisted";
     } else if (starts(a, "CRA")) {
         ok = a[3] == '\0' || vp_parse_rx_filter(a + 3, NULL);
@@ -1308,6 +1309,7 @@ static void check_bus(vctx_t *c, const cJSON *bus)
     const char *hdr = NULL;
     const char *check = NULL;
     const char *tester = NULL;
+    long proto = 0;
     const cJSON *init;
     char p[48];
 
@@ -1317,7 +1319,7 @@ static void check_bus(vctx_t *c, const cJSON *bus)
         return;
     }
     check_keys(c, bus, "bus", keys);
-    f_int(c, bus, "proto", "bus", 0, 12, "E_AT", NULL);
+    f_int(c, bus, "proto", "bus", 0, 12, "E_AT", &proto);
     if (f_str(c, bus, "hdr", "bus", &hdr) == F_OK &&
         vp_classify_tx_header(hdr, NULL) == VP_HDR_INVALID) {
         verr(c, "E_HDR", "bus.hdr", "header \"%.12s\" not allowed", hdr);
@@ -1346,11 +1348,15 @@ static void check_bus(vctx_t *c, const cJSON *bus)
         }
         cJSON_ArrayForEach(it, init) {
             const char *why = NULL;
+            char normalized[VP_AT_MAX_LEN + 1];
             snprintf(p, sizeof(p), "bus.init[%d]", i++);
             if (!cJSON_IsString(it)) {
                 verr(c, "E_SCHEMA", p, "must be a string");
-            } else if (!vp_at_check(it->valuestring, VP_AT_CTX_INIT, NULL, 0, &why)) {
+            } else if (!vp_at_check(it->valuestring, VP_AT_CTX_INIT, normalized, sizeof(normalized), &why)) {
                 verr(c, "E_AT", p, "\"%.16s\": %s", it->valuestring, why ? why : "refused");
+            } else if (vp_kwp_init_header(normalized) &&
+                       proto != 4 && proto != 5) {
+                verr(c, "E_AT", p, "KWP initialization header requires explicit bus.proto 4 or 5");
             }
         }
     }

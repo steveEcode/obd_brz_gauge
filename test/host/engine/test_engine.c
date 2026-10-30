@@ -2004,6 +2004,39 @@ static void test_legacy_protocol_initiation(void)
     }
 }
 
+static void test_suzuki_kwp_init_and_reconnect(void)
+{
+    static const char *const heads[] = { "8111F1", "8001F1" };
+    for (unsigned variant = 0; variant < 2; variant++) {
+        fake_t *f = fake_reset();
+        const char *json = variant == 0
+            ? P_HEAD("t.kwp1", "{'proto':5,'check_connection':'2100','init':['ATZ','ATSP5','ATSH8111F1','ATST32','ATSW00','ATIB10','ATFI']}")
+              "'signals':[{'id':'obd.rpm','src':[{'req':'2100','len':2,'rpn':[['R',0,16,'be'],['k',4],'/']}]}]}"
+            : P_HEAD("t.kwp2", "{'proto':5,'check_connection':'2100','init':['ATZ','ATSP5','ATSH8101F1','ATST32','ATSW00','ATIB10','ATFI','ATSH8001F1']}")
+              "'signals':[{'id':'obd.rpm','src':[{'req':'2100','len':2,'rpn':[['R',0,16,'be'],['k',4],'/']}]}]}";
+        vp_profile_t *p = compile_q(json);
+        VT_CHECK(p != NULL);
+        if (!p) return;
+        set_resp(f, heads[variant], "2100", "61000BB8");
+        VT_CHECK(fake_start(f, p, 0) != NULL);
+        VT_CHECK(pump_rounds(f, 1));
+        VT_CHECK_INT(f->val[SIG_OBD_RPM], 750);
+        int header = find_cmd(f, variant ? "ATSH8101F1" : "ATSH8111F1", 0);
+        int fast = find_cmd(f, "ATFI", 0);
+        VT_CHECK(header >= 0 && fast > header);
+        if (variant) VT_CHECK(find_cmd(f, "ATSH8001F1", fast) > fast);
+        VT_CHECK_INT(count_cmd(f, "ATSH7E0"), 0);
+        VT_CHECK_INT(count_cmd(f, "0100"), 0);
+        int previous = count_cmd(f, "ATFI");
+        vp_engine_link_down(f->eng);
+        vp_engine_link_up(f->eng);
+        sim(f, 6000);
+        VT_CHECK(count_cmd(f, "ATFI") > previous);
+        VT_CHECK_INT(f->val[SIG_OBD_RPM], 750);
+        fake_stop(f, p);
+    }
+}
+
 static void test_can_protocol_addressing(void)
 {
     static const struct {
@@ -2758,6 +2791,7 @@ int main(void)
     RUN(test_detect);
     RUN(test_auto_protocol_wire_responses);
     RUN(test_legacy_protocol_initiation);
+    RUN(test_suzuki_kwp_init_and_reconnect);
     RUN(test_can_protocol_addressing);
     RUN(test_auto_protocol_recovery);
     RUN(test_profile_auto_selection);

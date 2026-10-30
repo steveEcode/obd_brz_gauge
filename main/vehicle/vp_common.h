@@ -17,6 +17,9 @@ extern "C" {
 #define VP_ID_29BIT 0x80000000u
 #define VP_ID_MASK  0x1FFFFFFFu
 
+/* Explicit Suzuki KWP initialization headers; never CAN request IDs. */
+bool vp_kwp_init_header(const char *cmd);
+
 typedef enum {
     VP_HDR_INVALID = 0,
     VP_HDR_PHYSICAL,     /* 600-7FF, 18DAxxF1 */

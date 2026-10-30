@@ -131,6 +131,12 @@ typedef struct {
 static const mcase_t k_cases[] = {
     /* still valid */
     { "minor version", "schema", "\"skygauge.vehicle/1.3\"", NULL, NULL, NULL, NULL },
+    { "explicit KWP init headers", "bus.proto", "5", "bus.init",
+      "[\"ATSH8111F1\",\"ATSH8101F1\",\"ATSH8001F1\"]", NULL, NULL },
+    { "KWP header on CAN refused", "bus.proto", "6", "bus.init",
+      "[\"ATSH8111F1\"]", "E_AT", "bus.init[0]" },
+    { "KWP header on auto refused", "bus.proto", "0", "bus.init",
+      "[\"ATSH8111F1\"]", "E_AT", "bus.init[0]" },
     { "lowercase hdr", "signals[5].src[0].hdr", "\"7e0\"", NULL, NULL, NULL, NULL },
     { "legacy 11-bit tx header", "signals[5].src[0].hdr", "\"740\"", NULL, NULL, NULL, NULL },
     { "legacy 11-bit rx filter", "signals[6].src[0].rx", "\"748\"", NULL, NULL, NULL, NULL },
@@ -602,6 +608,12 @@ static void test_at_check(void)
         const char *norm;
     } cases[] = {
         { "ATSH7E0", VP_AT_CTX_INIT, true, "ATSH7E0" },
+        { "ATSH8111F1", VP_AT_CTX_INIT, true, "ATSH8111F1" },
+        { "ATSH8101F1", VP_AT_CTX_INIT, true, "ATSH8101F1" },
+        { "ATSH8001F1", VP_AT_CTX_INIT, true, "ATSH8001F1" },
+        { "ATSH8111F1", VP_AT_CTX_REQUEST, false, NULL },
+        { "ATSH8111F1", VP_AT_CTX_ENGINE, false, NULL },
+        { "ATSH8122F1", VP_AT_CTX_INIT, false, NULL },
         { "at sh 7df\r", VP_AT_CTX_INIT, true, "ATSH7DF" },
         { "ATSH 18DA10F1", VP_AT_CTX_INIT, true, "ATSH18DA10F1" },
         { "ATSH 6F1", VP_AT_CTX_INIT, true, "ATSH6F1" },

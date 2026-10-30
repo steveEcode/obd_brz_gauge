@@ -1,5 +1,7 @@
 # Vehicle Profiles
 
+Suzuki Swift KWP initialization compatibility: profiles with explicit protocol 4/5 may use `ATSH` headers `8111F1`, `8101F1` and `8001F1` in `bus.init`, with `2100` for connection checks and data-block reads. This is engine support, not a new built-in/catalog vehicle or verification of a particular year. Standard OBD2, CAN vehicles and existing profiles retain their behavior; see [PID_GUIDE.en.md](PID_GUIDE.en.md).
+
 English | [简体中文](VEHICLES.md)
 
 The firmware only has **`OBD2 Generic`** (`obd2.generic`, standard SAE J1979)

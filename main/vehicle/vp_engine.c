@@ -487,7 +487,10 @@ static eng_step_t *push_init(vp_engine_t *e, const char *cmd, uint16_t delay_ms)
     eng_step_t *s;
     char selected_proto[8];
 
-    if (legacy_obd_protocol(e) && !strncmp(cmd, "ATSH", 4)) return NULL;
+    if (vp_kwp_init_header(cmd) && e->run_proto != 4 && e->run_proto != 5) return NULL;
+    if (legacy_obd_protocol(e) && !strncmp(cmd, "ATSH", 4) &&
+        !(vp_kwp_init_header(cmd) && (e->run_proto == 4 || e->run_proto == 5) &&
+          (e->p->proto == 4 || e->p->proto == 5))) return NULL;
     /* ATSP0 in a translated profile means automatic protocol selection.
      * Keep a concrete protocol already selected by the detector/user instead
      * of undoing it during the second bring-up. */

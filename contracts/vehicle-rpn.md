@@ -232,6 +232,7 @@ profile 不能任意写 AT 命令；`bus.init` 和请求源的 `before`/`after` 
 | 命令 | 条件 |
 |------|------|
 | `ATSH<hdr>` | 头在第 4 节白名单内 |
+| `ATSH8111F1` / `ATSH8101F1` / `ATSH8001F1` | 仅 `bus.init`，且显式 `bus.proto` 为 4/5；铃木 KWP 三字节头，非 CAN 字段 |
 | `ATCRA` / `ATCRA<rx>` | 过滤在白名单内 |
 | `ATCAF1` | — |
 | `ATST<hh>` | 02..FF |

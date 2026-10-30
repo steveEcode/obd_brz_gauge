@@ -1,5 +1,7 @@
 # PID / 信号定义指南
 
+铃木 KWP 专用配置仅在显式声明 `bus.proto: 4` 或 `5` 时允许 `bus.init` 中的 `ATSH8111F1`、`ATSH8101F1`、`ATSH8001F1`，用于 `2100` 数据块读取。三字节头不属于 CAN `bus.hdr` / `src.hdr`，也不能放在请求级 `before` / `after`。初始化与重连都会按配置顺序重发；通用 OBD 的原生寻址不变。`check_connection` 应显式为 `2100`；响应数据偏移需要实车校准，此支持不表示任一雨燕年份已验证。
+
 [English](PID_GUIDE.en.md) | 简体中文
 
 这篇是教程向导读：怎么把挖到的一个 PID/CAN 位，写成车型档案里能跑的信号定义。

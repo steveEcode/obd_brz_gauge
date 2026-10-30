@@ -2,6 +2,12 @@
 
 #include <string.h>
 
+bool vp_kwp_init_header(const char *cmd)
+{
+    return cmd && (!strcmp(cmd, "ATSH8111F1") || !strcmp(cmd, "ATSH8101F1") ||
+                   !strcmp(cmd, "ATSH8001F1"));
+}
+
 #ifdef ESP_PLATFORM
 #include "esp_rom_crc.h"
 #endif

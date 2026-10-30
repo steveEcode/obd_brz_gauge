@@ -1,5 +1,7 @@
 # 车型适配
 
+铃木 Swift / 雨燕 KWP 专用初始化兼容：显式协议 4/5 的配置可在 `bus.init` 中使用 `8111F1`、`8101F1`、`8001F1` 三种 `ATSH` 请求头，并以 `2100` 检查连接和读取数据块。此为引擎兼容能力，未新增内置/目录车型，未验证具体年份；标准 OBD2、CAN 车型及旧配置行为不变，见 [PID_GUIDE.md](PID_GUIDE.md)。
+
 [English](VEHICLES.en.md) | 简体中文
 
 固件只内置 **`OBD2 Generic`**（`obd2.generic`，标准 SAE J1979）。其余车型是

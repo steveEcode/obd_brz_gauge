@@ -1,5 +1,7 @@
 # PID / Signal Definition Guide
 
+Suzuki KWP profiles may use `ATSH8111F1`, `ATSH8101F1` and `ATSH8001F1` in `bus.init` only with explicit `bus.proto: 4` or `5`, for `2100` data-block reads. These three-byte headers are not CAN `bus.hdr` / `src.hdr` values and are forbidden in request-level `before` / `after`. Initialization and reconnection resend them in profile order; generic OBD native addressing is unchanged. Set `check_connection` explicitly to `2100`; response offsets require vehicle verification, and this support does not establish compatibility with any particular Swift year.
+
 English | [简体中文](PID_GUIDE.md)
 
 This is a tutorial-style walkthrough: how to turn a PID/CAN bit you discovered
