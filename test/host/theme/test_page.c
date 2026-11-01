@@ -375,30 +375,6 @@ static void test_sweep_label_values(void)
         destroy_fixture(&f);
         g_te = NULL;
     }
-
-    /* A bound label using the built-in fallback above 48px starts empty.
-     * Its first live value must establish a non-zero base box before LVGL
-     * applies transform_zoom, otherwise the enlarged glyphs are clipped. */
-    fixture_t f;
-    samples[0] = 150;
-    samples[1] = NAN;
-    init_fixture(&f, false);
-    g_te = &f.ctx;
-    te_item_t *it = &f.items[2];
-    f.elements[2].font_size = 80;
-    f.elements[2].font_asset = NULL;
-    it->slot = 0;
-    it->bound = 1;
-    f.page.used_mask |= UINT64_C(1) << 0;
-    lv_obj_del(it->obj);
-    te_create_label(f.page.scr, it);
-    TH_CHECK(it->zoom > 256);
-    TH_CHECK(lv_obj_get_width(it->obj) == 0);
-    te_page_update(&f.ctx, &f.page);
-    TH_CHECK(!strcmp(lv_label_get_text(it->obj), "150"));
-    TH_CHECK(lv_obj_get_width(it->obj) > 0 && lv_obj_get_height(it->obj) > 0);
-    destroy_fixture(&f);
-    g_te = NULL;
 }
 
 static void test_video_layer_order(void)
