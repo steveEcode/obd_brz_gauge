@@ -684,6 +684,17 @@ static void te_label_align(te_item_t *it)
     lv_point_t sz;
     lv_txt_get_size(&sz, lv_label_get_text(it->obj), it->font, 0, 0, LV_COORD_MAX,
                     LV_TEXT_FLAG_NONE);
+    /*
+     * Keep a concrete base box for labels whose font is enlarged with
+     * transform_zoom.  A bound label is created with an empty string, so its
+     * LV_SIZE_CONTENT box starts at 0x0.  Updating the text later does not
+     * reliably expand the transformed draw area in LVGL 8, and the value can
+     * be clipped completely (especially for the built-in 48px font used for
+     * requested sizes above 48px).  Size the object from the current text
+     * before applying the position/pivot so the transformed glyphs have a
+     * valid draw area on the first live sample.
+     */
+    lv_obj_set_size(it->obj, sz.x, sz.y);
     int32_t w = sz.x, x, piv;
     switch (el->align) {
     case TL_ALIGN_CENTER:

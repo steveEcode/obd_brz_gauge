@@ -581,7 +581,9 @@ The preview rule status distinguishes disabled, waiting and active rules and dis
   Montserrat 12/14/16/26/32/48 on failure (exact match first, else the
   nearest smaller size, else 12 as a last resort); sizes above 48 use the 48
   font with `transform_zoom = size*256/48` (LVGL's zoom, unrelated to the
-  compiled-in theme's artwork scaling)
+  compiled-in theme's artwork scaling). After the first live value arrives,
+  dynamic labels resize their base box from the rendered text so an empty
+  string's initial 0x0 box cannot clip the enlarged number.
 - A missing value or NaN shows `--` on the label (no unit)
 - System alarms take priority over theme rules: while the RPM warning flash
   or the triple-gauge linked red owns the background, theme rules are
