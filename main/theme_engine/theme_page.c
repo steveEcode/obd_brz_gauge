@@ -684,6 +684,10 @@ static void te_label_align(te_item_t *it)
     lv_point_t sz;
     lv_txt_get_size(&sz, lv_label_get_text(it->obj), it->font, 0, 0, LV_COORD_MAX,
                     LV_TEXT_FLAG_NONE);
+    /* A bound label starts with an empty string. Keep a concrete base box so
+     * LVGL's transform_zoom path cannot clip the first enlarged live value
+     * to the initial 0x0 LV_SIZE_CONTENT area. */
+    lv_obj_set_size(it->obj, sz.x, sz.y);
     int32_t w = sz.x, x, piv;
     switch (el->align) {
     case TL_ALIGN_CENTER:
@@ -1495,7 +1499,11 @@ static void te_create_label(lv_obj_t *scr, te_item_t *it)
         if (it->zoom != 256) lv_obj_set_style_transform_zoom(o, it->zoom, 0);
         if (rot) lv_obj_set_style_transform_angle(o, rot, 0);
     }
-    lv_label_set_text(o, it->bound ? "" : it->base.text);
+    /* Keep a non-empty box until the first sample arrives.  This is also the
+     * invalid-data rendering used by theme_ov_label_text, so the placeholder
+     * cannot flash a different visual state from the normal missing-value
+     * path. */
+    lv_label_set_text(o, it->bound ? THEME_INVALID_TEXT : it->base.text);
     te_label_align(it);
 }
 
