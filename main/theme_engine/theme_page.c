@@ -681,6 +681,10 @@ static const lv_font_t *te_label_font(const tl_elem_t *el, int16_t *zoom)
 static void te_label_align(te_item_t *it)
 {
     const tl_elem_t *el = it->el;
+    if (!it->transform && el->align == TL_ALIGN_LEFT) {
+        lv_obj_set_pos(it->obj, (lv_coord_t)tl_px(el->x), (lv_coord_t)tl_px(el->y));
+        return;
+    }
     lv_point_t sz;
     lv_txt_get_size(&sz, lv_label_get_text(it->obj), it->font, 0, 0, LV_COORD_MAX,
                     LV_TEXT_FLAG_NONE);
@@ -715,6 +719,9 @@ static void te_label_set(te_item_t *it, const char *txt)
     const char *cur = lv_label_get_text(it->obj);
     if (cur && strcmp(cur, txt) == 0) return;
     lv_label_set_text(it->obj, txt);
+    /* LVGL refreshes LV_SIZE_CONTENT labels on text changes. A plain left-
+     * aligned label needs no extra text measurement or position update. */
+    if (!it->transform && it->el->align == TL_ALIGN_LEFT) return;
     te_label_align(it);
 }
 

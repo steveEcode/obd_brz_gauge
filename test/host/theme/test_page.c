@@ -277,6 +277,16 @@ static void test_transitions(void)
     fixture_t a, b;
     clock_ms = 0; samples[0] = 0; samples[1] = 30;
     init_fixture(&a, false); init_fixture(&b, false);
+    te_item_t *live_label = &a.items[2];
+    TH_CHECK(lv_obj_get_style_width(live_label->obj, LV_PART_MAIN) == LV_SIZE_CONTENT);
+    lv_obj_update_layout(a.page.scr);
+    lv_coord_t short_width = lv_obj_get_width(live_label->obj);
+    lv_coord_t fixed_x = lv_obj_get_x(live_label->obj);
+    te_label_set(live_label, "123456");
+    lv_obj_update_layout(a.page.scr);
+    TH_CHECK(lv_obj_get_width(live_label->obj) > short_width);
+    TH_CHECK(lv_obj_get_x(live_label->obj) == fixed_x);
+    te_label_set(live_label, THEME_INVALID_TEXT);
     update_pair(&a, &b);
     samples[0] = 80; clock_ms = 16; update_pair(&a, &b);
     TH_CHECK(!strcmp(lv_label_get_text(a.items[3].obj), "BASE"));

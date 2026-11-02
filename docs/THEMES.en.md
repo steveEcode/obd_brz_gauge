@@ -23,6 +23,8 @@ color defaults for its own elements; built-in pages keep their compiled palette.
 No selection, missing card/file, corrupt manifest or parse failure falls back to the built-in
 default theme while preserving the saved selection.
 
+In runtime themes, ordinary left-aligned text bindings without zoom or rotation retain LVGL `LV_SIZE_CONTENT`, allowing LVGL to resize them when data changes. Centered, right-aligned or transformed labels continue to measure and update their position and size explicitly to preserve their anchor and large-font rendering.
+
 Web theme installation and “Delete current theme” both use ESP32-S3 native USB, requiring no device address, token or WiFi OTA. Deletion releases theme pages and resources, removes the current `/OBD/THEMES/<key>/` directory (including `theme.bin`, rules, images, fonts and video) and saved selection, then the web client separately requests reboot when “Delete current theme” is clicked. Installing a new theme instead automatically clears the current theme, skips deletion when none exists, and reboots only after uploading and enabling the replacement. Other themes and the shared boot animation remain. Update to USB-management firmware first; missing SD and deletion failures report errors, while temporary contention can be retried automatically.
 
 ---

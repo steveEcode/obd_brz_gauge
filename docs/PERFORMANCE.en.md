@@ -6,6 +6,12 @@ This record describes the working tree on October 14, 2026. Code inspection, ove
 optimizations, and optional device statistics are in place. Desktop timings and host tests
 do not establish ESP32 frame rate, response latency, or that the system has reached its performance limit.
 
+## Theme labels and demand-mask deduplication
+
+Ordinary left-aligned runtime-theme bindings without zoom or rotation retain `LV_SIZE_CONTENT`. In LVGL 8, `lv_label_set_text()` refreshes the text and marks self-size layout dirty, so this path no longer calls `lv_txt_get_size()`, fixes the dimensions or repositions the label on every update. Centered, right-aligned and transformed labels keep the existing explicit sizing logic. The real-LVGL `test_page` verifies width growth after a longer value and an unchanged left anchor; this checks layout correctness, not render time or device frame rate.
+
+The UI tick now publishes the local ESP-NOW demand mask only when the local page mask changes. After merging remote demand, it updates the ELM client only when the aggregate OBD mask changes. Page changes and expiration of remote demand still publish the new mask immediately. This removes repeated critical-section writes on stable pages; host page tests do not cover this FreeRTOS path, and device timing and frame rate remain to be measured.
+
 ## Project-wide path audit
 
 The table records mechanisms present in the current code. `host` covers correctness of pure C
