@@ -31,6 +31,7 @@ main/
 │
 ├── bsp_obd_dsp/          # 板级支持包（换开发板主要改这里）
 │   ├── elm327_ble_client # ELM327 BLE 客户端 + 单线程轮询状态机 + 协议自动检测
+│   ├── tpms_ble_client   # TireKing FBB0 扫描解码与四轮 ID 绑定（解析器 tpms_fbb0）
 │   ├── espnow_link / espnow_v6  # 三连表 ESP-NOW 链路（v6 TLV，兼容过渡期接受 v5）
 │   ├── ble_hub           # GAP/GATTC/GATTS 事件按 app_id 统一分发、扫描与连接仲裁
 │   ├── racechrono_ble_diy # RaceChrono DIY BLE GATT 服务 + 配对服务
@@ -69,8 +70,12 @@ main/
     │                     #   OilPressure(曲线页)/ChartConfig/ChartAlarm/Info/InfoCustom/
     │                     #   Settings/RpmWarn/Needle/NeedleConfig/MultiGauge/
     │                     #   Intro/Vehicle
+    ├── ui_tpms.c         # 手写四轮胎压总览和完整诊断详情
+    ├── ui_bluetooth.c    # 手写蓝牙配对菜单与四轮胎压绑定页
     ├── ui_ext.c          # 手写扩展（扫表动画、展厅模式、开机动画调度、主题选择状态轮询）——
     │                     #   SquareLine 重导出时不会覆盖
+    ├── ui_sweep.c        # 自检扫表单调时钟（16 ms 显示 / 40 ms 同步槽；无 LVGL 依赖）
+    ├── ui_theme_navigation.c # 主题切页后台图片准备 / LVGL 发布与取消（单个在途请求）
     ├── ui_disp_item.c    # 显示项枚举（TEMP/INFO 页可映射的数据源；只能追加，见 AGENTS.md）
     └── ui_theme*         # 编译期主题运行时（活动主题、NVS、访问器；生成文件见 THEMES.md）
 ```
@@ -84,6 +89,22 @@ main/
 当前 I2C 定义分为两套：主总线在 V1 使用 SCL GPIO10 / SDA GPIO11，V2/V3 使用 SCL GPIO8 / SDA GPIO7；CST816 触摸另建总线，使用 SCL GPIO3 / SDA GPIO1（所有硬件版本）。具体以 `I2C_Driver.h` 和 `CST816.h` 为准；更换硬件前应核对实际接线。
 
 主总线寄存器读写封装缓存最多 8 个设备并保护并发注册；注册失败或缓存已满时返回错误，不中止固件或反复泄漏设备句柄。写入使用 I2C 驱动的多缓冲事务，寄存器地址与数据在同一事务发送，避免按输入长度占用任务栈。
+
+### 胎压配对扫描生命周期
+
+`ui_bluetooth.c` 提供版本页上滑后的双入口及四轮配对界面；扫描行只有六位 ID，点击即保存到当前轮位。`tpms_ble_client` 通过 `BLE_HUB_APP_TPMS` 注册 GAP / shutdown 回调，以广播 ID 去重（MAC 仅诊断），稳定追加候选，不按 RSSI 重排。锁保护的快照传给 LVGL 定时器，BLE 回调不操作 UI。进入页面 `elm327_ble_yield_scanner(true)` 让出重连扫描，离开时恢复；已连接的 ELM327 继续单线程轮询。停止后延迟启动下一轮扫描，避开控制器异步停止。
+
+`tpms_fbb0.c` 是无平台依赖解析器，依据 TireKing Android `com.zl.dev.tire.king` 1.1.8 / 3538 的静态分析：独立完整 raw 记录至少 26 字节，前缀 `02 01 06 03 03 B0 FB`；CRC16-XMODEM 覆盖 `raw[9:16] + raw[17:18] + raw[19:26]`，对比 `(raw[16] << 8) | raw[18]`。ID 为 `raw[25:22:-1]` 的六位大写 HEX；压力用整数 Pa 保存 `(raw[12] + (raw[17] == 1 ? 256 : 0)) * 3144`，温度 `(unsigned)raw[13] - 55`，电压 mV 为 `raw[11] * 10 + 1220`；保留未知状态原值。不假定 manufacturer ID 为 `AC00`。扫描桥先验证 ADV / RSP 各自长度不超过 31，分别解析，禁止将片段拼接或对 manufacturer 子串套 raw 偏移。仅校验成功的 ID 占候选槽；普通 BLE 不再挤满 20 项列表。
+
+NVS 保留 `nvs_user_cfg_t.tpms[4]`（offset 96，单项 39 字节）的旧 MAC 布局；在旧完整 `sizeof(cfg)=252` 后追加 `tpms_sensor_id[4][7]`，空串未绑定，`000000` 是有效 ID，逐轮合并保存。grow 加载旧配置时新字段为零；旧 MAC 记录仅提示重配，不推算 ID。成功保存/删除才清除当前轮旧 MAC，失败回滚。保存 ID 不等于在线；后台接收、默认总览和主题绑定共用四轮缓存，不提供内置胎压报警。
+
+INFO 级 `tpms_ble` 日志记录有效 ID、MAC、类型、RSSI、解码值及独立 ADV / RSP 原始 HEX；每个 ID 首次、首次非空响应、其后每 5 秒采样，重扫重置，列表满警告一次。解码、格式化和日志 I/O 在自旋锁外；不创建任务。`test/host/espnow/test_tpms_pairing.c` 覆盖构造报文 CRC/字段、短包/非法长度、分片拒绝、普通设备过滤、ID 去重/MAC 变化、满表更新、生命周期、日志限频与锁约束、NVS 边界及保存失败回滚。`-DEH_TPMS_LVGL=ON` 的真实 LVGL `tpms_ui` 测试覆盖四轮编号保存、精确 ID 行文本、取消/失败保留、旧记录重配、删除、重扫与退出清理；`TPMS_UI_CAPTURE_DIR` 可输出页面 PPM。测试不是实物传感器兼容性验证。
+
+`lvgl_runtime.c` 每 250 ms 在 LVGL 控制上下文调用 `tpms_ble_service_step()`；从表、无 ELM 绑定或 ELM 已连接时允许后台无限扫描。手动配对页暂停后台，退出后恢复；ELM 重连优先，扫描停止后保留 500 ms 冷却、启动失败后 2 秒重试。广播回调按已绑定 ID 更新缓存，即使 20 个候选已满也不丢已绑定轮位更新；仅 CRC 通过的样本更新时间，120 秒后测量失效但保留详情历史。成功换绑清除该轮缓存，保存失败保持原数据；实时值不写 NVS、不经 ESP-NOW 同步。
+
+`ui_tpms.c` 实现默认四轮简洁总览（bar 两位小数 / C / 估算电量，无编号）及点击详情。`tpms_theme_source.c` 提供每轮 16 个固件局部数据源：`tpms.fl.*` / `tpms.fr.*` / `tpms.rl.*` / `tpms.rr.*`，不追加 `contracts/signals.json`、OBD PID、NVS 槽位或线协议。主题按帧取一次快照，独立扩展数组与双 64 位使用/变化掩码（总源数不超过 128），条件与 change 规则可用；旧 `tr_inputs_t` / `tr_eval()` 不变，高位变化走 `tr_eval_extended()`。胎压不参与 OBD 扫表，不受 OBD link 缺失影响。电量函数复现 TireKing float32 电压分档，仅用于显示估算；字段/单位与 NaN 语义见 [THEMES.md](THEMES.md)。前端未改。
+
+主机新增覆盖后台优先级/缓存过期/候选满表/换绑回滚、简洁页两位小数和详情、四轮所有主题字段、256 个电压字节与边界、高位 change 触发及扫表隔离；截图为合成数据，不是实车验证。
 
 ### 启动顺序（`main/app_main.c`）
 
@@ -128,6 +149,17 @@ ELM327 BLE 适配器 ──BLE──→ elm327_ble_client（单线程状态机�
 改轮询逻辑时不要引入并行请求 —— 一个适配器同时只服务一个请求流（AGENTS.md 红线）。
 BLE 回调通过常驻静态信号量唤醒轮询任务；BLE 关闭时的回调也会唤醒任务退出，信号量不会随任务删除，避免迟到回调访问已释放的任务句柄。
 BLE 连接和扫描的 64 位时间戳使用临界区同步，避免双核并发读写时读取不完整。
+
+LVGL 常驻任务固定在 Core 1，ELM327 BLE 轮询状态机固定在 Core 0；任务参数统一由
+`app_main.c` 中的策略表管理，并通过 `app_tasks.h` 接口创建。这样表盘/LVGL 绘制不会与 OBD 轮询任务在同一核心互相抢占，
+BLE 协议栈仍按 ESP-IDF 配置运行。不要因此拆分或并行化 ELM 请求。
+
+LCD 的 LVGL `wait_cb` 通过常驻静态二值信号量等待 DMA 完成，避免双缓冲刷屏期间在
+`draw_buf->flushing` 上忙等。完成中断先调用 `lv_disp_flush_ready()` 释放缓冲，再发出唤醒；
+任务醒来必须重新检查 `flushing`，不能把可能来自前次传输或全屏视频的旧信号当作本次完成。
+该信号量在注册 LCD 回调前初始化，不随切页或视频启停释放，不占用 LVGL 通知槽 0。
+ESP-IDF 5.5.3 的 SPI LCD 后端忽略完成回调的返回值，因此桥接函数在唤醒高优先级任务时
+显式请求 ISR 调度。实现见 `app_obd_dsp/lvgl_flush_sync.c`。
 
 USB 接收任务 `bootmedia_usb` 的优先级为 3，低于 OBD 轮询和 LVGL 的 4，避免 USB 通信繁忙时以更高优先级抢占实时数据与显示任务。USB 仍在正常开机后常驻，空闲时阻塞等待接收；网页刷写、资源上传和管理 RPC 流程保持不变。
 
@@ -374,6 +406,8 @@ cmake -S test/host/theme -B /tmp/obd-theme-page-tests -G Ninja -DTE_PAGE_LVGL=ON
 cmake --build /tmp/obd-theme-page-tests
 ctest --test-dir /tmp/obd-theme-page-tests --output-on-failure
 ```
+
+`theme_navigation` 编译实际切页状态机与真实 LVGL 定时器/页面，控制 worker 调度，检查准备期间旧页定时器继续执行、仅 LVGL 发布、重复请求、启动/发布失败、离开/删除原页及离开后返回时的取消。`theme_page` 另外检查真实分阶段任务在运行前后丢弃时的资源回收；主机测试不覆盖实际 FreeRTOS 调度、SD 吞吐、DMA 或视频资源争用。
 
 `theme_acquire` 同时编译真实获取/缓存路径，对照冻结旧获取函数，检查 1,006 组像素/
 几何场景、全部 RGB565 颜色、RAM 像素寿命、预算、着色、SD 读取失败和分配失败。旧/新共用几何和

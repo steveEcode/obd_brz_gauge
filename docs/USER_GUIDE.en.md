@@ -17,7 +17,7 @@ The firmware also fixes a missed LCD SPI lock wakeup in ESP-IDF 5.5.3 that could
 2. Install vehicle profiles and themes through the web UI or App; activate a
    profile on the gauge's VEHICLE page and select a theme under Settings → THEME
    - **BOOT PAGE** — pick the screen the gauge lands on after boot
-3. **Swipe up from the version page** into BLE SCAN and select your
+3. **Swipe up from the version page → ELM327 PAIRING → BLE SCAN** and select your
    ELM327 BLE adapter
 4. Once connected the gauge initializes automatically (protocol auto-detection
    is described in [TROUBLESHOOTING.en.md](TROUBLESHOOTING.en.md#protocol-auto-detection))
@@ -49,7 +49,7 @@ the Logo, and a failed theme preparation falls back to the built-in page. Theme 
 ```
         ┌──────────────────────────────────────┐
         │  GEAR → RPM → SPEED → TEMP → INFO →  │
-        │  NEEDLE → CHART → version page → GEAR│
+        │  NEEDLE → CHART → TPMS → version → GEAR│
         └──────────────────────────────────────┘
 ```
 
@@ -62,12 +62,14 @@ the Logo, and a failed theme preparation falls back to the built-in page. Theme 
 | INFO | Multi-cell info panel (remappable cells) | 5-cell data-item mapping |
 | NEEDLE | Needle meter (swipe down to change source) | Needle source picker |
 | CHART | Chart page | Down: chart source config / **up: alarm thresholds** |
+| TPMS | Four-wheel pressure / temperature / battery | Tap a wheel for full diagnostics |
 | Version page | Firmware build tag, BLE status and device name | see hidden entries below |
+
+For multi-page runtime themes, left/right navigation prepares target images in the background while the current page remains visible and refreshing, then switches when ready. Repeated navigation during preparation is not queued; leaving cancels the pending transition, and failure keeps the current page. Font and widget creation can still briefly stall; SD speed and available memory also affect the result.
 
 **The version page is the hub**:
 
-- **Swipe up** → BLE SCAN (connect an OBD adapter; on slave gauges this doubles
-  as the FIND MASTER scan)
+- **Swipe up** → BLUETOOTH PAIRING, then **ELM327 PAIRING** or **TPMS PAIRING**; on slaves the first option is **GAUGE MASTER PAIRING**, opening FIND MASTER
 - **Swipe down** → Settings
 - **OTA button** → OTA update mode (app pairing, see [FLASH.en.md](FLASH.en.md#app-ota-upgrade-dual-slot-rollback))
 - Swipe left/right → back to the gauge ring
@@ -81,6 +83,8 @@ the Logo, and a failed theme preparation falls back to the built-in page. Theme 
 
 When data times out or BLE drops, gauge pages show a **NO SIGNAL** banner.
 
+The Bluetooth-connect self-test sweep follows elapsed time, targeting a 16 ms refresh interval rather than advancing once per callback. Busy rendering skips obsolete animation positions instead of stretching the sweep; the master has a nominal 1.92-second duration and restores configured brightness plus live data on the ending tick. Slaves fill animation positions between sync packets, but flash and termination still follow received master slots. This does not increase actual OBD sampling rate or guarantee 60 FPS on the panel.
+
 RPM, speed, boost and throttle receive priority polling when demanded by the current page. Built-in numeric, speed and needle pages display these inputs and load from the latest sample without an extra display ramp. Slower inputs such as temperature retain smoothing. Actual update speed remains limited by the adapter, ECU and profile minimum sampling periods.
 
 **Deleting a saved device on the BLE SCAN page**: tapping the ✕ next to the
@@ -89,11 +93,55 @@ clears the saved name / MAC — **it does not auto-reconnect**; you must scan
 and select again. On a slave (SLAVE), the same action on the **FIND MASTER**
 page unbinds the master and starts a fresh scan.
 
+## Bluetooth tire sensor pairing
+
+Swipe up from the version page, select **TPMS PAIRING**, then assign a sensor to each wheel individually:
+
+| Wheel label | Vehicle wheel |
+|-------------|---------------|
+| FRONT LEFT | Front left |
+| FRONT RIGHT | Front right |
+| REAR LEFT | Rear left |
+| REAR RIGHT | Rear right |
+
+1. Tap a wheel, then **PAIR SENSOR**; wake that wheel's sensor and wait for scan results.
+2. The list shows only six-digit IDs passing the TireKing FBB0 prefix and CRC checks, such as `18010F`. Ordinary Bluetooth devices, advertised names, MAC addresses and RSSI are not shown. IDs come from the sensor ID field, not a renamed Bluetooth device or a MAC-derived guess; leading zeros are retained. Each scan lasts up to 20 seconds and lists up to 20 distinct valid IDs.
+3. Check the sensor label, then **tap its ID to save it to the selected wheel**, without a separate confirmation. IDs persist in NVS across reboots; one ID cannot be assigned to another wheel simultaneously. The wheel list shows saved IDs, and details say `ID SAVED - waiting for broadcasts`: registration alone does not mean online reception.
+4. Use **RE-PAIR** to select another sensor or **DELETE PAIRING** to remove it. Restarting a scan, backing out or a save failure preserves the original binding; deletion affects only the selected wheel.
+
+Use **BACK** or swipe left/right to return one level; **SCAN AGAIN** restarts discovery. Entering TPMS pairing yields ELM327 automatic reconnect scanning, which resumes on exit; an established OBD connection and serial polling continue running.
+
+Legacy MAC-only records remain compatible but cannot reliably be converted to sensor IDs: the wheel shows **RE-PAIR**, with **LEGACY RECORD** in details. Rescan and save, or delete; IDs are never guessed. With ID-based binding, a changed MAC does not change the identity of a sensor broadcasting the same ID.
+
+Only the TireKing FBB0 broadcast main path is implemented: scans directly decode pressure, temperature, voltage and state without a GATT connection or security bonding. Saved IDs now support background reception and gauge displays, but not tire-pressure alarms. Other TPMS protocols are not generically supported. The protocol comes from APK static analysis and synthetic packet tests; matching the physical label to broadcasts, sleep/wake behavior and broadcast periods still require this device to be tested. CRC checks integrity, not authenticity.
+
+### Four-wheel TPMS overview
+
+The default carousel adds a four-wheel overview between **CHART → TPMS → version page**. `FL` / `FR` / `RL` / `RR` mean front left, front right, rear left and rear right. The overview matches INFO / TEMP with the themed background, thin gray dividers, blue wheel labels, large white pressure values and gray secondary information. `TIRE PRESSURE` uses a smaller gray title with clearance from the circular bezel, and the `Tap tire for all data` hint is removed. The overview omits six-digit IDs, showing only wheel position, pressure (**bar, two decimal places**, such as `2.10` or `2.25`), temperature (`C`) and estimated battery (`%`). Unbound wheels, missing samples, or samples at least 120 seconds old show `--` rather than presenting cached measurements as live.
+
+Tap a wheel for its ID, reception status, raw pressure, temperature, voltage, state code, versions, RSSI, address type, MAC and last-reception age; expired data is marked `STALE` / `cached`. Swipe horizontally or tap **BACK** to return to the overview; horizontal swipes on the overview continue the carousel. Select **BOOT PAGE → TPMS** in Settings to save the TPMS overview as the default built-in boot page. Custom themes still take priority with their own default page, and the existing startup pairing flow for unpaired devices is unchanged.
+
+After any wheel ID is saved, background scanning starts when Bluetooth is available and ELM327 connection work does not need priority. Manual pairing and ELM327 reconnection take priority, without interrupting established OBD polling. The 120-second threshold is a display-validity limit, not the sensor's actual reporting period. Sleeping sensors may need waking before updates arrive. Background and pairing scans share one advertisement parser without making GATT connections.
+
+Battery is a TireKing voltage-bin estimate, not a directly broadcast remaining capacity: convert voltage to float32, promote to double, then compare strictly against `>2.8` / `>2.6` / `>2.4` / `>2.2`, yielding `100%` / `75%` / `50%` / `25%`, otherwise `0%`; float32 boundaries affect decimal thresholds. Full voltage remains visible in details. Runtime custom themes can use `tpms.*` sources; see [THEMES.en.md](THEMES.en.md). The frontend editor is unchanged.
+
+### Scan diagnostics
+
+Record serial output with `idf.py -p <port> monitor`, open a wheel's **PAIR SENSOR** or **RE-PAIR** scan, and search for `tpms_ble`. Logs include scan requests, completion/failure/cancellation and valid sensors' IDs, MACs, address types (`type`), RSSI, `pressure_pa`, `temp_c`, `voltage_mv`, state and versions, plus complete raw advertisement `ADV` and scan response `RSP`. Payloads use contiguous uppercase hexadecimal; empty payloads use `-`. This example is synthetic, not a hardware capture:
+
+```text
+tpms_ble: sensor=123456 device=AA:BB:CC:DD:EE:FF type=0 rssi=-55 pressure_pa=251520 temp_c=25 voltage_mv=3000 state=0 version=1 ble_ver=10 ADV[26]=0201060303B0FB12FF0000B250500001F000630A000000563412 RSP[0]=-
+```
+
+Each valid ID is logged on first sight, once more for its first nonempty scan response, then at most once every 5 seconds; rescanning resets the throttle. These are diagnostic samples, not complete captures. Ordinary devices and invalid packets do not enter the candidate table or emit device logs. Only 20 valid IDs can fill the table; this produces one warning per scan, while existing IDs can still refresh. Invalid ADV / RSP lengths are ignored; independent records are never concatenated to force parsing.
+
+If the target ID is absent, record a complete scan cycle and retry after waking the sensor. Absence does not prove device failure: its protocol may be unsupported or it may not yet be broadcasting. An actual `18010F` must come from `raw[23:26] = 0F 01 18` with a valid CRC; coincidental matching bytes are not identification. Logs contain device addresses, so consider privacy before sharing.
+
 ## Settings page
 
 | Setting | Description |
 |---------|-------------|
-| BOOT PAGE | Landing page after boot (TEMP / INFO / CHART / NEEDLE / GEAR / RPM / SPEED)|
+| BOOT PAGE | Landing page after boot (TEMP / INFO / CHART / NEEDLE / GEAR / RPM / SPEED / TPMS)|
 | VEHICLE → OPEN | Open the vehicle page to review installed profiles and activate one; reboot as prompted for the change to take effect |
 | THEME | Select a registered theme; the device restarts to apply its appearance |
 | Brightness | 10–100% |

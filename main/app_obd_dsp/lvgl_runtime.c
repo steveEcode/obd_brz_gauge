@@ -8,6 +8,9 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "lvgl.h"
+#include "bsp_obd_dsp/tpms_ble_client.h"
+#include "bsp_obd_dsp/elm327_ble_client.h"
+#include "bsp_obd_dsp/espnow_link.h"
 #include "media/video_player.h"
 #include "app_obd_dsp/perf_stats.h"
 
@@ -35,6 +38,15 @@ void lvgl_runtime_task(void *mux)
             /* Check the current session even on the first pass: publication
              * before task registration must not lose the first frame. */
             video_player_ui_step();
+            static uint32_t tpms_tick;
+            if (lv_tick_elaps(tpms_tick) >= 250) {
+                tpms_tick = lv_tick_get();
+                nvs_user_cfg_t cfg = nvs_cfg_read();
+                bool obd_configured = cfg.ble_device_name[0] != '\0';
+                for (unsigned i = 0; i < 6; ++i) obd_configured |= cfg.ble_obd_mac[i] != 0;
+                tpms_ble_service_step(cfg.device_role == ESPNOW_ROLE_SLAVE || !obd_configured ||
+                                      elm327_ble_is_connected());
+            }
             delay_ms = lv_timer_handler();
             PERF_END(PERF_LVGL_HANDLER, perf_handler_start, 1);
             xSemaphoreGive((SemaphoreHandle_t)mux);

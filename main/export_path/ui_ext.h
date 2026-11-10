@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "esp_err.h"
+#include "ui_sweep.h"
 #include "bsp_obd_dsp/nvs_storage.h"
 
 #ifdef __cplusplus
@@ -19,18 +20,8 @@ extern "C" {
 /* ---- Sweep animation ----
    Values ramp from min to max (~1s) → hold at max (0.5s) → backlight flashes once (max 0.2s → min 0.2s);
    on the same tick after the flash, the configured brightness is restored and real values are switched back in.
-   Backlight stays at minimum (SWEEP_BL_MIN) for the whole sweep. Backlight is exported via the sweep step;
+   Backlight stays at minimum (SWEEP_BL_MIN) except during the bright flash. Backlight is exported via the sweep step;
    master and slaves derive the same brightness from the same step → the triple-gauge flash stays in sync. */
-#define SWEEP_RPM_PEAK   8000   // sweep peak RPM
-#define SWEEP_SPEED_PEAK 999    // sweep peak speed
-#define SWEEP_TICK_MS    40     // refresh period during sweep (high rate keeps digits ramping smoothly)
-#define SWEEP_STEPS_UP   25     // 25×40ms ≈ 1s to ramp from min to max
-#define SWEEP_STEPS_HOLD 13     // 13×40ms ≈ 0.5s hold at max
-#define SWEEP_STEPS_FLASH 5     // 5×40ms ≈ 0.2s per flash segment (one high and one low segment)
-#define SWEEP_BL_MIN     3      // backlight during sweep & the low flash segment (%), tunable
-#define SWEEP_BL_MAX     100    // backlight for the high flash segment (%)
-#define SWEEP_TOTAL      (SWEEP_STEPS_UP + SWEEP_STEPS_HOLD + 2*SWEEP_STEPS_FLASH)
-
 // Whether the sweep animation is running right now (replaces the old IN_SWEEP macro).
 bool ui_ext_sweep_active(void);
 
@@ -38,8 +29,8 @@ bool ui_ext_sweep_active(void);
 int  ui_ext_sweep_get_step(void);
 
 // Called every timer tick from my_timerMain where the old sweep block lived.
-// Advances the sweep (master only), applies/restores the backlight, and returns the
-// ramp ratio (0..1) while sweeping, or -1.0f when not sweeping.
+// Samples the elapsed-time sweep (master only advances sync slots), applies/restores
+// the backlight, and returns the ramp ratio (0..1) while sweeping, or -1.0f when not sweeping.
 float ui_ext_sweep_tick(bool is_slave, uint8_t configured_brightness);
 
 // Called once per tick from my_timerMain: the master triggers the sweep the instant the

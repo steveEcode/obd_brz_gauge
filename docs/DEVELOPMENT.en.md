@@ -31,6 +31,7 @@ main/
 │
 ├── bsp_obd_dsp/          # Board support package (porting a new board happens here)
 │   ├── elm327_ble_client # ELM327 BLE client + single-thread poll state machine + protocol auto-detect
+│   ├── tpms_ble_client   # TireKing FBB0 scan/decode and per-wheel ID binding (tpms_fbb0 parser)
 │   ├── espnow_link / espnow_v6  # Triple-gauge ESP-NOW link (v6 TLV; v5 still accepted during the transition)
 │   ├── ble_hub           # GAP/GATTC/GATTS events dispatched by app_id; arbitrates scanning and connections
 │   ├── racechrono_ble_diy # RaceChrono DIY BLE GATT service + pairing service
@@ -69,8 +70,12 @@ main/
     │                     #   OilPressure(chart)/ChartConfig/ChartAlarm/Info/InfoCustom/
     │                     #   Settings/RpmWarn/Needle/NeedleConfig/MultiGauge/
     │                     #   Intro/Vehicle
+    ├── ui_tpms.c         # hand-written four-wheel TPMS overview and full diagnostics
+    ├── ui_bluetooth.c    # hand-written Bluetooth menu and per-wheel TPMS pairing pages
     ├── ui_ext.c          # hand-written extensions (sweep, showroom, boot animation scheduling, theme-library write poll) —
     │                     #   survives SquareLine re-exports
+    ├── ui_sweep.c        # Self-test monotonic clock (16 ms rendering / 40 ms sync slots; no LVGL dependency)
+    ├── ui_theme_navigation.c # Background theme-page images / LVGL publication and cancellation (one in-flight request)
     ├── ui_disp_item.c    # display-item enum (data sources mappable onto TEMP/INFO pages; append-only, see AGENTS.md)
     └── ui_theme*         # compiled-theme runtime (active theme, NVS, accessors; generated files: THEMES.en.md)
 ```
@@ -86,6 +91,22 @@ generators), `bootmedia/slot_a/` (legacy animation source, generating
 The current I2C definitions use two buses: the main bus uses SCL GPIO10 / SDA GPIO11 on V1 and SCL GPIO8 / SDA GPIO7 on V2/V3; CST816 touch creates a separate bus using SCL GPIO3 / SDA GPIO1 on all hardware versions. See `I2C_Driver.h` and `CST816.h` and check the actual wiring before changing hardware.
 
 The main-bus register wrapper caches up to eight devices and serializes registration. Registration failure or a full cache returns an error instead of aborting firmware or repeatedly leaking device handles. Writes send the register and data in one multi-buffer I2C transaction, avoiding a task-stack allocation proportional to input length.
+
+### TPMS pairing scan lifecycle
+
+`ui_bluetooth.c` provides two entries above the version page and per-wheel pairing views; scan rows contain only six-digit IDs, saved to the current wheel on tap. `tpms_ble_client` registers GAP / shutdown callbacks through `BLE_HUB_APP_TPMS` and deduplicates by broadcast ID (MAC is diagnostic only), appending stable candidates without RSSI sorting. Lock-protected snapshots feed an LVGL timer; BLE callbacks never touch UI objects. Entering calls `elm327_ble_yield_scanner(true)` to yield reconnect scanning, and leaving restores it; an established ELM327 connection continues serial polling. Restart is delayed after stopping to avoid the controller's asynchronous stop.
+
+`tpms_fbb0.c` is a platform-independent parser based on static analysis of TireKing Android `com.zl.dev.tire.king` 1.1.8 / 3538. Independent complete raw records require at least 26 bytes and prefix `02 01 06 03 03 B0 FB`; CRC16-XMODEM covers `raw[9:16] + raw[17:18] + raw[19:26]`, compared against `(raw[16] << 8) | raw[18]`. ID is `raw[25:22:-1]` formatted as six uppercase HEX digits. Pressure is integer Pa: `(raw[12] + (raw[17] == 1 ? 256 : 0)) * 3144`; temperature is `(unsigned)raw[13] - 55`; voltage mV is `raw[11] * 10 + 1220`. Unknown states retain their raw values. Manufacturer ID `AC00` is not assumed. The scan bridge first checks both ADV / RSP lengths are at most 31, then parses each independently; never concatenate fragments or apply raw offsets to manufacturer substrings. Only verified IDs consume candidate slots, so ordinary BLE devices cannot fill the 20-item table.
+
+NVS retains the old `nvs_user_cfg_t.tpms[4]` MAC layout (offset 96, 39 bytes per record), appending `tpms_sensor_id[4][7]` after the full old `sizeof(cfg)=252`. Empty means unbound; `000000` is valid. Saves merge per wheel. Grow-loading old configurations leaves new fields zero; legacy MAC records prompt re-pairing without ID inference. Only a successful save/delete clears that wheel's old MAC; failures roll back. Saving an ID does not imply online status. Background reception, the default overview and theme bindings share a four-wheel cache; built-in tire-pressure alarms are not provided.
+
+INFO-level `tpms_ble` logs contain valid IDs, MAC, type, RSSI, decoded fields and independent raw ADV / RSP HEX. Each ID is logged on first sight, first nonempty response, then every 5 seconds, reset on rescan, with one full-list warning. Decoding, formatting and log I/O are outside the spinlock; no tasks are created. `test/host/espnow/test_tpms_pairing.c` covers synthetic CRC/fields, short packets/invalid lengths, rejection of fragments, ordinary-device filtering, ID deduplication/MAC rotation, full-table updates, lifecycle, log throttling/lock constraints, NVS boundaries and save rollback. The real LVGL `tpms_ui` test enabled by `-DEH_TPMS_LVGL=ON` covers four-wheel ID saving, exact ID-only row text, preservation on cancellation/failure, legacy re-pairing, deletion, rescan and cleanup; `TPMS_UI_CAPTURE_DIR` outputs page PPM files. These tests do not validate physical sensor compatibility.
+
+`lvgl_runtime.c` calls `tpms_ble_service_step()` every 250 ms in the LVGL control context; slaves, devices without an ELM binding, or an established ELM connection allow unlimited background scanning. Manual pairing pauses background scans and restores them on exit; ELM reconnection has priority, with a 500 ms cooldown after stopping and 2-second retries after start failure. Advertisement callbacks update bound IDs even when all 20 candidate slots are full; only CRC-valid samples refresh age, and measurements expire after 120 seconds while diagnostic history remains. Successful rebinding clears that wheel's cache; save failure preserves it. Live values are neither written to NVS nor synchronized through ESP-NOW.
+
+`ui_tpms.c` implements a minimal default overview (two-decimal bar / C / estimated battery, no IDs) and tap-through details. `tpms_theme_source.c` supplies 16 firmware-local sources per wheel: `tpms.fl.*` / `tpms.fr.*` / `tpms.rl.*` / `tpms.rr.*`, without appending to `contracts/signals.json`, OBD PIDs, NVS slots or wire protocols. Themes take one snapshot per frame, using separate extended arrays and paired 64-bit used/change masks (at most 128 sources), supporting conditions and change rules. Legacy `tr_inputs_t` / `tr_eval()` are unchanged; high change bits use `tr_eval_extended()`. TPMS does not follow OBD sweep animation or become invalid merely because the OBD link is absent. The battery helper reproduces TireKing float32 voltage bins as a display estimate only; see [THEMES.en.md](THEMES.en.md) for fields, units and NaN semantics. The frontend is unchanged.
+
+Additional host coverage exercises background priority/cache expiry/full candidate lists/rebind rollback, two-decimal minimal cards and details, every four-wheel theme field, all 256 voltage bytes and boundaries, high-bit change triggers and sweep isolation. Captures use synthetic data, not vehicle validation.
 
 ### Boot order (`main/app_main.c`)
 
@@ -136,6 +157,23 @@ requests when touching it — one adapter serves one request stream at a time
 (an AGENTS.md hard rule).
 BLE callbacks wake the polling task with a persistent static semaphore. The BLE shutdown callback also wakes the task to exit; the semaphore survives task deletion so late callbacks do not access a freed task handle.
 BLE connection and scan timestamps use a critical section to prevent torn 64-bit reads across tasks on the 32-bit target.
+
+The boot-lifetime LVGL task is pinned to core 1, while the ELM327 BLE polling
+state machine is pinned to core 0; task parameters are centralized in the
+policy table in `app_main.c` and created through `app_tasks.h`. This keeps gauge/LVGL rendering and OBD polling from preempting
+one another on the same core, while the BLE stack continues to follow ESP-IDF
+configuration. Do not split or parallelize ELM requests as a consequence.
+
+The LCD LVGL `wait_cb` waits for DMA completion through a boot-lifetime static
+binary semaphore instead of spinning on `draw_buf->flushing` during double-buffered
+refresh. The completion ISR first releases the buffer with `lv_disp_flush_ready()`,
+then signals the waiter. The task must recheck `flushing`: a stale token from an
+earlier transfer or fullscreen video is not completion of the current transfer.
+Initialize the semaphore before registering the LCD callback; never delete it on
+page/video transitions, and do not use LVGL notification slot 0. The ESP-IDF 5.5.3
+SPI LCD backend ignores completion callback return values, so the bridge explicitly
+requests an ISR yield when waking a higher-priority task. See
+`app_obd_dsp/lvgl_flush_sync.c`.
 
 The `bootmedia_usb` receiver runs at priority 3, below OBD polling and LVGL at 4, so busy USB communication does not preempt real-time data and display tasks at a higher priority. USB remains available after normal boot and blocks waiting for input when idle; web flashing, resource upload and management RPC flows remain unchanged.
 
@@ -423,6 +461,8 @@ cmake -S test/host/theme -B /tmp/obd-theme-page-tests -G Ninja -DTE_PAGE_LVGL=ON
 cmake --build /tmp/obd-theme-page-tests
 ctest --test-dir /tmp/obd-theme-page-tests --output-on-failure
 ```
+
+`theme_navigation` compiles the production navigation state machine with real LVGL timers/screens and controlled worker scheduling. It checks old-page timer progress while pending, LVGL-only publication, repeated requests, start/publication failures, and cancellation when leaving/deleting the origin or leaving and returning. `theme_page` additionally checks real staged-job disposal before and after running; host tests exclude actual FreeRTOS scheduling, SD throughput, DMA and video resource contention.
 
 `theme_acquire` also compiles real acquisition/cache against the frozen old acquisition, checking
 1,006 pixel/geometry cases, every RGB565 code, RAM pixel lifetime, budgets, tint, SD read and allocation

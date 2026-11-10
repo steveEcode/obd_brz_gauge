@@ -118,6 +118,8 @@ find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
     add_test(NAME signal_lookup_generator COMMAND Python3::Interpreter
         "${CMAKE_CURRENT_SOURCE_DIR}/test_lookup_generator.py" "${CMAKE_C_COMPILER}")
+    add_test(NAME boot_page COMMAND Python3::Interpreter
+        "${CMAKE_CURRENT_SOURCE_DIR}/test_boot_page.py" "${CMAKE_C_COMPILER}")
 endif()
 
 # Check actual label-update behavior, including signed pressure and placeholders.
@@ -132,4 +134,29 @@ if(Python3_Interpreter_FOUND)
     target_include_directories(test_display_response PRIVATE "${CMAKE_CURRENT_BINARY_DIR}" stubs "${REPO_ROOT}/main")
     target_compile_options(test_display_response PRIVATE -Wall -Wextra -Werror -UNDEBUG)
     add_test(NAME display_response COMMAND test_display_response)
+endif()
+
+# Sweep is elapsed-time presentation, independent of timer callback frequency.
+add_executable(test_sweep_clock test_sweep_clock.c
+    "${REPO_ROOT}/main/export_path/ui_sweep.c")
+target_include_directories(test_sweep_clock PRIVATE "${REPO_ROOT}/main")
+target_compile_options(test_sweep_clock PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+add_test(NAME sweep_clock COMMAND test_sweep_clock)
+
+if(Python3_Interpreter_FOUND)
+    set(SWEEP_RUNTIME_EXCERPT "${CMAKE_CURRENT_BINARY_DIR}/sweep_runtime.inc")
+    add_custom_command(OUTPUT "${SWEEP_RUNTIME_EXCERPT}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/extract_sweep_runtime.py"
+                "${REPO_ROOT}/main/export_path/ui_ext.c" "${SWEEP_RUNTIME_EXCERPT}"
+        DEPENDS "${REPO_ROOT}/main/export_path/ui_ext.c"
+                "${REPO_ROOT}/main/export_path/ui.c"
+                "${REPO_ROOT}/main/export_path/ui_ext.h" extract_sweep_runtime.py
+        VERBATIM)
+    add_executable(test_sweep_runtime test_sweep_runtime.c "${SWEEP_RUNTIME_EXCERPT}"
+        "${REPO_ROOT}/main/export_path/ui_sweep.c")
+    set_property(TARGET test_sweep_runtime PROPERTY C_STANDARD 11)
+    target_include_directories(test_sweep_runtime PRIVATE
+        "${CMAKE_CURRENT_BINARY_DIR}" "${REPO_ROOT}/main")
+    target_compile_options(test_sweep_runtime PRIVATE -Wall -Wextra -Werror -UNDEBUG)
+    add_test(NAME sweep_runtime COMMAND test_sweep_runtime)
 endif()

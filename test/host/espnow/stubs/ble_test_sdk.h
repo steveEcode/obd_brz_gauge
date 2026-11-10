@@ -38,9 +38,20 @@ typedef enum {
     ESP_GAP_BLE_ADV_START_COMPLETE_EVT
 } esp_gap_ble_cb_event_t;
 #define ESP_GAP_SEARCH_INQ_CMPL_EVT 1
+#define ESP_GAP_SEARCH_INQ_RES_EVT 2
+#define BLE_SCAN_TYPE_ACTIVE 1
+#define BLE_SCAN_FILTER_ALLOW_ALL 0
+#define BLE_SCAN_DUPLICATE_DISABLE 0
+#define ESP_BLE_AD_TYPE_NAME_CMPL 9
+#define ESP_BLE_AD_TYPE_NAME_SHORT 8
 typedef union {
     struct { int status; } scan_param_cmpl, scan_start_cmpl, adv_start_cmpl;
-    struct { int search_evt; } scan_rst;
+    struct {
+        int search_evt;
+        esp_bd_addr_t bda;
+        uint8_t ble_addr_type, ble_adv[62], adv_data_len, scan_rsp_len;
+        int rssi;
+    } scan_rst;
 } esp_ble_gap_cb_param_t;
 typedef enum { ESP_GATTC_REG_EVT } esp_gattc_cb_event_t;
 typedef union { struct { int status; uint16_t app_id; } reg; } esp_ble_gattc_cb_param_t;
@@ -61,7 +72,11 @@ typedef union {
 typedef void (*esp_gap_ble_cb_t)(esp_gap_ble_cb_event_t, esp_ble_gap_cb_param_t *);
 typedef void (*esp_gattc_cb_t)(esp_gattc_cb_event_t, esp_gatt_if_t, esp_ble_gattc_cb_param_t *);
 typedef void (*esp_gatts_cb_t)(esp_gatts_cb_event_t, esp_gatt_if_t, esp_ble_gatts_cb_param_t *);
-typedef struct { int unused; } esp_ble_scan_params_t;
+typedef struct {
+    int scan_type, own_addr_type, scan_filter_policy;
+    uint16_t scan_interval, scan_window;
+    int scan_duplicate;
+} esp_ble_scan_params_t;
 typedef struct {
     uint16_t adv_int_min, adv_int_max;
     int adv_type, own_addr_type, channel_map, adv_filter_policy;

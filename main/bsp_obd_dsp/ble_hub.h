@@ -30,7 +30,7 @@ typedef enum {
     BLE_HUB_APP_ELM327     = 0x00,  /* GATTC: ELM327 adapter */
     BLE_HUB_APP_RACECHRONO = 0x52,  /* GATTS: RaceChrono DIY */
     BLE_HUB_APP_GAUGE_PAIR = 0x53,  /* GATTC: multi-gauge pairing */
-    BLE_HUB_APP_TPMS       = 0x54,  /* reserved: TPMS sensors (stash wip/tpms-stash) */
+    BLE_HUB_APP_TPMS       = 0x54,  /* GAP: TPMS sensor pairing */
 } ble_hub_app_t;
 
 typedef struct {

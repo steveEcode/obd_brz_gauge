@@ -7,8 +7,11 @@
 #include "ui.h"
 #include "ui_helpers.h"
 #include "ui_ext.h"
+#include "ui_bluetooth.h"
+#include "ui_tpms.h"
 #include "ui_disp_item.h"
 #include "ui_theme.h"
+#include "ui_theme_navigation.h"
 #include "theme_engine/theme_interface.h"
 #include "app_obd_dsp/app_event.h"
 #include "app_obd_dsp/obd_data_cache.h"
@@ -181,7 +184,7 @@ static uint16_t usSaveProtTimeCnt = 0; //OBD protocol save timer
  
 ///////////////////// TEST LVGL SETTINGS ////////////////////
 /* ---- Gauge sweep animation ----
-   Moved to ui_ext.c; the SWEEP_* constants live in ui_ext.h and the sweep state
+   Moved to ui_ext.c; the SWEEP_* constants live in ui_sweep.h and the sweep state
    machine is driven via ui_ext_sweep_active()/ui_ext_sweep_get_step()/ui_ext_sweep_tick(). */
 #define OIL_PRESS_TREND_POINTS 30
 #define OIL_PRESS_TREND_SAMPLE_MS 1000
@@ -381,7 +384,7 @@ static uint32_t ui_refresh_period_ms_for_screen(lv_obj_t *scr,
                                                 bool rpm_link_ramp)
 {
     if (in_sweep) {
-        return SWEEP_TICK_MS;
+        return SWEEP_RENDER_MS;
     }
     if (rpm_flashing) {
         return RPM_FLASH_PERIOD_MS;
@@ -402,6 +405,7 @@ static uint32_t ui_refresh_period_ms_for_screen(lv_obj_t *scr,
     }
     if (scr == ui_ScreenPageSettings || scr == ui_ScreenPageMultiGauge ||
         scr == ui_ScreenPageVehicle ||
+        scr == ui_ScreenPageBluetooth || scr == ui_ScreenPageTPMSPairing ||
         scr == ui_ScreenPageBLEScan || scr == ui_ScreenPageOTAMode || scr == ui_ScreenPageODBProtocal ||
         scr == ui_ScreenPageTempCustom || scr == ui_ScreenPageInfoCustom ||
         scr == ui_ScreenPageNeedleConfig || scr == ui_ScreenPageChartConfig ||
@@ -518,6 +522,7 @@ void my_timerMain(lv_timer_t * timer)
     ui_ext_sweep_trigger(ble_now, is_slave);
     /* ---- Showroom mode: master drives slots, slaves follow (moved to ui_ext.c) ---- */
     ui_ext_showroom_tick(is_slave);
+    const float sweep_ratio = ui_ext_sweep_tick(is_slave, user_cfg.brightness_day);
 
     lv_obj_t *scr = lv_scr_act();
     bool live_data_screen = ui_screen_updates_live_data(scr);
@@ -595,7 +600,6 @@ void my_timerMain(lv_timer_t * timer)
     }
 
     /* ---- Data source: sweep or real OBD (sweep state machine moved to ui_ext.c) ---- */
-    float sweep_ratio = ui_ext_sweep_tick(is_slave, user_cfg.brightness_day);
     if (sweep_ratio >= 0.0f) {
         usRpm   = (uint16_t)(SWEEP_RPM_PEAK * sweep_ratio);
         ucSpeed = (uint16_t)(SWEEP_SPEED_PEAK * sweep_ratio); // uint16_t so it can hold 999
@@ -671,10 +675,7 @@ void my_timerMain(lv_timer_t * timer)
         static uint8_t s_last_temp_map[3] = {0xFF, 0xFF, 0xFF};
 
         if(IN_SWEEP) {
-            int step = ui_ext_sweep_get_step() - 1; // already incremented
-            float r;
-            if(step <= SWEEP_STEPS_UP) r = (float)step / (float)SWEEP_STEPS_UP;
-            else r = 1.0f;   // hold at max (hold phase)
+            const float r = sweep_ratio;
 
             for (int i = 0; i < 3; ++i) {
                 uint8_t map_idx = user_cfg.temp_display_map[i];
@@ -720,10 +721,7 @@ void my_timerMain(lv_timer_t * timer)
         int32_t cval = 0;
         bool cvalid;
         if (IN_SWEEP) {
-            int step = ui_ext_sweep_get_step() - 1;
-            float r;
-            if (step <= SWEEP_STEPS_UP) r = (float)step / (float)SWEEP_STEPS_UP;
-            else r = 1.0f;   // hold at max (hold phase)
+            const float r = sweep_ratio;
             cval = disp_item_sweep_value(citem, r);
             cvalid = true;
             s_disp_chart = cval;
@@ -759,10 +757,7 @@ void my_timerMain(lv_timer_t * timer)
         static uint8_t s_last_info_map[5] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
         if (IN_SWEEP) {
-            int step = ui_ext_sweep_get_step() - 1; // already incremented above
-            float r;
-            if (step <= SWEEP_STEPS_UP) r = (float)step / (float)SWEEP_STEPS_UP;
-            else r = 1.0f;   // hold at max (hold phase)
+            const float r = sweep_ratio;
 
             for (int i = 0; i < 5; ++i) {
                 uint8_t map_idx = user_cfg.info_display_map[i];
@@ -915,21 +910,11 @@ void ui_event_gear_background(lv_event_t * e)
 // declared by the active theme. Swiping left past the last theme page goes
 // to the Info page (version/settings). Swiping right from the first theme
 // page also goes to Info page (creating a loop: theme pages ↔ Info).
-// Theme page → theme page. The old screen is the active one, so it is loaded
-// with auto_del and LVGL frees it after the fade (it used to leak on every swipe).
+// Theme page → theme page. Keep rendering the old page while preparing images;
+// the LVGL completion callback publishes the new screen and owns auto-delete.
 static void theme_gauge_switch(uint8_t index)
 {
-    lv_obj_t *old = ui_ScreenPageThemeGauge;
-    uint8_t old_index = ui_theme_gauge_page_index;
-    ui_theme_gauge_page_index = index;
-    ui_ScreenPageThemeGauge = NULL;
-    ui_ScreenPageThemeGauge_screen_init();
-    if (ui_ScreenPageThemeGauge == NULL) {          // page failed to build: stay put
-        ui_ScreenPageThemeGauge = old;
-        ui_theme_gauge_page_index = old_index;
-        return;
-    }
-    lv_scr_load_anim(ui_ScreenPageThemeGauge, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, old == lv_scr_act());
+    (void)ui_theme_navigation_request(index);
 }
 
 void ui_event_theme_gauge_background(lv_event_t * e)
@@ -945,6 +930,7 @@ void ui_event_theme_gauge_background(lv_event_t * e)
                 theme_gauge_switch(ui_theme_gauge_page_index + 1);
             } else {
                 // Past the last theme page → go to Info page (version/settings)
+                ui_theme_navigation_cancel();
                 _ui_screen_change(&ui_ScreenPageEasterEgg, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageEasterEgg_screen_init);
             }
         }
@@ -954,6 +940,7 @@ void ui_event_theme_gauge_background(lv_event_t * e)
                 theme_gauge_switch(ui_theme_gauge_page_index - 1);
             } else {
                 // Before the first theme page → go to Info page (creating a loop)
+                ui_theme_navigation_cancel();
                 _ui_screen_change(&ui_ScreenPageEasterEgg, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageEasterEgg_screen_init);
             }
         }
@@ -993,7 +980,7 @@ void ui_event_speed_background(lv_event_t * e)
         }
     }
 }
-// Carousel order: Gear → RPM → Speed → Temp → Info → Needle → OilPressure (CHART) → version page → back to Gear
+// Carousel order: Gear → RPM → Speed → Temp → Info → Needle → OilPressure (CHART) → TPMS → version page → back to Gear
 // Swipe left = next page, swipe right = previous page
 void ui_event_temp_background(lv_event_t * e)
 {
@@ -1037,9 +1024,9 @@ void ui_event_oil_pressure_background(lv_event_t * e)
             _ui_screen_change(&ui_ScreenPageNeedle, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageNeedle_screen_init);
         }
         else if(dir == LV_DIR_LEFT) {
-            // swipe left goes to the next visible page in the ring (version page)
+            // Default-theme TPMS page follows the chart.
             lv_indev_wait_release(lv_indev_get_act());
-            _ui_screen_change(&ui_ScreenPageEasterEgg, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageEasterEgg_screen_init);
+            _ui_screen_change(&ui_ScreenPageTPMS, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageTPMS_screen_init);
         }
         else if(dir == LV_DIR_BOTTOM) {
             // swipe down → chart data-source selection page (delete the old instance to force a rebuild, reflecting the current data item/selection)
@@ -1172,14 +1159,17 @@ void ui_event_easter_egg_background(lv_event_t * e)
                 }
                 _ui_screen_change(&ui_ScreenPageThemeGauge, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageThemeGauge_screen_init);
             } else {
-                // No theme loaded, return to Gear page
-                _ui_screen_change(&ui_ScreenPageGear, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageGear_screen_init);
+                // Default carousel: TPMS < version > Gear.
+                if (dir == LV_DIR_RIGHT)
+                    _ui_screen_change(&ui_ScreenPageTPMS, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageTPMS_screen_init);
+                else
+                    _ui_screen_change(&ui_ScreenPageGear, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageGear_screen_init);
             }
         }
         else if(dir == LV_DIR_TOP) {
-            // swipe up → BLE scan page
+            // swipe up → Bluetooth pairing options
             lv_indev_wait_release(lv_indev_get_act());
-            _ui_screen_change(&ui_ScreenPageBLEScan, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageBLEScan_screen_init);
+            _ui_screen_change(&ui_ScreenPageBluetooth, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageBluetooth_screen_init);
         }
         else if(dir == LV_DIR_BOTTOM) {
             // swipe down → settings page
@@ -1324,7 +1314,7 @@ void ui_event_ble_scan_background(lv_event_t * e)
                 elm327_ble_scan_only_stop();
             }
             lv_indev_wait_release(lv_indev_get_act());
-            _ui_screen_change(&ui_ScreenPageEasterEgg, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageEasterEgg_screen_init);
+            _ui_screen_change(&ui_ScreenPageBluetooth, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0, &ui_ScreenPageBluetooth_screen_init);
         }
     }
 }

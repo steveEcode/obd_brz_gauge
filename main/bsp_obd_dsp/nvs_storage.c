@@ -1,4 +1,5 @@
 #include "nvs_storage.h"
+#include <stddef.h>
 #include "nvs_flash.h"
 #include "nvs.h"
 #include "esp_log.h"
@@ -46,6 +47,10 @@ static int16_t s_chart_alarm[CHART_ALARM_N] = {
     80, CHART_ALARM_OFF, CHART_ALARM_OFF, CHART_ALARM_OFF
 };
 _Static_assert(CHART_ALARM_N == DISP_ITEM_COUNT, "chartalarm blob is indexed by disp_item_t");
+_Static_assert(offsetof(nvs_user_cfg_t, tpms) == 96, "TPMS bindings must start after the entire legacy cfg blob");
+
+_Static_assert(sizeof(nvs_tpms_binding_t) == 39, "Legacy TPMS record layout is persistent");
+_Static_assert(offsetof(nvs_user_cfg_t, tpms_sensor_id) == 252, "IDs must follow the complete MAC-only cfg blob");
 
 // Multi-gauge boot animation settings (separate blob):
 // intro_enable 0=OFF 1=RACE 2=VIDEO (SD OBV1, with legacy bootmedia fallback; default)
@@ -169,7 +174,7 @@ esp_err_t nvs_storage_init(void)
 
     /* Default-value repair for new fields (old NVS data has rsv[x] all zero) */
     if(s_cfg.brightness_day < 10) s_cfg.brightness_day = 100; // valid range 10-100; 0/unset/out-of-range all become 100
-    if(s_cfg.default_page > 6) s_cfg.default_page = 0; // 0=Temp,1=Info,2=Chart,3=Needle,4=Gear,5=Rpm,6=Speed
+    if(s_cfg.default_page > 7) s_cfg.default_page = 0; // 0=Temp,1=Info,2=Chart,3=Needle,4=Gear,5=Rpm,6=Speed,7=TPMS
     if(s_cfg.device_role > 2) s_cfg.device_role = ESPNOW_ROLE_STANDALONE; // role: 0=master 1=slave 2=standalone; out-of-range -> standalone
     // Legacy vehicle index is only a stored byte now (downgrade mirror); clamp to the old table range.
     if(s_cfg.vehicle_profile_idx > LEGACY_VEHICLE_IDX_MAX) s_cfg.vehicle_profile_idx = 0;
@@ -264,6 +269,10 @@ esp_err_t nvs_cfg_update(const nvs_user_cfg_t *base, const nvs_user_cfg_t *updat
     MERGE_CFG_FIELD(ble_obd_mac);
     MERGE_CFG_FIELD(rpm_warn_linked_en);
     MERGE_CFG_FIELD(rc_enabled);
+    for (unsigned i = 0; i < NVS_TPMS_WHEELS; ++i) {
+        MERGE_CFG_FIELD(tpms[i]);
+        MERGE_CFG_FIELD(tpms_sensor_id[i]);
+    }
 #undef MERGE_CFG_FIELD
     if (changed) {
         s_cfg = next;

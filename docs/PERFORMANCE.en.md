@@ -1530,8 +1530,12 @@ disabling diagnostics.
 | `lvgl_wait` | LVGL mutex wait | calls |
 | `lvgl_handler` | UI handoff step + `lv_timer_handler()` | calls |
 | `lcd_submit` | LVGL `esp_lcd_panel_draw_bitmap()` submission | pixels |
+| `lcd_wait` | LVGL wait_cb wall time waiting for LCD DMA completion | calls |
 | `ui_tick` | whole `my_timerMain()` call | calls |
 | `theme_tick` | whole `theme_tick()` call | calls |
+| `theme_nav_begin` | navigation layout/rules snapshot on LVGL thread | calls |
+| `theme_nav_images` | worker image reads/conversion/cache planning | calls |
+| `theme_nav_publish` | LVGL finish, cache adoption and widget creation | calls |
 | `elm_run` | RX drain + `vp_engine_run()` | calls |
 | `sd_read` | `sd_card_read()`, including bounce-buffer wait/copy | bytes |
 | `sd_write` | `sd_card_write()`, including bounce-buffer wait/copy | bytes |
@@ -2142,3 +2146,166 @@ Boost no longer waits for the entire background round on mixed pages; a three-in
 `test/host/signal_store/test_display_response.c` extracts the production display update function and checks first-refresh latest-sample output for RPM, speed, boost (including negative values), throttle and load; unchanged samples avoid rewriting labels, and invalid/recovery behavior remains correct. Temperature retains its ramp. The same-frame case in `test/host/media/test_video_player_wait.c` verifies that 1000 sub-frame updates do not wake the SD reader or decoder, while frame changes and rapid round trips still wake them. The player already deduplicated target frames; this change removes unnecessary worker wakeups and does not demonstrate fewer nonexistent duplicate decodes or higher video frame rate.
 
 All 24 host tests across engine, signal_store and media pass for this round. The four changed production C files pass the ESP32-S3 compiler's `-fsyntax-only` check. No full firmware build or vehicle-latency measurement was performed.
+
+## Event-driven LCD DMA wait validation
+
+2026-11-02: The LCD driver previously did not install an LVGL `wait_cb`; real
+LVGL 8 `draw_buf_flush()` repeatedly checked `flushing` while a partial
+double-buffered transfer was pending. `main/app_obd_dsp/lvgl_flush_sync.c`
+now blocks on a boot-lifetime static binary semaphore. The completion ISR
+releases the buffer before signaling; every signal only prompts a state recheck,
+not permission to reuse a buffer in the current DMA transfer. It does not use
+LVGL notification slot 0 or change fullscreen refresh guards, buffer ownership,
+or the single-threaded ELM request stream. The ESP-IDF 5.5.3 SPI LCD completion
+backend ignores callback return values, so the bridge explicitly requests an
+ISR yield when necessary.
+
+`test/host/media/test_lvgl_flush_sync.c` runs the real bridge source with a
+pthread-condition-variable binary semaphore. It deterministically waits for
+the task to block before completing DMA, rather than inferring correctness from
+sleep duration. Both normal/statistics variants check 391 completions and 259
+blocking wakeups, covering already idle, completion before wait, stale signals,
+coalesced consecutive video completions, an interrupt between the flag check and
+take, and 256 repeated transfers. Three temporary negative controls remove the
+state recheck, reverse release/signal order, or remove the ISR yield; assertions
+reject all three. Existing real-player lifecycle tests also pass in both
+normal/statistics variants; this is not a real LCD/RTOS test.
+
+At the DMA-wait stage (before the sweep-clock changes below), the four Release + ASan/UBSan suites `theme` (including real LVGL pages), `media`,
+`signal_store`, and `rules` pass all 38 tests; theme generation checks pass.
+Complete ESP-IDF 5.5.3 ESP32-S3 V1 dual-core normal/statistics firmware builds pass,
+with image sizes `0x28e520` / `0x28ee30`, both retaining 15% application-partition
+headroom. In the normal ELF the wait function calls `xQueueSemaphoreTake` and
+rechecks state; the static semaphore plus its handle occupy 88 bytes BSS. The
+normal ELF contains neither `perf_stats_record` nor `perf_stats_start`.
+Builds/configurations are isolated in `/tmp/obd-smooth-20261102/`; statistics
+remain disabled in the local normal `sdkconfig`.
+
+```sh
+cmake -S test/host/media -B /tmp/obd-flush-host -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build /tmp/obd-flush-host
+ctest --test-dir /tmp/obd-flush-host --output-on-failure
+cmake -S test/host/theme -B /tmp/obd-flush-theme -G Ninja -DCMAKE_BUILD_TYPE=Release -DTE_PAGE_LVGL=ON
+cmake --build /tmp/obd-flush-theme
+ctest --test-dir /tmp/obd-flush-theme --output-on-failure
+```
+
+The statistics metric `lcd_wait` measures wall time waiting for DMA in LVGL,
+including wakeup/scheduling time; already-idle calls produce no sample. It is
+nested within `lvgl_handler`, is not CPU usage or complete panel FPS, and does
+not cover fullscreen video's own wait path. LVGL / OBD tasks are also assigned
+to Core 1 / Core 0: this is an unverified scheduling policy, not evidence of a
+frame-rate gain. No gauge serial port has been identified and nothing has been
+flashed. Live data,
+swipes, sweep animations, video, and long-run stability still require device A/B
+tests with the same theme, SD card, and adapter. Normal firmware also requires
+external observation to exclude statistics-logging overhead.
+
+
+## Sweep clock and presentation cadence validation
+
+2026-11-02: The old self-test sweep reduced the main UI timer to 40 ms and
+advanced one step per callback, so rendering or scheduling delays stretched the
+animation. `main/export_path/ui_sweep.c` now derives progress from milliseconds
+of `esp_timer_get_time()`, targeting a 16 ms sweep refresh interval. The master
+retains 48 coarse 40 ms sync slots, a nominal 1920 ms duration, and delayed
+callbacks sample the current position. A 16 ms time grid produces 61 distinct
+ramp ratios versus 25 on the old 40 ms grid. These are deterministic algorithm
+outputs, not measured panel FPS. TEMP / CHART / INFO no longer reconstruct a
+ratio from the already-incremented slot; they share the same sampled ratio as
+the theme, RPM, and needle.
+
+Slaves fill the ratio over time between received slots, but flash and termination
+still follow received master state only. Packet loss cannot locally advance a
+flash or end the sweep. An accepted lower slot is treated as a new sweep, matching
+the existing snapshot contract; a slot alone cannot distinguish restart from
+reordering, and this adds no network ordering guarantee. The master publishes
+the actual current slot, not the old post-draw incremented slot, so mixed firmware
+may differ by one 40 ms slot. Protocol fields and showroom 200+ encoding remain
+unchanged; use the same firmware version on master and slaves. Live vehicle
+values are not interpolated this way and simulated values never enter the store.
+
+`test_sweep_clock.c` compiles the production clock and checks every old 40 ms
+ratio/brightness sample, 16 ms sampling, repeated same-time callbacks, skipping
+and expiry after long stalls, late join/duplicate/jumping/lower slave slots,
+master-authoritative flash/end, invalid values, and uptime beyond 32-bit
+milliseconds. `test_sweep_runtime.c` extracts the real `ui_ext.c` state/wrappers
+and `ui.c` refresh policy to check connection triggering/boot deferral, atomic
+slot publication, target intervals, clearing active and restoring brightness
+in the ending callback, writing brightness only when changed, and showroom
+interruption. Final boot-page loading and actual UI snapshot switching still
+need device integration validation; these tests do not run the complete LVGL
+timer, FreeRTOS, or ESP-NOW link.
+
+With the two additions, all 40 Release + ASan/UBSan tests in `theme` / `media` /
+`signal_store` / `rules` pass, as do theme generation checks. After adding the C
+file, `idf.py reconfigure build` passes for complete ESP-IDF 5.5.3 ESP32-S3 V1
+dual-core normal/statistics firmware. Images at that stage are `0x28e630` / `0x28ef40`,
+both retaining 15% application-partition headroom. Builds remain isolated in
+`/tmp/obd-smooth-20261102/{normal,stats}`, without modifying repository `build/`
+or the local `sdkconfig`. No gauge has been identified in the current port list;
+nothing has been flashed, committed, or pushed. This does not establish overall
+smoothness completion: live data, swipes, sweeps, video, and long-run stability
+still require device A/B under matching conditions.
+
+
+## Background image preparation for theme navigation validation
+
+2026-11-02: Navigation inside a theme previously called `theme_create_page()`
+synchronously in the gesture callback, blocking LVGL during SD image reads and
+conversion. `ui_theme_navigation.c` now reuses staged creation: LVGL captures a
+layout/rules snapshot, `APP_TASK_THEME_PAGE_PREP` (6144-byte stack, priority 3,
+unpinned) prepares an isolated image cache, then wakes LVGL for a 16 ms polling
+timer to publish widgets and switch. Preparation neither holds the theme lock
+nor calls LVGL, allowing the old page to refresh. This is not a device measurement
+of total page-creation time or FPS.
+
+Only one request is in flight; requests are not queued and tasks are not killed.
+Explicit cancellation, origin unload-start/deletion, or a changed active page or
+index prevents publication. Leaving and returning cannot revive a cancelled
+transition. After the worker completes, `theme_page_prepare_discard()` frees the
+result without creating stale widgets or taking a video session. Start or
+publication failure keeps the old page; installation/library reload wait for
+preparation resources. Layout snapshots, fonts and widget creation remain on the
+LVGL path. The isolated cache can duplicate origin images, increasing transient
+PSRAM pressure under existing image budgets/degradation. Slow-card/video I/O
+contention and large-theme memory peaks need device validation; this does not
+establish that all navigation stalls are gone.
+
+Statistics builds add `theme_nav_begin`, `theme_nav_images` and
+`theme_nav_publish`, measuring wall time for request-side layout/rules capture,
+worker image planning/reads/conversion, and LVGL finish/cache adoption/widget
+creation. They exclude complete request-to-visible latency and do not measure
+FPS. The first/last are within the LVGL handler, and worker time can include SD
+metrics, so these must not be summed as CPU utilization. Normal builds omit the
+timing code.
+
+`theme_navigation` uses real LVGL timers/screens and the production navigation
+state machine with controlled worker/engine shims. It checks old-page timer
+progress while pending, no worker publication, duplicate/invalid requests,
+begin/task/publication failures, explicit cancellation, leaving/deleting the
+origin, changed index and leaving/returning, without early disposal or stale
+delete callbacks. `theme_page` additionally exercises real-engine resource
+cleanup when discarding before/after running. Release + ASan/UBSan passes:
+`theme` 15/15, `media` 10/10, `signal_store` 10/10 and `rules` 6/6, totaling 41/41;
+theme generation and whitespace checks excluding existing `build/` artifacts
+also pass. Tests do not simulate actual FreeRTOS scheduling, SD timing, DMA or
+video-session contention.
+
+After adding the C source, isolated `idf.py reconfigure build` passes for
+ESP-IDF 5.5.3 / ESP32-S3 V1 dual-core normal/statistics firmware. Images are
+`0x28e8b0` / `0x28f250`, both with 15% application-partition headroom. Logs are
+`/tmp/obd-smooth-20261102/{normal,stats}-navigation.log`; the only warning is the
+existing touch API deprecation. Binary SHA256:
+
+```text
+normal 23a1c3f5987d8833215f3876b5b2ba34060c3b12b8a37db1c02b0672a0161f1f
+stats  29c738a84cc500408ced8bf906bdc837088a294372355f377c150393439b0c34
+```
+
+Repository `build/`, local `sdkconfig` and generated theme sources were not
+modified. Ports remain Bluetooth, debug-console and wlan-debug only, with no
+gauge identified; nothing has been flashed, committed or pushed. Next is device
+A/B of normal/statistics builds using the same SD, theme and data source,
+covering live refresh, repeated navigation, sweeps, video and memory stability.
+Host tests and builds do not establish completion of overall smoothness.

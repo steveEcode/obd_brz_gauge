@@ -22,6 +22,10 @@ void tr_reset(tr_program_t *prog);
 // returns the override table (owned by prog, valid until the next call).
 // Rules/actions stay immutable between resets; callers must not edit results.
 const tr_result_t *tr_eval(tr_program_t *prog, const tr_inputs_t *in);
+/* Firmware extension: change triggers for sources 64..127. High sources use
+ * NAN for invalidity; legacy tr_inputs_t / tr_eval semantics stay unchanged. */
+const tr_result_t *tr_eval_extended(tr_program_t *prog, const tr_inputs_t *in,
+                                     uint64_t changed_high);
 
 // isRuleActive() for one rule: trigger/conditions only. Updates that rule's
 // latches, never its debounce state.

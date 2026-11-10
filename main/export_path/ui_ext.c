@@ -14,6 +14,8 @@
 // ================================================================
 
 #include "ui_ext.h"
+#include "ui_theme_navigation.h"
+#include "ui_tpms.h"
 #include "ui.h"
 #include "bsp_obd_dsp/nvs_storage.h"
 #include "bsp_obd_dsp/espnow_link.h"
@@ -43,10 +45,23 @@ static const char *TAG = "ui_ext";
  *  Values: 0=off, 1~SWEEP_TOTAL=sweep animation running (slaves mirror it as-is),
  *  200~209=current showroom-mode slot (showroom reuses this variable to encode the broadcast value).
  * ================================================================ */
-static volatile int  s_sweep_step = 0;
+static _Atomic int s_sweep_step = 0;
+static ui_sweep_clock_t s_sweep_clock;
 static int  s_sweep_bl_last = -1;       // backlight (%) already applied during sweep, -1=not sweeping; write LEDC only on change, restore configured brightness at the end
 static bool s_sweep_pending = false;    // BLE connected while the Logo was showing; trigger after the Logo goes away
 static bool s_prev_ble_connected = false;
+
+static void sweep_start(void)
+{
+    ui_sweep_clock_start(&s_sweep_clock, esp_timer_get_time() / 1000);
+    s_sweep_step = 1;
+}
+
+static void sweep_stop(void)
+{
+    ui_sweep_clock_sync(&s_sweep_clock, 0, 0);
+    s_sweep_step = 0;
+}
 
 /* ================================================================
  *  Showroom mode state
@@ -367,7 +382,7 @@ static void boot_enter_default_page(void)
             ESP_LOGI(TAG, "Boot entered theme page");
             ui_ScreenPageLogo = NULL;
             s_boot_done = true;
-            if(s_sweep_pending) { s_sweep_pending = false; s_sweep_step = 1; }
+            if(s_sweep_pending) { s_sweep_pending = false; sweep_start(); }
             return;
         }
     }
@@ -379,7 +394,7 @@ static void boot_enter_default_page(void)
 
     lv_obj_t **target_scr = NULL;
     void (*target_init)(void) = NULL;
-    // Default page: 0=Temp,1=Info,2=Chart,3=Needle,4=Gear,5=Rpm,6=Speed
+    // Default page (NVS indices, append only): 0=Temp,1=Info,2=Chart,3=Needle,4=Gear,5=Rpm,6=Speed,7=TPMS
     switch(pg_cfg.default_page) {
         case 0: target_scr = &ui_ScreenPageTemp;  target_init = ui_ScreenPageTemp_screen_init;  break;
         case 1: target_scr = &ui_ScreenPageInfo;  target_init = ui_ScreenPageInfo_screen_init;  break;
@@ -388,13 +403,14 @@ static void boot_enter_default_page(void)
         case 4: target_scr = &ui_ScreenPageGear;  target_init = ui_ScreenPageGear_screen_init;  break;
         case 5: target_scr = &ui_ScreenPageRpm;   target_init = ui_ScreenPageRpm_screen_init;   break;
         case 6: target_scr = &ui_ScreenPageSpeed; target_init = ui_ScreenPageSpeed_screen_init; break;
+        case 7: target_scr = &ui_ScreenPageTPMS; target_init = ui_ScreenPageTPMS_screen_init; break;
         default: target_scr = &ui_ScreenPageTemp; target_init = ui_ScreenPageTemp_screen_init;  break;
     }
     if(*target_scr == NULL) target_init();
     boot_load_destination(*target_scr);
     ui_ScreenPageLogo = NULL;
     s_boot_done = true;
-    if(s_sweep_pending) { s_sweep_pending = false; s_sweep_step = 1; }  // a sweep deferred while the boot animation played fires now, as the default page loads
+    if(s_sweep_pending) { s_sweep_pending = false; sweep_start(); }  // a sweep deferred while the boot animation played fires now, as the default page loads
 }
 
 /* ================================================================
@@ -410,7 +426,7 @@ void ui_showroom_set_active(bool en) {
     s_showroom_tap_cnt = 0;
     if (en) {
         ESP_LOGD("showroom", "ENTER role=%d", nvs_cfg_read().device_role);
-        s_sweep_step = 0;
+        sweep_stop();
         // pick 4 random data pages; the position offset guarantees the three gauges differ
         static const uint8_t pool[] = { 3, 4, 5, 6, 7 };
         uint8_t pos = nvs_device_position_get();
@@ -436,15 +452,16 @@ void ui_showroom_set_page_from_sync(int sweep_step) {
             // broadcast by the master corrects it shortly (~100ms). That one switch is an expected brief transition, not a bug.
             s_showroom_pending_slot = -1;
             s_showroom_pending_enter = true;
-            s_sweep_step = 0;
+            sweep_stop();
         }
     } else if (sweep_step >= 100 && sweep_step < 200 && !s_showroom_active) {
         s_showroom_pending_enter = true;
-        s_sweep_step = 0;
+        sweep_stop();
     } else if (!s_showroom_active) {
-        // 0~SWEEP_TOTAL: the master's real sweep progress (triggered the moment OBD connects). Slaves mirror it as-is
-        // (no self-increment; driven by the master's per-frame broadcast), keeping the backlight flash in sync with the master.
-        s_sweep_step = (sweep_step > 0 && sweep_step <= SWEEP_TOTAL) ? sweep_step : 0;
+        // Preserve coarse sync slots for flash/end; the visual ramp fills
+        // the gaps between master packets without changing received state.
+        ui_sweep_clock_sync(&s_sweep_clock, sweep_step, esp_timer_get_time() / 1000);
+        s_sweep_step = s_sweep_clock.synced_step;
     }
 }
 
@@ -557,7 +574,8 @@ void ui_ext_showroom_tick(bool is_slave)
 
 bool ui_ext_sweep_active(void)
 {
-    return s_sweep_step > 0 && s_sweep_step <= SWEEP_TOTAL;
+    const int step = s_sweep_step;
+    return step > 0 && step <= SWEEP_TOTAL;
 }
 
 int ui_ext_sweep_get_step(void)
@@ -570,7 +588,7 @@ void ui_ext_sweep_trigger(bool ble_now, bool is_slave)
     if (is_slave) return;
     if (ble_now && !s_prev_ble_connected) {
         if (s_boot_done) {
-            s_sweep_step = 1;       // boot animations (Logo/SKY GAUGE/RACE AS ONE) all finished, sweep immediately
+            sweep_start();          // boot animations (Logo/SKY GAUGE/RACE AS ONE) all finished, sweep immediately
         } else {
             s_sweep_pending = true; // boot animation still playing; defer and fire when the default page loads
         }
@@ -580,39 +598,26 @@ void ui_ext_sweep_trigger(bool ble_now, bool is_slave)
 
 float ui_ext_sweep_tick(bool is_slave, uint8_t configured_brightness)
 {
-    if (!ui_ext_sweep_active()) {
-        /* Sweep just ended (both master/slaves on the step→0 tick): restore configured brightness;
-           happens together with switching back to real values, done once */
+    ui_sweep_frame_t frame = { .ratio = -1.0f };
+    if (ui_ext_sweep_active()) {
+        frame = ui_sweep_clock_sample(&s_sweep_clock, is_slave, esp_timer_get_time() / 1000);
+        if (!is_slave) s_sweep_step = frame.step;
+    }
+    if (!frame.step) {
+        // Restore brightness on the same frame that returns to live data.
         if (s_sweep_bl_last >= 0) {
             uint8_t d = configured_brightness;
-            if (d < 10) d = 100;   // 0/not configured → 100, same as the boot backlight
+            if (d < 10) d = 100;
             Set_Backlight(d);
             s_sweep_bl_last = -1;
         }
         return -1.0f;
     }
-
-    int step = s_sweep_step;
-    float ratio;
-    if (step <= SWEEP_STEPS_UP) {
-        ratio = (float)step / (float)SWEEP_STEPS_UP;    // 0→1 ramp
-    } else {
-        ratio = 1.0f;   // hold at max (hold phase)
+    if (frame.backlight != s_sweep_bl_last) {
+        Set_Backlight(frame.backlight);
+        s_sweep_bl_last = frame.backlight;
     }
-
-    /* Backlight: sweep+peak hold = minimum; after the peak, one flash (high 0.2s → low 0.2s).
-       Write LEDC only on the tick where brightness changes. */
-    int bl;
-    if      (step <= SWEEP_STEPS_UP + SWEEP_STEPS_HOLD)                     bl = SWEEP_BL_MIN; // ramp+hold
-    else if (step <= SWEEP_STEPS_UP + SWEEP_STEPS_HOLD + SWEEP_STEPS_FLASH) bl = SWEEP_BL_MAX; // high flash segment
-    else                                                                   bl = SWEEP_BL_MIN; // low flash segment
-    if (bl != s_sweep_bl_last) { Set_Backlight(bl); s_sweep_bl_last = bl; }
-
-    if (!is_slave) {   // master advances itself; the slave's step is set by the master's broadcast, no self-increment (stays in sync)
-        s_sweep_step++;
-        if (s_sweep_step > SWEEP_TOTAL) s_sweep_step = 0; // animation done
-    }
-    return ratio;
+    return frame.ratio;
 }
 
 /* ================================================================
@@ -831,7 +836,7 @@ void ui_ext_no_signal_update(bool signal_ok)
 
 esp_err_t ui_ext_theme_prepare_install(void)
 {
-    if (s_boot_theme_job || theme_library_get_state(NULL) != THEME_LIB_IDLE) return ESP_ERR_INVALID_STATE;
+    if (s_boot_theme_job || ui_theme_navigation_busy() || theme_library_get_state(NULL) != THEME_LIB_IDLE) return ESP_ERR_INVALID_STATE;
     if (ui_ScreenPageThemeGauge) {
         if (ui_ScreenPageThemeGauge == lv_scr_act()) {
             if (!ui_ScreenPageSettings) ui_ScreenPageSettings_screen_init();
@@ -851,7 +856,7 @@ static void theme_lib_timer_cb(lv_timer_t *t)
     (void)t;
     theme_lib_state_t st = theme_library_get_state(NULL);
     if (st != THEME_LIB_DONE && st != THEME_LIB_ERROR) return;
-    if (s_boot_theme_job) return; // finish the SD reader before reloading its source
+    if (s_boot_theme_job || ui_theme_navigation_busy()) return; // finish SD readers before reloading their source
     if (st == THEME_LIB_ERROR) {
         ESP_LOGW("ui_ext", "Theme selection failed: %s", theme_library_last_error());
     }

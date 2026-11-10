@@ -26,3 +26,6 @@ void lv_timer_resume(lv_timer_t *timer);
 void lv_timer_ready(lv_timer_t *timer);
 
 uint32_t lv_timer_handler(void);
+
+uint32_t lv_tick_get(void);
+uint32_t lv_tick_elaps(uint32_t previous);

@@ -44,6 +44,7 @@
 #include "app_obd_dsp/storage_service.h"
 #include "app_obd_dsp/bootmedia_serial.h"
 #include "app_obd_dsp/lvgl_runtime.h"
+#include "app_obd_dsp/lvgl_flush_sync.h"
 #include "app_obd_dsp/signal_store.h"
 #include "app_tasks.h"
 #include "app_obd_dsp/app_event.h"
@@ -106,11 +107,11 @@ SemaphoreHandle_t lvgl_mux = NULL; // non-static: used by BLE scan page
  *   3 - theme video workers and file jobs;
  *   1-2 - background maintenance (storage, theme library, perf, OTA helpers).
  * Core map: the OBD poll and video reader stay on core 0 with the BT stack;
- * LVGL and the video decoder own core 1, so
- * needle rendering cannot delay an ELM327 round trip. */
+ * Place LVGL and the video decoder on core 1, OBD polling on core 0.
+ * They still share buses and locks; device latency needs measurement. */
 static const app_task_policy_t s_task_policy[APP_TASK_COUNT] = {
-    [APP_TASK_LVGL]                = { "LVGL",           LVGL_TASK_STACK_SIZE, LVGL_TASK_PRIORITY,       -1 },
-    [APP_TASK_OBD_POLL_BLE]        = { "obd_poll",       5120,                 4,                        -1 },
+    [APP_TASK_LVGL]                = { "LVGL",           LVGL_TASK_STACK_SIZE, LVGL_TASK_PRIORITY,        1 },
+    [APP_TASK_OBD_POLL_BLE]        = { "obd_poll",       5120,                 4,                        0 },
     [APP_TASK_VIDEO_READER_BOOT]   = { "vid_read",       4096,                 5,                        0 },
     [APP_TASK_VIDEO_DECODER_BOOT]  = { "vid_dec",        6144,                 5,                        1 },
     [APP_TASK_VIDEO_READER_THEME]  = { "vid_read",       4096,                 3,                        0 },
@@ -127,6 +128,7 @@ static const app_task_policy_t s_task_policy[APP_TASK_COUNT] = {
     [APP_TASK_OTA_VALID]           = { "ota_valid",      4096, tskIDLE_PRIORITY + 1,                       -1 },
     [APP_TASK_OTA_TIMEOUT]         = { "ota_timeout",    3072, tskIDLE_PRIORITY + 1,                       -1 },
     [APP_TASK_BOOTMEDIA_USB]       = { "bootmedia_usb",  8192,                 5,                       -1 },
+    [APP_TASK_THEME_PAGE_PREP]     = { "theme_page",     6144,                 3,                       -1 },
 };
 
 const app_task_policy_t *app_task_policy(app_task_id_t id)
@@ -158,8 +160,7 @@ static bool notify_lvgl_flush_ready(esp_lcd_panel_io_handle_t panel_io,
                                      void *user_ctx)
 {
     lv_disp_drv_t *disp_driver = (lv_disp_drv_t *)user_ctx;
-    lv_disp_flush_ready(disp_driver);
-    return false;
+    return lvgl_flush_complete_isr(disp_driver);
 }
 
 /* LVGL flush callback */
@@ -287,6 +288,7 @@ void app_main(void)
      *      Touch_Init() → reuses I2C bus CST816 touch driver (V1: SCL=10 SDA=11; V2/V3: SCL=8 SDA=7)
      *    After completion panel_handle / tp are both globally valid variables
      */
+    lvgl_flush_sync_init();
     LCD_SetFlushCallback(notify_lvgl_flush_ready, &disp_drv);
     LCD_Backlight = 0;  // initialize PWM dark before the panel receives its display-on command
     LCD_Init();
@@ -318,6 +320,7 @@ void app_main(void)
     disp_drv.hor_res = LCD_H_RES;
     disp_drv.ver_res = LCD_V_RES;
     disp_drv.flush_cb = lvgl_flush_cb;
+    disp_drv.wait_cb = lvgl_flush_wait_cb;
     disp_drv.rounder_cb = lvgl_rounder_cb;
     disp_drv.draw_buf = &disp_buf;
     disp_drv.user_data = panel_handle;      // from ST77916.h extern

@@ -7,10 +7,10 @@
 #include "esp_system.h"
 
 // Page names for the boot-page roller. Order must match the default-page
-// switch in ui.c.
-// 0=TEMP 1=INFO 2=CHART 3=NEEDLE 4=GEAR 5=RPM 6=SPEED
-static const char *page_names = "TEMP\nINFO\nCHART\nNEEDLE\nGEAR\nRPM\nSPEED";
-#define BOOT_PAGE_COUNT 7
+// switch in ui_ext.c. Append only: indices are persisted in NVS.
+// 0=TEMP 1=INFO 2=CHART 3=NEEDLE 4=GEAR 5=RPM 6=SPEED 7=TPMS
+static const char *page_names = "TEMP\nINFO\nCHART\nNEEDLE\nGEAR\nRPM\nSPEED\nTPMS";
+#define BOOT_PAGE_COUNT 8
 
 // Local references for settings widgets
 static lv_obj_t *s_roller_page = NULL;

@@ -10,6 +10,7 @@
 #include "bsp_obd_dsp/gauge_pair_ble_client.h"
 #include "bsp_obd_dsp/espnow_link.h"
 #include "bsp_obd_dsp/nvs_storage.h"
+#include "bsp_obd_dsp/tpms_ble_client.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -23,6 +24,8 @@ static lv_obj_t *s_spinner = NULL;          // scan spinner
 static lv_obj_t *s_saved_panel = NULL;      // saved device panel
 static lv_obj_t *s_label_saved_hdr = NULL;  // "SAVED" sub-header
 static lv_obj_t *s_saved_name_lbl = NULL;   // saved device name label
+static lv_timer_t *s_start_timer;
+static bool s_loaded;
 static bool s_scanning = false;
 static bool s_slave_mode = false;           // true=slave pairing with a master, false=OBD device scan (original logic)
 
@@ -240,7 +243,7 @@ static void on_saved_device_delete(lv_event_t *e) {
 }
 
 static void start_scan(void) {
-    if (s_scanning) return;
+    if (s_scanning || s_start_timer) return;
     s_scanning = true;
 
     if (s_list) lv_obj_clean(s_list);
@@ -256,10 +259,30 @@ static void start_scan(void) {
     }
 }
 
+static void delayed_scan(lv_timer_t *timer)
+{
+    (void)timer;
+    s_start_timer = NULL;
+    start_scan();
+}
+
 static void on_screen_visibility(lv_event_t *e)
 {
-    if (lv_event_get_code(e) == LV_EVENT_SCREEN_LOADED) start_scan();
-    else s_scanning = false;  // Allow a new scan when returning to this page.
+    if (lv_event_get_code(e) == LV_EVENT_SCREEN_LOADED) {
+        s_loaded = true;
+        tpms_ble_background_pause(true);
+        s_start_timer = lv_timer_create(delayed_scan, 600, NULL);
+        if (s_start_timer) lv_timer_set_repeat_count(s_start_timer, 1);
+    } else {
+        if (s_start_timer) { lv_timer_del(s_start_timer); s_start_timer = NULL; }
+        if (s_loaded) {
+            s_loaded = false;
+            if (s_slave_mode) gauge_pair_ble_scan_stop();
+            else elm327_ble_scan_only_stop();
+            s_scanning = false;
+            tpms_ble_background_pause(false);
+        }
+    }
 }
 
 void ui_ScreenPageBLEScan_screen_init(void)
@@ -395,5 +418,6 @@ void ui_ScreenPageBLEScan_screen_init(void)
     s_scanning = false;
     lv_obj_add_event_cb(ui_ScreenPageBLEScan, on_screen_visibility, LV_EVENT_SCREEN_LOADED, NULL);
     lv_obj_add_event_cb(ui_ScreenPageBLEScan, on_screen_visibility, LV_EVENT_SCREEN_UNLOADED, NULL);
+    lv_obj_add_event_cb(ui_ScreenPageBLEScan, on_screen_visibility, LV_EVENT_DELETE, NULL);
 }
 

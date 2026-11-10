@@ -28,11 +28,14 @@
 #include "rules/tr_parse.h"
 #include "rules/tr_eval.h"
 #include "app_obd_dsp/signal_store.h"
+#include "app_obd_dsp/tpms_theme_source.h"
 #include "app_obd_dsp/signal_delivery.h"
 #include "app_obd_dsp/storage_util.h"
 #include "media/video_elem.h"
 
-_Static_assert(SIG_SLOT_COUNT <= 64, "change mask / used mask are 64-bit");
+#define TE_SOURCE_COUNT (SIG_SLOT_COUNT + TPMS_THEME_COUNT)
+_Static_assert(SIG_SLOT_COUNT <= 64, "signal store mask is 64-bit");
+_Static_assert(TE_SOURCE_COUNT <= 128, "theme source masks have two 64-bit words");
 
 #define TE_VAR_MAX     16          // image variants per element (asset x tint)
 #define TE_ITEM_NONE   0xFFFFu
@@ -110,14 +113,14 @@ struct te_live_page {
     uint16_t      n_binding_items;
     bool          bindings_seeded;
     uint16_t     *tgt_item;   // [prog->n_targets] → item, TE_ITEM_NONE
-    uint64_t      used_mask;  // slots read each tick
+    uint64_t      used_mask, used_high;  // firmware source slots, low/high 64 bits
     int64_t       build_ms;
     size_t        cost;       // converted image bytes this page pins
     bool          was_suppressed;
     bool          was_sweep;       // transition-only sweep diagnostics
-    double        values[SIG_SLOT_COUNT];
-    double        prev[SIG_SLOT_COUNT];      // last valid value (NaN = none)
-    int64_t       chg_until[SIG_SLOT_COUNT]; // change window end (ms)
+    double        values[TE_SOURCE_COUNT];
+    double        prev[TE_SOURCE_COUNT];      // last valid value (NaN = none)
+    int64_t       chg_until[TE_SOURCE_COUNT]; // change window end (ms)
 };
 
 typedef struct {
@@ -193,7 +196,31 @@ static int te_resolve(const char *key, void *ctx)
 {
     (void)ctx;
     int s = signal_store_slot_by_key(key);
-    return (s >= 0 && s < SIG_SLOT_COUNT) ? s : -1;
+    if (s >= 0 && s < SIG_SLOT_COUNT) return s;
+    s = tpms_theme_source_index(key);
+    return s >= 0 ? SIG_SLOT_COUNT + s : -1;
+}
+
+static void te_use_source(te_live_page_t *p, unsigned source)
+{
+    if (source < 64) p->used_mask |= UINT64_C(1) << source;
+    else if (source < TE_SOURCE_COUNT) p->used_high |= UINT64_C(1) << (source - 64);
+}
+
+static bool te_source_used(const te_live_page_t *p, unsigned source)
+{
+    return source < 64 ? ((p->used_mask >> source) & 1u) != 0 :
+                        ((p->used_high >> (source - 64)) & 1u) != 0;
+}
+
+static void te_read_sources(te_live_page_t *p)
+{
+    signal_store_get_delivered_mask(p->used_mask, p->values);
+    const uint64_t standard_mask = UINT64_MAX >> (64 - SIG_SLOT_COUNT);
+    if (!(p->used_mask & ~standard_mask) && !p->used_high) return;
+    tpms_wheel_data_t wheels[NVS_TPMS_WHEELS];
+    tpms_ble_snapshot(wheels);
+    tpms_theme_values(wheels, p->values + SIG_SLOT_COUNT);
 }
 
 static int te_class(const tl_elem_t *el, bool target)
@@ -868,6 +895,7 @@ static void te_apply_look(te_item_t *it, const te_look_t *d)
 static void te_update_binding(te_item_t *it, const double *values, bool sweep_on, double sweep)
 {
     const tl_elem_t *el = it->el;
+    if (it->slot >= SIG_SLOT_COUNT) sweep_on = false;
     double raw = it->slot >= 0 ? values[it->slot] : NAN;
 
     if (el->video_value && it->vid) {
@@ -1033,27 +1061,26 @@ static void te_sweep_rule_inputs(double ratio, uint16_t rpm, double *values,
 static void te_page_update(te_ctx_t *c, te_live_page_t *p)
 {
     const int64_t now = te_now_ms();
-    uint64_t changed = 0;
-    (void)signal_store_get_delivered_mask(p->used_mask, p->values);
-    uint64_t pending = p->used_mask;
-    while (pending) {
-        const unsigned s = (unsigned)__builtin_ctzll(pending);
-        const uint64_t bit = UINT64_C(1) << s;
-        pending &= pending - 1u;
-        if (s >= SIG_SLOT_COUNT) continue;
+    uint64_t changed = 0, changed_high = 0;
+    te_read_sources(p);
+    for (unsigned s = 0; s < TE_SOURCE_COUNT; ++s) {
+        if (!te_source_used(p, s)) continue;
 
         const double v = p->values[s];  // getter writes NAN for every requested invalid slot
         if (!isnan(v)) {
             if (!isnan(p->prev[s]) && p->prev[s] != v) p->chg_until[s] = now + TE_CHANGE_WINDOW_MS;
             p->prev[s] = v;
         }
-        if (p->chg_until[s] > now) changed |= bit;
+        if (p->chg_until[s] > now) {
+            if (s < 64) changed |= UINT64_C(1) << s;
+            else changed_high |= UINT64_C(1) << (s - 64);
+        }
     }
 
     const bool sweep_on = c->sweep_on;
     const double sweep = c->sweep;
     const double *binding_values = p->values;
-    double sweep_values[SIG_SLOT_COUNT];
+    double sweep_values[TE_SOURCE_COUNT];
     if (sweep_on) {
         memcpy(sweep_values, p->values, sizeof(sweep_values));
         te_sweep_rule_inputs(sweep, c->sweep_rpm, sweep_values, &changed);
@@ -1077,11 +1104,11 @@ static void te_page_update(te_ctx_t *c, te_live_page_t *p)
     const bool sup = c->suppressed;
     if (p->prog) {
         // Labels and rules share delivered sweep values; live samples stay intact.
-        tr_inputs_t in = {binding_values, SIG_SLOT_COUNT, 0, changed, (double)(now - p->build_ms)};
+        tr_inputs_t in = {binding_values, TE_SOURCE_COUNT, 0, changed, (double)(now - p->build_ms)};
         const bool had_resolved = p->prog->have_resolved;
         const uint32_t mask = p->prog->resolved_mask;
         const uint32_t exit_mask = p->prog->resolved_exit_mask;
-        const tr_result_t *res = tr_eval(p->prog, &in);
+        const tr_result_t *res = tr_eval_extended(p->prog, &in, changed_high);
         if (sweep_on && (!p->was_sweep || mask != p->prog->resolved_mask || sup != p->was_suppressed)) {
             ESP_LOGI(TE_TAG, "sweep rules: rpm=%u active=0x%08lx targets=%u suppressed=%u",
                      (unsigned)c->sweep_rpm, (unsigned long)p->prog->resolved_mask,
@@ -1277,7 +1304,7 @@ static void te_items_init(te_ctx_t *c, te_live_page_t *p, const te_prep_t *prep)
         if (el->data_source && (el->kind != TR_KIND_IMAGE || el->video_value)) {
             it->bound = 1;
             it->slot = (int16_t)te_resolve(el->data_source, NULL);
-            if (it->slot >= 0) p->used_mask |= 1ull << it->slot;
+            if (it->slot >= 0) te_use_source(p, (unsigned)it->slot);
             else ESP_LOGW(TE_TAG, "page %s: '%s' unknown data_source '%s' (shows no data)",
                           c->pages[p->page_idx].id, el->id, el->data_source);
         }
@@ -1300,11 +1327,11 @@ static void te_items_init(te_ctx_t *c, te_live_page_t *p, const te_prep_t *prep)
     const tr_program_t *prog = p->prog;
     for (uint8_t r = 0; prog && r < prog->n_rules; r++) {
         const tr_rule_t *rule = &prog->rules[r];
-        if (rule->change_src < SIG_SLOT_COUNT) p->used_mask |= 1ull << rule->change_src;
+        te_use_source(p, rule->change_src);
         for (uint8_t k = 0; k < rule->n_conds; k++) {
-            if (rule->conds[k].src < SIG_SLOT_COUNT) p->used_mask |= 1ull << rule->conds[k].src;
-            if (rule->conds[k].has_cmp && rule->conds[k].cmp_src < SIG_SLOT_COUNT) {
-                p->used_mask |= 1ull << rule->conds[k].cmp_src;
+            te_use_source(p, rule->conds[k].src);
+            if (rule->conds[k].has_cmp && rule->conds[k].cmp_src < TE_SOURCE_COUNT) {
+                te_use_source(p, rule->conds[k].cmp_src);
             }
         }
     }
@@ -1574,7 +1601,7 @@ static te_live_page_t *te_prepare(te_ctx_t *c, int idx, te_prep_t *prep)
             p->tgt_item[t] = (e != TR_ELEM_NONE && e < prep->n_rel) ? prep->rel_el[e] : TE_ITEM_NONE;
         }
     }
-    for (int s = 0; s < SIG_SLOT_COUNT; s++) {
+    for (int s = 0; s < TE_SOURCE_COUNT; s++) {
         p->values[s] = NAN;
         p->prev[s] = NAN;
     }
@@ -1657,9 +1684,9 @@ static lv_obj_t *te_publish(te_ctx_t *c, te_live_page_t *p)
     p->build_ms = te_now_ms();
     // Seed change windows from one coherent snapshot instead of taking the
     // signal-store lock once per used slot while constructing the page.
-    signal_store_get_delivered_mask(p->used_mask, p->values);
-    for (int s = 0; s < SIG_SLOT_COUNT; s++) {
-        if ((p->used_mask >> s) & 1u) p->prev[s] = p->values[s];
+    te_read_sources(p);
+    for (int s = 0; s < TE_SOURCE_COUNT; s++) {
+        if (te_source_used(p, (unsigned)s)) p->prev[s] = p->values[s];
     }
     if (p->prog) tr_reset(p->prog);
     p->was_suppressed = c->suppressed;
@@ -1777,6 +1804,13 @@ lv_obj_t *theme_page_prepare_finish(theme_page_prepared_t *job)
     if (c) te_unlock();
     te_free(job);
     return scr;
+}
+
+void theme_page_prepare_discard(theme_page_prepared_t *job)
+{
+    if (!job) return;
+    job->images_ok = false;
+    (void)theme_page_prepare_finish(job);
 }
 
 lv_obj_t *theme_create_page(const char *page_id)

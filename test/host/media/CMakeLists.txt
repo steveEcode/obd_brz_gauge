@@ -135,3 +135,19 @@ target_compile_definitions(test_video_player_stats PRIVATE CONFIG_OBD_PERF_STATS
 add_test(NAME media_video_player_wait COMMAND test_video_player_wait)
 add_test(NAME media_video_player_stats COMMAND test_video_player_stats)
 set_tests_properties(media_video_player_wait media_video_player_stats PROPERTIES TIMEOUT 30)
+
+# Real LCD/LVGL completion bridge. A pthread-backed binary semaphore forces
+# deterministic blocked/woken interleavings in normal and statistics builds.
+find_package(Threads REQUIRED)
+foreach(flush_stats 0 1)
+    add_executable(test_lvgl_flush_sync_${flush_stats} test_lvgl_flush_sync.c
+        "${REPO_ROOT}/main/app_obd_dsp/lvgl_flush_sync.c")
+    target_include_directories(test_lvgl_flush_sync_${flush_stats} PRIVATE
+        flush_stubs "${REPO_ROOT}/main")
+    target_compile_definitions(test_lvgl_flush_sync_${flush_stats} PRIVATE
+        CONFIG_OBD_PERF_STATS=${flush_stats})
+    target_compile_options(test_lvgl_flush_sync_${flush_stats} PRIVATE ${MH_WARN} -UNDEBUG)
+    target_link_libraries(test_lvgl_flush_sync_${flush_stats} PRIVATE Threads::Threads)
+    add_test(NAME media_lvgl_flush_sync_${flush_stats} COMMAND test_lvgl_flush_sync_${flush_stats})
+    set_tests_properties(media_lvgl_flush_sync_${flush_stats} PROPERTIES TIMEOUT 15)
+endforeach()

@@ -12,6 +12,7 @@
  * writing and deletes itself.
  */
 #include "app_obd_dsp/perf_stats.h"
+#include "app_tasks.h"
 #include "bsp_obd_dsp/elm327_ble_client.h"
 
 #include <stdlib.h>
@@ -44,8 +45,6 @@ static const char *TAG = "elm327_ble";
 #define UUID16_CCCD          0x2902
 #define SVC_COUNT            3
 
-#define TASK_STACK           5120
-#define TASK_PRIO            4
 #define RX_BUF_BYTES         1024
 #define RX_CHUNK             128
 #define RX_DRAIN_MAX         16          /* chunks per loop */
@@ -113,6 +112,7 @@ static char              s_target_name[32] = "OBDII";
 static esp_bd_addr_t     s_target_bda;
 static volatile bool     s_target_valid;
 static volatile bool     s_scan_only;
+static volatile bool     s_scan_yielded;
 static volatile bool     s_paused;
 static volatile bool     s_registered;
 static int64_t           s_last_scan_us;
@@ -203,7 +203,7 @@ static void bind_target(const uint8_t *mac)
 
 static esp_err_t scan_start(uint32_t duration_s)
 {
-    if (!ble_hub_is_ready()) return ESP_ERR_INVALID_STATE;
+    if (!ble_hub_is_ready() || s_scan_yielded) return ESP_ERR_INVALID_STATE;
     link_time_set(&s_last_scan_us, esp_timer_get_time());
     esp_err_t err = ble_hub_scan_start(BLE_HUB_APP_ELM327, &k_scan_params, duration_s);
     if (err != ESP_OK) ESP_LOGD(TAG, "scan start: %s", esp_err_to_name(err));
@@ -281,7 +281,7 @@ static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
     }
     /* exact MAC only: a same-name adapter nearby must never be picked */
     esp_gatt_if_t gif = s_gattc_if;
-    if (s_connected || s_opening || s_paused || gif == ESP_GATT_IF_NONE) return;
+    if (s_connected || s_opening || s_paused || s_scan_yielded || gif == ESP_GATT_IF_NONE) return;
     if (!is_target(param->scan_rst.bda)) return;
 
     ble_hub_scan_stop(BLE_HUB_APP_ELM327);
@@ -858,7 +858,7 @@ static void reconnect_watchdog(int64_t now)
         ESP_LOGW(TAG, "connect attempt timed out");
         s_opening = false;
     }
-    if (!s_target_valid || s_scan_only || s_connected || s_opening) return;
+    if (!s_target_valid || s_scan_only || s_scan_yielded || s_connected || s_opening) return;
     if (s_gattc_if == ESP_GATT_IF_NONE || ble_hub_scan_active(NULL)) return;
     if (now - link_time_get(&s_last_scan_us) < RESCAN_GAP_US) return;
     scan_start(SCAN_RECONNECT_S);
@@ -971,7 +971,7 @@ static void start_task(void)
     }
     if (!s_tx_done) s_tx_done = xSemaphoreCreateBinaryStatic(&s_tx_done_storage);
     if (!s_rx) s_rx = xStreamBufferCreateWithCaps(RX_BUF_BYTES, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!s_rx || xTaskCreate(obd_task, "obd_poll", TASK_STACK, NULL, TASK_PRIO, NULL) != pdPASS) {
+    if (!s_rx || !app_task_start(APP_TASK_OBD_POLL_BLE, obd_task, NULL)) {
         ESP_LOGE(TAG, "obd_poll start failed (rx %p)", (void *)s_rx);
         portENTER_CRITICAL(&s_lock);
         s_task_started = false;
@@ -1010,6 +1010,13 @@ void elm327_ble_scan_only_start(int duration_s, ble_scan_found_cb_t cb)
     s_scan_only = true;
     ESP_LOGD(TAG, "device scan (%d s)", duration_s);
     scan_start(duration_s > 0 ? (uint32_t)duration_s : 0);
+}
+
+void elm327_ble_yield_scanner(bool yield)
+{
+    s_scan_yielded = yield;
+    if (yield) ble_hub_scan_stop(BLE_HUB_APP_ELM327);
+    else wake_task();
 }
 
 void elm327_ble_scan_only_stop(void)

@@ -45,6 +45,10 @@ typedef void (*ble_scan_found_cb_t)(const ble_scan_result_t *dev, int total_coun
 // List nearby named devices for duration_s seconds (no connect).
 void elm327_ble_scan_only_start(int duration_s, ble_scan_found_cb_t cb);
 
+// Temporarily yield reconnection scans while another pairing page uses BLE.
+// Keeps an established OBD connection and polling alive.
+void elm327_ble_yield_scanner(bool yield);
+
 // Stop the device-list scan.
 void elm327_ble_scan_only_stop(void);
 

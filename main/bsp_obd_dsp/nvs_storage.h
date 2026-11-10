@@ -20,12 +20,20 @@ typedef struct {
 #define NVS_NEEDLE_SRC_DEFAULT  0                 // CLT
 #define NVS_CHART_SRC_DEFAULT   8                 // OILP
 
+#define NVS_TPMS_WHEELS 4
+/* Legacy MAC-only records: layout must remain unchanged. Never infer an ID from these. */
+typedef struct {
+    uint8_t mac[6];
+    uint8_t addr_type;
+    char name[32];
+} nvs_tpms_binding_t;
+
 /*------------------ User configuration (written only when changed) ------------------*/
 typedef struct {
     uint8_t protocol;      // OBD protocol: 0=auto, 1~9=fixed
     theme_cfg_t theme_cfg;   // theme config
     char    ble_device_name[32]; // last connected BLE device name, empty = not configured
-    uint8_t default_page;   // default boot page: 0=Temp, 1=Info, 2=Chart, 3=Needle, 4=Gear, 5=RPM, 6=Speed
+    uint8_t default_page;   // default boot page: 0=Temp, 1=Info, 2=Chart, 3=Needle, 4=Gear, 5=RPM, 6=Speed, 7=TPMS
     uint8_t brightness_day; // brightness 10-100, 0=unset (use 100)
     uint8_t vehicle_profile_idx; // legacy vehicle index, 0=OBD2 Generic, 1..16=old compiled-in table
                                   // (mapping now in vp_manager.c k_legacy_ids[] / vp_manager_legacy_id())
@@ -47,6 +55,9 @@ typedef struct {
     uint8_t rc_enabled;          // RaceChrono BLE service: 0=off (minimal mode: Pair on MASTER only), 1=on (RC+Pair)
                                  // NOTE: new fields MUST be appended at the END of this struct;
                                  // see the load_blob grow logic comment in nvs_storage.c.
+    uint8_t rsv_tpms_padding[3]; // old sizeof(cfg)=96; never interpret trailing padding as a binding
+    nvs_tpms_binding_t tpms[NVS_TPMS_WHEELS]; // legacy MAC bindings, retained for blob compatibility
+    char tpms_sensor_id[NVS_TPMS_WHEELS][7]; // offset 252; empty=unbound, six uppercase HEX digits otherwise
 } nvs_user_cfg_t;
 
 esp_err_t nvs_storage_init(void);

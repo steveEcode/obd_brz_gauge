@@ -170,3 +170,38 @@ if(EH_ROM_CRC AND EXISTS "${EH_ESP_ROM_DIR}/linux/esp_rom_crc.c" AND
 elseif(EH_CRC_BENCHMARK)
     message(FATAL_ERROR "EH_CRC_BENCHMARK requires EH_ROM_CRC and an ESP-IDF esp_rom tree")
 endif()
+
+# Actual TPMS discovery/binding logic with deterministic GAP and NVS responses.
+add_executable(test_tpms_pairing
+    test_tpms_pairing.c
+    "${REPO_ROOT}/main/bsp_obd_dsp/tpms_ble_client.c"
+    "${REPO_ROOT}/main/bsp_obd_dsp/tpms_fbb0.c")
+target_include_directories(test_tpms_pairing PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/stubs" "${REPO_ROOT}/main")
+target_compile_options(test_tpms_pairing PRIVATE ${EH_WARN} -UNDEBUG)
+add_test(NAME tpms_pairing COMMAND test_tpms_pairing)
+
+# Optional real-LVGL navigation/timer coverage (the regular suite stays SDK-free).
+option(EH_TPMS_LVGL "Build TPMS pairing UI lifecycle test with bundled LVGL" OFF)
+if(EH_TPMS_LVGL)
+    set(EH_LVGL_DIR "${REPO_ROOT}/managed_components/lvgl__lvgl" CACHE PATH "LVGL 8 sources")
+    if(NOT EXISTS "${EH_LVGL_DIR}/lvgl.h")
+        message(FATAL_ERROR "LVGL 8 sources missing; set EH_LVGL_DIR")
+    endif()
+    file(GLOB_RECURSE EH_LVGL_SOURCES CONFIGURE_DEPENDS "${EH_LVGL_DIR}/src/*.c")
+    add_library(tpms_lvgl STATIC ${EH_LVGL_SOURCES})
+    target_include_directories(tpms_lvgl SYSTEM PUBLIC "${EH_LVGL_DIR}")
+    target_compile_definitions(tpms_lvgl PUBLIC LV_CONF_SKIP LV_MEM_CUSTOM=1 LV_FONT_MONTSERRAT_12=1)
+    add_executable(test_tpms_ui test_tpms_ui.c
+        "${REPO_ROOT}/main/export_path/ui_bluetooth.c"
+        "${REPO_ROOT}/main/export_path/ui_tpms.c"
+        "${REPO_ROOT}/main/app_obd_dsp/tpms_theme_source.c"
+        "${REPO_ROOT}/main/export_path/fonts/ui_font_FontTypoderSize16.c"
+        "${REPO_ROOT}/main/export_path/fonts/ui_font_FontTypoderSize20.c"
+        "${REPO_ROOT}/main/export_path/fonts/ui_font_FontTypoderSize24.c"
+        "${REPO_ROOT}/main/export_path/fonts/ui_font_FontTypoderSize40.c")
+    target_include_directories(test_tpms_ui PRIVATE stubs "${REPO_ROOT}/main")
+    target_link_libraries(test_tpms_ui PRIVATE tpms_lvgl)
+    target_compile_options(test_tpms_ui PRIVATE ${EH_WARN} -UNDEBUG)
+    add_test(NAME tpms_ui COMMAND test_tpms_ui)
+endif()

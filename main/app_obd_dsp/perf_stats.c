@@ -13,7 +13,8 @@
 
 static const char *const s_names[PERF_METRIC_COUNT] = {
     "lvgl_wait", "lvgl_handler", "lcd_submit", "ui_tick", "theme_tick", "elm_run",
-    "sd_read", "sd_write", "video_fullscreen", "video_composite", "rc_snapshot"
+    "sd_read", "sd_write", "video_fullscreen", "video_composite", "rc_snapshot", "lcd_wait",
+    "theme_nav_begin", "theme_nav_images", "theme_nav_publish"
 };
 static perf_hist_t s_hist[PERF_METRIC_COUNT];
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;

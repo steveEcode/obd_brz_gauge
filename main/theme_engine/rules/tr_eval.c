@@ -84,7 +84,7 @@ static bool cond_state(const tr_cond_t *k, const tr_inputs_t *in, int8_t *latch,
     return *latch == 1;
 }
 
-static bool rule_active(tr_program_t *p, const tr_rule_t *r, const tr_inputs_t *in)
+static bool rule_active(tr_program_t *p, const tr_rule_t *r, const tr_inputs_t *in, uint64_t high)
 {
     if (r->disabled) return false;
     if (r->trigger == TR_TRIG_TIMER) {
@@ -92,7 +92,8 @@ static bool rule_active(tr_program_t *p, const tr_rule_t *r, const tr_inputs_t *
         return e > 0 && fmod(e, r->interval_ms) < 120.0;
     }
     if (r->trigger == TR_TRIG_CHANGE) {
-        return r->change_src < TR_MASK_SOURCES && ((in->changed_mask >> r->change_src) & 1u);
+        if (r->change_src < 64) return (in->changed_mask >> r->change_src) & 1u;
+        return r->change_src < 128 && ((high >> (r->change_src - 64)) & 1u);
     }
     if (!r->n_conds) return false;
 
@@ -205,10 +206,15 @@ static bool rule_has_animated_opacity(const tr_rule_t *rule)
 bool tr_rule_active(tr_program_t *prog, uint8_t rule_idx, const tr_inputs_t *in)
 {
     if (!prog || !in || rule_idx >= prog->n_rules) return false;
-    return rule_active(prog, &prog->rules[rule_idx], in);
+    return rule_active(prog, &prog->rules[rule_idx], in, 0);
 }
 
 const tr_result_t *tr_eval(tr_program_t *prog, const tr_inputs_t *in)
+{
+    return tr_eval_extended(prog, in, 0);
+}
+
+const tr_result_t *tr_eval_extended(tr_program_t *prog, const tr_inputs_t *in, uint64_t changed_high)
 {
     if (!prog || !in) return NULL;
     tr_state_t *st = &prog->state;
@@ -221,7 +227,7 @@ const tr_result_t *tr_eval(tr_program_t *prog, const tr_inputs_t *in)
     for (uint8_t i = 0; i < prog->n_rules; i++) {
         const tr_rule_t *r = &prog->rules[i];
         uint8_t s = r->slot;
-        bool matched = rule_active(prog, r, in);
+        bool matched = rule_active(prog, r, in, changed_high);
         if (matched && r->transient_hold_ms > 0.0 &&
             (r->trigger == TR_TRIG_TIMER || r->trigger == TR_TRIG_CHANGE)) {
             st->hold_until[s] = in->elapsed_ms + r->transient_hold_ms;

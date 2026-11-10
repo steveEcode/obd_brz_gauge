@@ -10,6 +10,8 @@
 te_ctx_t *g_te;
 static int64_t clock_ms;
 static double samples[SIG_SLOT_COUNT];
+static tpms_wheel_data_t tpms_samples[4];
+void tpms_ble_snapshot(tpms_wheel_data_t out[4]) { memcpy(out, tpms_samples, sizeof(tpms_samples)); }
 int64_t esp_timer_get_time(void) { return clock_ms * 1000; }
 uint64_t signal_store_get_delivered_mask(uint64_t mask, double *out)
 {
@@ -209,7 +211,7 @@ static void init_fixture(fixture_t *f, bool suppressed)
     TH_CHECK(p->prog->rules[1].trigger == TR_TRIG_TIMER);
     TH_CHECK(p->prog->rules[2].trigger == TR_TRIG_CHANGE);
     for (unsigned t = 0; t < p->prog->n_targets; t++) p->tgt_item[t] = p->prog->targets[t].elem;
-    for (unsigned i = 0; i < SIG_SLOT_COUNT; i++) p->prev[i] = NAN;
+    for (unsigned i = 0; i < TE_SOURCE_COUNT; i++) p->prev[i] = NAN;
 }
 static void destroy_fixture(fixture_t *f)
 {
@@ -631,7 +633,7 @@ static void test_staged_boot_page(void)
     memcpy(blob, pixels, sizeof(pixels));
     memcpy(blob + sizeof(pixels), layout, strlen(layout));
 
-    for (int scenario = 0; scenario < 6; scenario++) {
+    for (int scenario = 0; scenario < 8; scenario++) {
         te_ctx_t ctx = {.custom=true, .manifest_crc=123, .load_generation=7,
                         .map=blob, .file_size=(uint32_t)size, .n_images=1, .n_pages=1};
         ctx.images[0] = (te_image_t){.name="base", .offset=0, .size=16,
@@ -645,7 +647,7 @@ static void test_staged_boot_page(void)
         if (!job) continue;
         TH_CHECK(!job->page->scr && ctx.n_live == 0 && ctx.cache.count == 0);
         TH_CHECK(ctx.n_preparing == 1);
-        if (scenario != 1) { // cancellation before worker starts
+        if (scenario != 1 && scenario != 7) { // cancellation before worker starts
             // Even if metadata is unloaded, run uses its owned snapshot only.
             g_te = NULL;
             te_read_fail = scenario == 3;
@@ -662,7 +664,9 @@ static void test_staged_boot_page(void)
         if (scenario == 2) ctx.load_generation++; // another theme load
         if (scenario == 4) ctx.release_pending = true; // OTA/resource release
         if (scenario == 5) ctx.custom = false; // invalidated theme
-        lv_obj_t *screen = theme_page_prepare_finish(job);
+        lv_obj_t *screen = NULL;
+        if (scenario == 6 || scenario == 7) theme_page_prepare_discard(job);
+        else screen = theme_page_prepare_finish(job);
         TH_CHECK(ctx.n_preparing == 0);
         if (scenario == 0) {
             TH_CHECK(screen && ctx.n_live == 1 && ctx.cache.count == 1);
@@ -702,6 +706,94 @@ static void test_track_opacity(void)
     }
 }
 
+static void test_tpms_sources(void)
+{
+    TH_CHECK(tpms_theme_source_index(NULL) == -1);
+    TH_CHECK(te_resolve("tpms.x", NULL) == -1);
+    TH_CHECK(te_resolve("tpms.fl.", NULL) == -1);
+    TH_CHECK(te_resolve("tpms.fl.no_such_field", NULL) == -1);
+    /* Mirror the APK calculation for every possible voltage byte. */
+    for (unsigned raw = 0; raw <= 255; ++raw) {
+        double v = (double)(float)(raw * 0.01 + 1.22);
+        unsigned want = v > 2.8 ? 100 : v > 2.6 ? 75 : v > 2.4 ? 50 : v > 2.2 ? 25 : 0;
+        TH_CHECK(tpms_battery_percent(raw * 10 + 1220) == want);
+    }
+    TH_CHECK(tpms_battery_percent(2800) == 75);
+    TH_CHECK(tpms_battery_percent(2600) == 50);
+    TH_CHECK(tpms_battery_percent(2400) == 50);
+    TH_CHECK(tpms_battery_percent(2200) == 25);
+    memset(tpms_samples, 0, sizeof(tpms_samples));
+    double values[TPMS_THEME_COUNT];
+    tpms_theme_values(tpms_samples, values);
+    const char *const positions[] = {"fl", "fr", "rl", "rr"};
+    const char *const keys[] = {"pressure_pa", "pressure_kpa", "pressure_bar", "temperature_c", "voltage_v",
+        "state", "version", "ble_version", "rssi", "age_s", "bound", "received", "online", "sensor_id",
+        "addr_type", "battery_percent"};
+    const double want[] = {251520, 251.52, 2.5152, -5, 3, 2, 1, 1.2, -67, 1.25, 1, 1, 1, 0x18010F, 1, 100};
+    for (unsigned w = 0; w < 4; ++w) {
+        tpms_wheel_data_t *v = &tpms_samples[w];
+        memcpy(v->sensor_id, "18010F", 7);
+        v->bound = v->received = v->fresh = true; v->age_ms = 1250;
+        v->sample.data = (tpms_fbb0_data_t){.pressure_pa=251520, .temperature_c=-5,
+            .voltage_mv=3000, .state=2, .version=1, .ble_version_code=12};
+        v->sample.rssi = -67; v->sample.addr_type = 1;
+    }
+    tpms_theme_values(tpms_samples, values);
+    for (unsigned w = 0; w < 4; ++w) {
+        for (unsigned f = 0; f < TPMS_THEME_FIELDS; ++f) {
+            char key[64]; snprintf(key, sizeof(key), "tpms.%s.%s", positions[w], keys[f]);
+            int idx = tpms_theme_source_index(key);
+            TH_CHECK(idx == (int)(w * TPMS_THEME_FIELDS + f));
+            TH_CHECK(fabs(values[idx] - want[f]) < 1e-8);
+        }
+    }
+    tpms_samples[3].fresh = false; tpms_samples[3].age_ms = 120000;
+    tpms_theme_values(tpms_samples, values);
+    TH_CHECK(isnan(values[tpms_theme_source_index("tpms.rr.pressure_bar")]));
+    TH_CHECK(isnan(values[tpms_theme_source_index("tpms.rr.battery_percent")]));
+    TH_CHECK(values[tpms_theme_source_index("tpms.rr.online")] == 0);
+    TH_CHECK(values[tpms_theme_source_index("tpms.rr.age_s")] == 120);
+    TH_CHECK(values[tpms_theme_source_index("tpms.rr.received")] == 1);
+}
+
+static void test_tpms_bindings_and_high_change(void)
+{
+    fixture_t f;
+    clock_ms = 0; init_fixture(&f, false);
+    int slot = te_resolve("tpms.rr.pressure_bar", NULL);
+    TH_CHECK(slot > 64 && slot < TE_SOURCE_COUNT);
+    te_use_source(&f.page, (unsigned)slot);
+    TH_CHECK(te_source_used(&f.page, (unsigned)slot));
+    const char *json = "{\"rules\":[{\"id\":\"tpms-change\",\"trigger\":{\"type\":\"change\","
+        "\"source\":\"tpms.rr.pressure_bar\"},\"apply\":[{\"target\":\"text\",\"set\":{\"text\":\"CHANGED\"}}]}]}";
+    tr_element_t elements[ITEMS];
+    for (unsigned i = 0; i < ITEMS; ++i) elements[i] = (tr_element_t){ids[i], kinds[i]};
+    tr_compile_cfg_t cfg = {.resolve_source=te_resolve, .elements=elements, .n_elements=ITEMS};
+    tr_program_free(f.page.prog); f.page.prog = NULL;
+    TH_CHECK(tr_compile_json(json, strlen(json), &cfg, &f.page.prog, NULL) == TR_OK);
+    for (unsigned t = 0; t < f.page.prog->n_targets; ++t) f.page.tgt_item[t] = f.page.prog->targets[t].elem;
+    theme_overlay_t decimal = {.has_dd=1, .has_precision=1, .precision=2};
+    f.items[2].slot = slot; f.items[2].ov = &decimal;
+    f.items[0].slot = slot; f.items[0].lo = 0; f.items[0].hi = 4;
+    f.ctx.sweep_on = true; f.ctx.sweep = 0.1;
+    tpms_samples[3].fresh = true;
+    te_page_update(&f.ctx, &f.page);
+    TH_CHECK(!strcmp(lv_label_get_text(f.items[2].obj), "2.52"));
+    TH_CHECK(lv_arc_get_value(f.items[0].obj) == 6288); /* Not the OBD sweep's 1000. */
+    TH_CHECK(f.page.prog->resolved_mask == 0);
+    tpms_samples[3].sample.data.pressure_pa = 225000; clock_ms = 16;
+    te_page_update(&f.ctx, &f.page);
+    TH_CHECK(!strcmp(lv_label_get_text(f.items[2].obj), "2.25"));
+    TH_CHECK(f.page.prog->resolved_mask != 0);
+    TH_CHECK(!strcmp(lv_label_get_text(f.items[3].obj), "CHANGED"));
+    clock_ms = 500; tpms_samples[3].fresh = false;
+    te_page_update(&f.ctx, &f.page);
+    TH_CHECK(!strcmp(lv_label_get_text(f.items[2].obj), THEME_INVALID_TEXT));
+    TH_CHECK(lv_arc_get_value(f.items[0].obj) == 0);
+    TH_CHECK(f.page.prog->resolved_mask == 0);
+    destroy_fixture(&f); memset(tpms_samples, 0, sizeof(tpms_samples));
+}
+
 int main(void)
 {
     lv_init();
@@ -712,6 +804,7 @@ int main(void)
     lv_disp_drv_init(&drv); drv.hor_res = drv.ver_res = 360;
     drv.draw_buf = &draw; drv.flush_cb = flush;
     lv_disp_t *disp = lv_disp_drv_register(&drv);
+    test_tpms_sources(); test_tpms_bindings_and_high_change();
     test_track_opacity();
     test_sweep_rule_inputs(); test_sweep_color_preserves_track(); test_transitions();
     test_sweep_label_values(); test_video_layer_order(); test_sweep_video_opacity(); test_replay();

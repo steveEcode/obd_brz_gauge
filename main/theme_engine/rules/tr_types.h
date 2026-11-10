@@ -27,8 +27,8 @@ extern "C" {
 #define TR_MAX_CONDS        4
 #define TR_MAX_ACTIONS      8
 #define TR_MAX_KEYFRAMES    6
-// Change triggers are delivered as a 64-bit mask: only source indices
-// below this can fire a `change` rule.
+// Legacy tr_eval()/tr_rule_active() change triggers use a 64-bit mask.
+// tr_eval_extended() additionally accepts sources 64..127 in a high word.
 #define TR_MASK_SOURCES     64
 
 #define TR_SRC_NONE         0xFFFFu   // unknown source key (JS `undefined`)

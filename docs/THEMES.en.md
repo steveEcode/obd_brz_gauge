@@ -23,6 +23,8 @@ color defaults for its own elements; built-in pages keep their compiled palette.
 No selection, missing card/file, corrupt manifest or parse failure falls back to the built-in
 default theme while preserving the saved selection.
 
+Left/right navigation within runtime themes reuses staged page creation: the LVGL thread captures a layout/rules snapshot, a worker reads and converts target images into an isolated cache, and LVGL then creates widgets and switches screens. The current page keeps refreshing during preparation. Only one request is accepted at a time; duplicates are not queued. Leaving or deleting the origin invalidates the result, which is disposed of after the worker returns, without killing the task or letting stale pages reclaim the screen/video. Task-start, preparation or publication failure keeps the old page; theme installation and library reload wait for preparation resources to be released. Layout snapshots, fonts and widget creation remain on the LVGL path, so this does not guarantee stall-free navigation. The isolated cache can temporarily duplicate origin images and use more PSRAM; existing image budgets and degradation policies remain, with device memory and SD contention still to validate.
+
 In runtime themes, ordinary left-aligned text bindings without zoom or rotation retain LVGL `LV_SIZE_CONTENT`, allowing LVGL to resize them when data changes. Centered, right-aligned or transformed labels continue to measure and update their position and size explicitly to preserve their anchor and large-font rendering.
 
 Web theme installation and “Delete current theme” both use ESP32-S3 native USB, requiring no device address, token or WiFi OTA. Deletion releases theme pages and resources, removes the current `/OBD/THEMES/<key>/` directory (including `theme.bin`, rules, images, fonts and video) and saved selection, then the web client separately requests reboot when “Delete current theme” is clicked. Installing a new theme instead automatically clears the current theme, skips deletion when none exists, and reboots only after uploading and enabling the replacement. Other themes and the shared boot animation remain. Update to USB-management firmware first; missing SD and deletion failures report errors, while temporary contention can be retried automatically.
@@ -354,6 +356,38 @@ as a separate slim JSON:
   current theme's). `/api/v1` requires `X-OTA-Token`. SD import of
   `*.gaugeproj.json` is installed the same way as a sidecar (`sd_import.c`)
 
+### TPMS sources (firmware-local extension)
+
+Runtime layouts accept the following prefixes in `data_source`; rule `when.source` and `trigger.source` use the same keys:
+
+| Wheel | Prefix |
+|-------|--------|
+| Front left | `tpms.fl.` |
+| Front right | `tpms.fr.` |
+| Rear left | `tpms.rl.` |
+| Rear right | `tpms.rr.` |
+
+| Suffix | Value / unit |
+|--------|--------------|
+| `pressure_pa` / `pressure_kpa` / `pressure_bar` | Pa / kPa / bar as direct numeric values |
+| `temperature_c` | Degrees Celsius, including negative values |
+| `voltage_v` | V |
+| `battery_percent` | Voltage-bin estimate: `0` / `25` / `50` / `75` / `100`, not measured capacity |
+| `state` | Raw state: `0` NORMAL, `1` LEAK, `2` INFLATE, `3` FIRST, `4` POWER ON, `5` PERIODIC; unknown values retained |
+| `version` / `ble_version` | Raw version / BLE version code divided by 10 |
+| `rssi` / `addr_type` | Last valid sample's dBm / BLE address type |
+| `age_s` | Seconds since the last valid advertisement, NaN before reception |
+| `bound` / `received` / `online` | Bound / ever received / last advertisement under 120 seconds old, `0` or `1` |
+| `sensor_id` | Six-digit HEX converted to a 24-bit **number**, not a string; leading zeros are not preserved as text |
+
+Before reception or once a sample reaches 120 seconds, measurements, state, versions, RSSI, address type and battery become NaN and labels show `--`. `bound` / `received` / `online` remain `0` / `1`, received `age_s` keeps increasing, and a bound `sensor_id` remains available. The threshold is a firmware display timeout, not a promised sensor period. Battery uses TireKing's strict float32 voltage-bin comparisons; see [USER_GUIDE.en.md](USER_GUIDE.en.md).
+
+For example, bind a layout label to `"data_source":"tpms.fl.pressure_bar"` and set its sidecar overlay to `"dataDisplay":{"precision":2,"unit":"bar"}` to display `2.10 bar`. **Do not use `format:"%.2f"`**: layout format supports integer conversions only; sidecar `dataDisplay.precision` controls decimal places. Match the same element id between theme.bin and sidecar; without the overlay, existing integer formatting applies.
+
+Labels, arcs, bars, pointers and value-driven videos can bind these sources; condition and change rules can read them. All consumers share one four-wheel snapshot per frame. TPMS is excluded from OBD sweep animation, does not become invalid merely because ELM disconnects, and creates no OBD polling demand. Live data is not stored in NVS or automatically sent to slaves over ESP-NOW; each slave needs local bindings and sensor reception.
+
+This extends firmware parsing only, not the frontend editor, standard signal registry or wire protocols. The editor has no new TPMS choices; package layouts and sidecars must carry these complete keys, and frontend export/preview compatibility remains unverified. The built-in overview does not depend on a sidecar.
+
 ### PSRAM budget and skip order
 
 Building a page sizes its artwork budget by whether it has a video element
@@ -557,6 +591,7 @@ The preview rule status distinguishes disabled, waiting and active rules and dis
   `obd.*` signals, so displayed numbers, threshold conditions and `change` rules for every signal can respond to the sweep.
   Binding and rule inputs immediately return to real `signal_store` data when the sweep ends; simulated values are never written to or used
   to overwrite real OBD data. Vehicle-specific `veh.*` signals have no shared range and continue using their live data during sweep
+- The self-test sweep shares one monotonic-clock ratio with built-in gauges and targets a 16 ms update interval; 40 ms remains only the time unit for coarse multi-gauge sync slots. Delayed callbacks jump to the current position without replaying obsolete positions or slowing rule clocks. The master sends the actual current slot (the old implementation incremented it after drawing), so mixed firmware may differ by one 40 ms slot; use the same version on master and slaves. Slaves fill only the presentation ratio, never advance flash or termination locally, and retain received sync state until an ending state arrives. This interpolation applies only to self-test simulation, not live vehicle data.
 - Sweep rules still follow their actual condition interval and animation duration: during an approximately one-second ramp from 0 to 8000 rpm, `obd.rpm <= 3000` holds for only about 0.4 seconds at the start, which cannot complete a one-second fade. Use `obd.rpm >= 3500` to fade out above 3500 rpm. Uploading a theme ZIP updates theme resources, not firmware. Page-creation logs include rule and target counts; sweep start and active-rule changes log `sweep rules` with simulated RPM, active mask, target count and alarm suppression, and sweep end logs the return to live inputs.
 - Rule conditions/hysteresis/debounce/timing state still advance on each call. An unchanged
   active set reuses the sorted action coverage; changes rebuild it and remove overrides of
@@ -608,6 +643,13 @@ See [partitions.csv](../partitions.csv). Devices already on layout v2 can update
 older partition tables need one full reflash because OTA cannot change the table.
 
 ## Video decode ahead and double buffering
+
+LCD refresh retains the two DMA buffers. While waiting for the previous transfer,
+LVGL blocks on an interrupt-signaled semaphore instead of spinning on the CPU.
+This wait does not use notification slot 0, which wakes video frame handoffs;
+fullscreen video retains its existing refresh-callback guard and buffer ownership
+logic. This removes CPU busy-waiting, not LCD bus time, and does not establish any
+measured theme frame rate.
 
 Playback retains sequential SD read-ahead, a PSRAM compressed-frame ring and a persistent JPEG decoder. Fullscreen mode decodes the next frame's first MCU strip or whole image ahead of time and starts panel transfer at its source deadline. Two internal DMA strips alternate by parity; submission waits for the previous transfer and never overwrites an in-flight buffer. Composite themes retain front/back frame buffers and LVGL handoff. OBV2 also decodes ahead, retaining compressed frames and shifting the timeline on pause; expired frames follow existing skip rules. Decode timing excludes deadline sleep. Actual FPS still requires device measurement; host tests do not establish a fixed hardware frame rate.
 

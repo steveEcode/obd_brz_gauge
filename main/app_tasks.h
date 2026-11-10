@@ -34,6 +34,7 @@ typedef enum {
     APP_TASK_OTA_VALID,            /* one-shot rollback confirmation */
     APP_TASK_OTA_TIMEOUT,          /* OTA session timeout guard */
     APP_TASK_BOOTMEDIA_USB,        /* USB boot-media receiver */
+    APP_TASK_THEME_PAGE_PREP,      /* transient theme-navigation image preparation */
     APP_TASK_COUNT
 } app_task_id_t;
 

@@ -54,7 +54,7 @@ esp_err_t theme_get_info(theme_info_t *info);
  */
 lv_obj_t *theme_create_page(const char *page_id);
 
-/** Staged page creation for boot. Begin/finish require the LVGL task or mutex.
+/** Staged page creation for boot and theme-page navigation. Begin/finish require the LVGL task or mutex.
  * Begin captures an owned layout/rules snapshot. Run reads and converts images
  * using an isolated cache, without LVGL or the theme lock. After run returns,
  * finish adopts the result and creates widgets, or discards a stale/failed job.
@@ -65,6 +65,10 @@ typedef struct theme_page_prepared theme_page_prepared_t;
 theme_page_prepared_t *theme_page_prepare_begin(const char *page_id);
 void theme_page_prepare_run(theme_page_prepared_t *job);
 lv_obj_t *theme_page_prepare_finish(theme_page_prepared_t *job);
+
+/** Dispose without creating widgets (e.g. navigation was cancelled). Same
+ * LVGL ownership requirement as finish; never call while run executes. */
+void theme_page_prepare_discard(theme_page_prepared_t *job);
 
 /** Number of theme-declared pages (manifest.pages.theme_pages[]), manifest order. */
 uint8_t theme_page_list_count(void);

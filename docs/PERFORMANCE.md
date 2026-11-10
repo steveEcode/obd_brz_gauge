@@ -1327,8 +1327,12 @@ idf.py -B /tmp/obd-perf -D SDKCONFIG=/tmp/obd-perf.sdkconfig -p PORT flash monit
 | `lvgl_wait` | LVGL mutex wait | calls |
 | `lvgl_handler` | UI handoff step + `lv_timer_handler()` | calls |
 | `lcd_submit` | LVGL `esp_lcd_panel_draw_bitmap()` submission | pixels |
+| `lcd_wait` | LVGL wait_cb wall time waiting for LCD DMA completion | calls |
 | `ui_tick` | whole `my_timerMain()` call | calls |
 | `theme_tick` | whole `theme_tick()` call | calls |
+| `theme_nav_begin` | navigation layout/rules snapshot on LVGL thread | calls |
+| `theme_nav_images` | worker image reads/conversion/cache planning | calls |
+| `theme_nav_publish` | LVGL finish, cache adoption and widget creation | calls |
 | `elm_run` | RX drain + `vp_engine_run()` | calls |
 | `sd_read` | `sd_card_read()`, including bounce-buffer wait/copy | bytes |
 | `sd_write` | `sd_card_write()`, including bounce-buffer wait/copy | bytes |
@@ -1856,3 +1860,121 @@ ctest --test-dir /tmp/obd-snapshot-append --output-on-failure
 `test/host/signal_store/test_display_response.c` 抽取生产显示更新函数，验证转速、车速、压力（含负值）、节气门及负载在首次刷新显示最新样本，数值未变时不重写标签，失效与恢复仍正确；温度保留原有平滑。`test/host/media/test_video_player_wait.c` 的同帧测试验证 1000 次未跨帧数值更新不唤醒读卡或解码，跨帧与快速往返仍唤醒。原播放器已按目标帧去重，这次减少的是无效任务唤醒，不能据此宣称减少了原本不存在的重复解码或提高了视频帧率。
 
 本轮 engine、signal_store、media 三组共 24 项主机测试通过；四个修改后的生产 C 文件通过 ESP32-S3 编译器 `-fsyntax-only` 检查，未执行完整固件构建或实车延迟测量。
+
+## LCD DMA 事件等待验证
+
+2026-11-02：LCD 驱动原先没有设置 LVGL `wait_cb`，真实 LVGL 8 的
+`draw_buf_flush()` 在分块双缓冲传输未完成时循环检查 `flushing`。
+`main/app_obd_dsp/lvgl_flush_sync.c` 改用常驻静态二值信号量阻塞等待，
+完成中断先释放缓冲再通知；所有通知都只是重查状态的提示，不代表当前 DMA 已完成。
+不借用 LVGL 通知槽 0，不改变全屏视频的刷新保护、缓冲所有权或 ELM 单线程请求。
+ESP-IDF 5.5.3 SPI LCD 完成回调忽略返回值，桥接函数在需要时显式请求 ISR 调度。
+
+`test/host/media/test_lvgl_flush_sync.c` 运行真实桥接源码，以 pthread 条件变量
+模拟二值信号量，确定性等待任务真正阻塞后再完成 DMA，不使用睡眠时长推断正确性。
+普通/统计两配置各验证 391 次完成与 259 次阻塞唤醒，覆盖已空闲、完成早于等待、
+旧信号、连续视频完成信号合并、检查与 take 之间发生中断，以及 256 次反复传输。
+三个临时负对照分别移除状态重查、交换释放/唤醒顺序、移除 ISR 调度，均被断言拒绝。
+媒体现有的真实播放器普通/统计两配置生命周期测试也通过；这不是实际 LCD/RTOS 测试。
+
+在 DMA 等待阶段（未包含下节扫表时钟改动），Release + ASan/UBSan 的 `theme`（含真实 LVGL 页面）、`media`、
+`signal_store`、`rules` 四组共 38 项测试通过；主题生成物检查通过。
+ESP-IDF 5.5.3 ESP32-S3 V1 双核普通/统计固件完整构建通过，镜像分别为
+`0x28e520` / `0x28ee30`，均保留 15% 应用分区余量。
+普通 ELF 中等待函数调用 `xQueueSemaphoreTake` 并重查状态，静态信号量及其句柄
+占 88 字节 BSS；普通 ELF 不含 `perf_stats_record` / `perf_stats_start`。
+构建和配置均隔离在 `/tmp/obd-smooth-20261102/`，本地普通 `sdkconfig` 未开启统计。
+
+```sh
+cmake -S test/host/media -B /tmp/obd-flush-host -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build /tmp/obd-flush-host
+ctest --test-dir /tmp/obd-flush-host --output-on-failure
+cmake -S test/host/theme -B /tmp/obd-flush-theme -G Ninja -DCMAKE_BUILD_TYPE=Release -DTE_PAGE_LVGL=ON
+cmake --build /tmp/obd-flush-theme
+ctest --test-dir /tmp/obd-flush-theme --output-on-failure
+```
+
+统计版 `lcd_wait` 是 LVGL 等待 DMA 的墙钟耗时，包含任务唤醒/调度时间；
+已空闲时不记录。它嵌套在 `lvgl_handler` 中，不是 CPU 消耗或完整面板帧率，
+也不覆盖全屏视频自身的等待路径。LVGL / OBD 任务同时调整为 Core 1 / Core 0，
+这只是待验证的调度策略，不能从线程隔离推断帧率提升。当前未识别到仪表串口，
+未烧录；数据刷新、滑动、扫表、视频和长时间运行均需在相同主题、SD 卡与
+适配器下进行实机 A/B，普通固件还需外部观察以排除统计日志开销。
+
+
+## 扫表时钟与显示节奏验证
+
+2026-11-02：原自检扫表将主 UI 定时器降为 40 ms，且每回调一次只加一步；
+绘制或调度延迟会延长整段动画。现在 `main/export_path/ui_sweep.c` 使用
+`esp_timer_get_time()` 的毫秒值计算进度，扫表目标刷新间隔为 16 ms。
+主表保留原 48 个 40 ms 同步槽，标称总时长为 1920 ms，延迟回调直接采样当前位置。
+16 ms 时间网格在上升段产生 61 个不同显示比例（原 40 ms 网格为 25 个），
+这只是确定性算法输出，不是屏幕实测帧率。TEMP / CHART / INFO 不再从已加一的步号
+重复推导比例，而与主题、转速和指针共用本帧的同一个比例。
+
+从表在已接收槽之间按时间补齐比例，但闪光和结束仍只跟随主表已接收的状态；
+丢包时不会自行提前闪光或退出扫表。较小的已接受步号按新一轮扫表处理，
+与既有快照语义一致；仅凭步号无法区分重启和乱序，本次没有增加网络排序保证。
+主表发布当前实际槽，而不是旧实现绘制后加一的槽，混用新旧固件可能存在一个
+40 ms 槽的差异。协议字段和展厅 200+ 编码不变，建议主从表使用同版固件。
+真实车况不做此插值，也不会把模拟值写入信号存储。
+
+`test_sweep_clock.c` 直接编译生产时钟，验证全部旧 40 ms 网格的比例和亮度、
+16 ms 采样、同一时刻重复回调、长时间阻塞后的跳帧与结束、晚加入/重复/跳跃/
+较小的从表槽、主表控制闪光及结束、非法值，以及超过 32 位毫秒的时间。
+`test_sweep_runtime.c` 抽取真实 `ui_ext.c` 状态和包装函数、`ui.c` 刷新周期策略，
+检查连接触发/开机延后、原子发布步号、目标间隔、结束回调同时清除 active 并恢复
+亮度、亮度只在变化时写入，以及展厅中断。开机页最终加载和真实 UI 快照切换
+仍需设备集成验证；这些测试不运行完整 LVGL 定时器、FreeRTOS 或 ESP-NOW 链路。
+
+新增两项后，Release + ASan/UBSan 的 `theme` / `media` / `signal_store` / `rules`
+共 40 项测试通过，主题生成检查通过。新增 C 文件后已执行 `idf.py reconfigure build`，
+ESP-IDF 5.5.3 ESP32-S3 V1 双核普通/统计固件完整构建通过，该阶段镜像分别为
+`0x28e630` / `0x28ef40`，应用分区余量均为 15%。构建仍隔离在
+`/tmp/obd-smooth-20261102/{normal,stats}`，未修改仓库 `build/` 或本地 `sdkconfig`。
+当前串口列表中仍未识别到仪表，未烧录、未提交、未推送；本轮不据此判定整体
+流畅度优化已完成，实时数据、切页、扫表、视频与长期稳定性仍需同条件实机 A/B。
+
+
+## 主题切页图片后台准备验证
+
+2026-11-02：主题内切页原来在手势回调同步执行 `theme_create_page()`，图片读卡与
+转换会阻塞 LVGL。现在 `ui_theme_navigation.c` 复用分阶段接口：LVGL 捕获布局/规则
+快照，`APP_TASK_THEME_PAGE_PREP`（6144 字节栈、优先级 3、不绑核）准备独立图片缓存，
+完成后唤醒 LVGL，由 16 ms 检查定时器发布控件并切页。准备期间不持有主题锁、不操作
+LVGL，旧页仍可刷新；这不是对整段建页耗时或帧率的实机测量。
+
+只保留一个在途请求，不排队或强杀任务。显式取消、原页开始退出/删除、活动页或页索引
+改变都会阻止发布；即使离开后又返回，也不会恢复已取消的跳转。结果在 worker 完成后
+用 `theme_page_prepare_discard()` 回收，避免过期页创建控件或抢占视频会话。启动或发布
+失败保留原页；安装/库重载等待准备资源释放。布局快照、字体、控件创建仍在 LVGL
+路径；独立缓存可能重复旧页图片、增加短时 PSRAM 压力，继续受现有图片预算/降级约束。
+慢卡、视频读卡争用与大图片主题的内存峰值需要实机验证，不能宣称所有切页停顿已消除。
+
+统计版新增 `theme_nav_begin`、`theme_nav_images`、`theme_nav_publish`，分别测量请求端
+布局/规则快照、worker 图片规划/读取/转换、LVGL finish/cache adoption/控件创建的墙钟
+耗时。它们不包含完整请求到屏幕可见的延迟，也不是 FPS；前后两项位于 LVGL handler，
+worker 内还可能包含 SD 指标，不能叠加当作 CPU 利用率。普通版不启用这些计时。
+
+`theme_navigation` 用真实 LVGL 定时器/页面与实际导航状态机、可控 worker/引擎替身，
+检查准备期间旧页定时器继续运行、worker 不发布、重复/无效请求、开始/任务/发布失败、
+显式取消、离开/删除原页、索引变化和离开后返回，检查不提前释放与清理删除回调。
+`theme_page` 另外用真实引擎覆盖运行前/后丢弃任务的资源回收。Release + ASan/UBSan：
+`theme` 15/15、`media` 10/10、`signal_store` 10/10、`rules` 6/6，共 41/41 通过；
+主题生成检查与排除既有 `build/` 产物的 diff 空白检查通过。这些测试不模拟实际
+FreeRTOS 调度、SD 时序、DMA 或视频会话争用。
+
+新增 C 文件后，隔离目录内的 `idf.py reconfigure build` 已通过，目标为 ESP-IDF 5.5.3 /
+ESP32-S3 V1 双核。普通/统计镜像分别为 `0x28e8b0` / `0x28f250`，应用分区余量均为 15%。
+日志位于 `/tmp/obd-smooth-20261102/{normal,stats}-navigation.log`，只出现已有触摸 API
+弃用警告。二进制 SHA256：
+
+```text
+normal 23a1c3f5987d8833215f3876b5b2ba34060c3b12b8a37db1c02b0672a0161f1f
+stats  29c738a84cc500408ced8bf906bdc837088a294372355f377c150393439b0c34
+```
+
+未改仓库 `build/`、本地 `sdkconfig` 或生成主题源码。串口仍只有 Bluetooth、debug-console
+和 wlan-debug，没有识别到仪表；未烧录、提交或推送。下一步需要同一块 SD、同一主题、
+同一数据源的普通版/统计版实机 A/B，覆盖实时刷新、连续切页、扫表、视频及内存稳定性；
+本轮不据主机测试和构建结果宣布整体流畅度目标完成。

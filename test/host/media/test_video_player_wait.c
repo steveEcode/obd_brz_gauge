@@ -206,6 +206,23 @@ BaseType_t xTaskNotifyWait(uint32_t entry, uint32_t exit_bits, uint32_t *value, 
     if (runtime_waits == runtime_limit) longjmp(runtime_escape, 1);
     return event ? pdTRUE : pdFALSE;
 }
+static nvs_user_cfg_t runtime_cfg;
+static bool runtime_elm_connected, check_tpms_schedule;
+static unsigned tpms_service_calls;
+nvs_user_cfg_t nvs_cfg_read(void) { return runtime_cfg; }
+bool elm327_ble_is_connected(void) { return runtime_elm_connected; }
+uint32_t lv_tick_get(void) { return (uint32_t)(now_us / 1000); }
+uint32_t lv_tick_elaps(uint32_t previous) { return lv_tick_get() - previous; }
+void tpms_ble_service_step(bool allow_background)
+{
+    CHECK(mux_held);
+    if (check_tpms_schedule) {
+        const bool expected[] = {true, false, true, true, false};
+        CHECK(tpms_service_calls < COUNT_OF(expected));
+        CHECK(allow_background == expected[tpms_service_calls]);
+    }
+    tpms_service_calls++;
+}
 uint32_t lv_timer_handler(void)
 {
     CHECK(runtime_active && mux_held); runtime_handlers++;
@@ -1253,6 +1270,25 @@ static void run_runtime(unsigned n)
     CHECK(perf_counts[PERF_LVGL_WAIT] == n && perf_counts[PERF_LVGL_HANDLER] == n);
 #endif
 }
+static void next_tpms_schedule_case(void)
+{
+    now_us += 250000;
+    switch (runtime_handlers) {
+    case 1: runtime_cfg.ble_obd_mac[0] = 1; break;
+    case 2: runtime_elm_connected = true; break;
+    case 3: runtime_elm_connected = false; runtime_cfg.device_role = ESPNOW_ROLE_SLAVE; break;
+    case 4:
+        runtime_cfg.device_role = ESPNOW_ROLE_MASTER;
+        runtime_cfg.ble_obd_mac[0] = 0; strcpy(runtime_cfg.ble_device_name, "ELM"); break;
+    }
+}
+static void test_runtime_tpms_schedule(void)
+{
+    now_us = 250000; handler_delay = 2;
+    check_tpms_schedule = true; at_handler = next_tpms_schedule_case;
+    run_runtime(5);
+    CHECK(tpms_service_calls == 5);
+}
 static void select_delay(void)
 {
     static const uint32_t delays[] = { 0, 1, 2, 10, 500, UINT32_MAX };
@@ -1569,7 +1605,7 @@ int main(void)
         TEST(test_ui_event_pause_loading), TEST(test_ui_event_pause_pending), TEST(test_ui_event_pause_late_publish),
         TEST(test_ui_event_pause_decode), TEST(test_ui_event_pause_publish), TEST(test_ui_event_pause_stop),
         TEST(test_ui_event_fullscreen_control), TEST(test_fullscreen_invalidation_guard), TEST(test_ui_event_invalid_control),
-        TEST(test_runtime_timer_deadlines), TEST(test_runtime_before_registration),
+        TEST(test_runtime_tpms_schedule), TEST(test_runtime_timer_deadlines), TEST(test_runtime_before_registration),
         TEST(test_runtime_publish_gap), TEST(test_runtime_publish_blocked), TEST(test_runtime_coalescing),
         TEST(test_runtime_resume_pending), TEST(test_runtime_late_paused_publish), TEST(test_runtime_paused_idle),
         TEST(test_runtime_stop_late_notification), TEST(test_runtime_replaced_session), TEST(test_runtime_fullscreen_guard)
