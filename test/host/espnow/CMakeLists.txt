@@ -32,6 +32,7 @@ set(EH_WARN -Wall -Wextra -Werror -Wshadow)
 # ---- Codec under test (pure C) + the generated static signal registry ----
 add_library(espnow_codec STATIC
     "${REPO_ROOT}/main/bsp_obd_dsp/espnow_v6.c"
+    "${REPO_ROOT}/main/bsp_obd_dsp/espnow_sources.c"
     "${REPO_ROOT}/main/app_obd_dsp/signal_registry.c")
 target_include_directories(espnow_codec PUBLIC
     "${REPO_ROOT}/main/bsp_obd_dsp"
@@ -205,3 +206,8 @@ if(EH_TPMS_LVGL)
     target_compile_options(test_tpms_ui PRIVATE ${EH_WARN} -UNDEBUG)
     add_test(NAME tpms_ui COMMAND test_tpms_ui)
 endif()
+
+add_executable(test_espnow_sources test_espnow_sources.c)
+target_compile_options(test_espnow_sources PRIVATE ${EH_WARN} -UNDEBUG)
+target_link_libraries(test_espnow_sources PRIVATE espnow_codec)
+add_test(NAME espnow_sources COMMAND test_espnow_sources)

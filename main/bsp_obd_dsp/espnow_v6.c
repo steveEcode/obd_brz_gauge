@@ -398,6 +398,7 @@ espnow_pkt_kind_t espnow_classify(const uint8_t *buf, size_t len)
     if (buf[2] == ESPNOW_V6_VERSION && len > V6_OFS_TYPE) {
         if (buf[V6_OFS_TYPE] == ESPNOW_V6_TYPE_DATA)  return ESPNOW_PKT_V6_DATA;
         if (buf[V6_OFS_TYPE] == ESPNOW_V6_TYPE_HELLO) return ESPNOW_PKT_V6_HELLO;
+        if (buf[V6_OFS_TYPE] == ESPNOW_V6_TYPE_TPMS) return ESPNOW_PKT_V6_TPMS;
     }
     return ESPNOW_PKT_UNKNOWN;
 }

@@ -5,11 +5,14 @@
 // Master: snapshots the valid obd.* / veh.* values from signal_store every
 //   100 ms (20 ms during the linked test) and sends them as v6 fragments when every online slave announced
 //   v6 support (HELLO), otherwise as one v5 packet (old slaves keep working).
+// TPMS: page subscriptions use extended HELLO; type 3 snapshots every 500 ms
+//   remain independent of legacy DATA fallback. System sources stay local.
 // Slave: accepts v5 and v6 DATA, writes signal_store, drives sys.obd_link and
 //   invalidates obd.* / veh.* when the master goes silent.
 
 #include "espnow_link.h"
 #include "espnow_v6.h"
+#include "tpms_ble_client.h"
 #include "app_obd_dsp/app_event.h"
 #include <stdlib.h>
 #include <string.h>
@@ -44,6 +47,9 @@ static const char MASTER_NAME[] = "SkyGauge";   // name the master broadcasts (s
 #define SLAVE_TICK_MS           250     // slave housekeeping period (presence, link timeout)
 #define MG_MAX_SLAVES           4       // max slaves the master tracks
 #define ESPNOW_TIMEOUT_US       2000000 // slave online window (master) / master silent -> link lost (slave)
+_Static_assert(ESPNOW_TIMEOUT_US == ESPNOW_SOURCE_TIMEOUT_US, "shared source timeout");
+_Static_assert(NVS_TPMS_WHEELS == TPMS_WHEEL_COUNT, "TPMS wheel order/count");
+_Static_assert(ESPNOW_TPMS_FRAME_LEN <= ESPNOW_FRAME_MAX, "TPMS fits one frame");
 
 _Static_assert(sizeof(MASTER_NAME) <= MASTER_NAME_LEN, "master name too long");
 _Static_assert(MASTER_NAME_LEN == ESPNOW_NAME_LEN, "wire name length");
@@ -91,9 +97,12 @@ static volatile bool s_rx_linked_en = false;  // slave side: master's rpm_warn_l
 
 // Master side: online slave records (last_v6_us = last HELLO announcing v6 DATA support)
 static struct { uint8_t mac[6]; uint8_t position; int64_t last_us; int64_t last_v6_us;
-                int64_t last_demand_us; uint16_t demand_mask; } s_slaves[MG_MAX_SLAVES];
+                int64_t last_demand_us; espnow_demand_t demand; } s_slaves[MG_MAX_SLAVES];
 static portMUX_TYPE s_slaves_mux = portMUX_INITIALIZER_UNLOCKED;
-static uint16_t s_local_demand_mask;
+static espnow_demand_t s_local_demand;
+static espnow_tpms_cache_t s_tpms_cache;
+/* Cache shares the binding lock: rebinding and clearing delivered TPMS are
+ * atomic, and a previously queued source cannot revive the old binding. */
 static espnow_snapshot_t *s_snap = NULL;   // master tx snapshot (PSRAM, allocated once)
 static bool s_tx_v6 = false;               // master: currently sending v6
 
@@ -191,6 +200,7 @@ static void cache_bound_master_mac(void)
     nvs_user_cfg_t cfg;
     nvs_cfg_snapshot(&cfg);
     portENTER_CRITICAL(&s_bound_master_mac_mux);
+    memset(&s_tpms_cache, 0, sizeof(s_tpms_cache));
     memcpy(s_bound_master_mac, cfg.espnow_master_mac, sizeof(s_bound_master_mac));
     s_bound_master_mac_active = s_bound_master_mac[0] != 0;
     portEXIT_CRITICAL(&s_bound_master_mac_mux);
@@ -343,6 +353,7 @@ static void master_task(void *arg) {
     (void)arg;
     uint8_t frame[ESPNOW_FRAME_MAX];
     bool override_active = false;
+    int64_t next_sources_us = 0;
     while (!master_stopping()) {
         const nvs_user_cfg_t cfg = nvs_cfg_read();
         const linktest_sample_t test = master_sample_linktest(cfg.rpm_warn_threshold);
@@ -360,6 +371,18 @@ static void master_task(void *arg) {
             for (int i = 0; i < n; i++) link_send(frame, espnow_v6_encode(s_snap, i, frame, sizeof(frame)));
         } else {
             link_send(frame, espnow_v5_encode(s_snap, frame, sizeof(frame)));
+        }
+        // Extensions do not participate in the v5/v6 DATA fallback: old peers
+        // ignore type 3, new peers still receive TPMS in a mixed-version group.
+        int64_t now = esp_timer_get_time();
+        if (now >= next_sources_us && !master_stopping()) {
+            espnow_demand_t demand = espnow_link_remote_data_demand();
+            if (demand.tpms) {
+                tpms_wheel_data_t wheels[TPMS_WHEEL_COUNT];
+                tpms_ble_snapshot(wheels); // always local; never relay a slave cache
+                link_send(frame, espnow_tpms_encode(s_snap->seq, demand.tpms, wheels, frame, sizeof(frame)));
+            }
+            next_sources_us = now + (int64_t)PRESENCE_INTERVAL_MS * 1000;
         }
         master_wait(esp_timer_get_time());
     }
@@ -408,27 +431,56 @@ void espnow_link_start_master(void) {
     ESP_LOGI(TAG, "ESP-NOW MASTER up (broadcast %dms, ch%d)", BROADCAST_INTERVAL_MS, ESPNOW_CHANNEL);
 }
 
-void espnow_link_set_demand_mask(uint16_t mask)
+void espnow_link_set_data_demand(const espnow_demand_t *demand)
 {
+    if (!demand) return;
     portENTER_CRITICAL(&s_slaves_mux);
-    s_local_demand_mask = mask;
+    s_local_demand = *demand;
+    s_local_demand.tpms &= 0x0fu;
     portEXIT_CRITICAL(&s_slaves_mux);
 }
 
-uint16_t espnow_link_remote_demand_mask(void)
+void espnow_link_set_demand_mask(uint16_t mask)
 {
-    uint16_t mask = 0;
+    portENTER_CRITICAL(&s_slaves_mux);
+    s_local_demand.obd = mask;
+    portEXIT_CRITICAL(&s_slaves_mux);
+}
+
+espnow_demand_t espnow_link_remote_data_demand(void)
+{
+    espnow_demand_t demand = {0};
     int64_t now = esp_timer_get_time();
     portENTER_CRITICAL(&s_slaves_mux);
     if (s_is_master) {
         for (int i = 0; i < MG_MAX_SLAVES; i++) {
             if (s_slaves[i].last_demand_us != 0 &&
-                now - s_slaves[i].last_demand_us < ESPNOW_TIMEOUT_US)
-                mask |= s_slaves[i].demand_mask;
+                now - s_slaves[i].last_demand_us < ESPNOW_TIMEOUT_US) {
+                demand.obd |= s_slaves[i].demand.obd;
+                demand.veh |= s_slaves[i].demand.veh;
+                demand.tpms |= s_slaves[i].demand.tpms;
+            }
         }
     }
     portEXIT_CRITICAL(&s_slaves_mux);
-    return mask;
+    return demand;
+}
+
+uint16_t espnow_link_remote_demand_mask(void)
+{
+    return espnow_link_remote_data_demand().obd;
+}
+
+void espnow_link_tpms_snapshot(tpms_wheel_data_t out[TPMS_WHEEL_COUNT])
+{
+    if (nvs_cfg_read().device_role != ESPNOW_ROLE_SLAVE) {
+        tpms_ble_snapshot(out);
+        return;
+    }
+    int64_t now = esp_timer_get_time();
+    portENTER_CRITICAL(&s_bound_master_mac_mux);
+    espnow_tpms_cache_snapshot(&s_tpms_cache, now, out);
+    portEXIT_CRITICAL(&s_bound_master_mac_mux);
 }
 
 // ========================= Slave =========================
@@ -568,7 +620,7 @@ static void slave_check_timeout(int64_t now) {
 
 // Master side: received a slave presence (v5) or HELLO (v6) -> record/refresh the online slave
 static void handle_presence(const uint8_t *mac, uint8_t position, bool hello_v6,
-                            bool has_demand, uint16_t demand_mask) {
+                            bool has_demand, const espnow_demand_t *demand) {
     if (!mac) return;
     portENTER_CRITICAL(&s_slaves_mux);
     int free_idx = -1, match = -1, oldest = 0;
@@ -582,14 +634,14 @@ static void handle_presence(const uint8_t *mac, uint8_t position, bool hello_v6,
     if (match < 0) {
         s_slaves[idx].last_v6_us = 0;   // new / recycled entry
         s_slaves[idx].last_demand_us = 0;
-        s_slaves[idx].demand_mask = 0;
+        s_slaves[idx].demand = (espnow_demand_t){0};
     }
     memcpy(s_slaves[idx].mac, mac, 6);
     s_slaves[idx].position = position;
     s_slaves[idx].last_us = now;
     if (hello_v6) s_slaves[idx].last_v6_us = now;
     if (has_demand) {
-        s_slaves[idx].demand_mask = demand_mask;
+        s_slaves[idx].demand = *demand;
         s_slaves[idx].last_demand_us = now;
     }
     portEXIT_CRITICAL(&s_slaves_mux);
@@ -620,6 +672,14 @@ static void handle_rx(const uint8_t *mac, const uint8_t *data, int len, int64_t 
     case ESPNOW_PKT_V6_DATA:
         if (!s_is_master && espnow_v6_decode(data, (size_t)len, &f)) slave_on_data(&f, received_us);
         break;
+    case ESPNOW_PKT_V6_TPMS:
+        if (!s_is_master && mac) {
+            portENTER_CRITICAL(&s_bound_master_mac_mux);
+            if (!s_bound_master_mac_active || !memcmp(mac, s_bound_master_mac, 6))
+                espnow_tpms_cache_apply(&s_tpms_cache, mac, data, (size_t)len, received_us);
+            portEXIT_CRITICAL(&s_bound_master_mac_mux);
+        }
+        break;
     case ESPNOW_PKT_V5_CTRL: {
         espnow_ctrl_packet_t c;
         memcpy(&c, data, sizeof(c));
@@ -627,13 +687,13 @@ static void handle_rx(const uint8_t *mac, const uint8_t *data, int len, int64_t 
         break;
     }
     case ESPNOW_PKT_V5_PRESENCE:   // only the master tallies slaves
-        if (s_is_master) handle_presence(mac, data[3], false, false, 0);
+        if (s_is_master) handle_presence(mac, data[3], false, false, NULL);
         break;
     case ESPNOW_PKT_V6_HELLO: {
-        uint16_t demand = 0;
-        if (s_is_master && espnow_hello_decode_demand(data, (size_t)len, &pos, &caps, &demand)) {
+        espnow_demand_t demand = {0};
+        if (s_is_master && espnow_sources_hello_decode(data, (size_t)len, &pos, &caps, &demand)) {
             handle_presence(mac, pos, (caps & ESPNOW_CAP_V6_DATA) != 0,
-                            (caps & ESPNOW_CAP_DEMAND_MASK) != 0, demand);
+                            (caps & ESPNOW_CAP_DEMAND_MASK) != 0, &demand);
         }
         break;
     }
@@ -666,7 +726,7 @@ static void recv_cb(const esp_now_recv_info_t *info, const uint8_t *data, int le
         if (!accepting || !info || !slave_source_allowed(info->src_addr)) return;
         if (!data || len <= 0 || len > ESPNOW_FRAME_MAX) return;
         espnow_pkt_kind_t kind = espnow_classify(data, (size_t)len);
-        if (kind == ESPNOW_PKT_V5_DATA || kind == ESPNOW_PKT_V6_DATA) {
+        if (kind == ESPNOW_PKT_V5_DATA || kind == ESPNOW_PKT_V6_DATA || kind == ESPNOW_PKT_V6_TPMS) {
             slave_packet_t packet = {.received_us = esp_timer_get_time(), .len = (uint16_t)len};
             memcpy(packet.mac, info->src_addr, sizeof(packet.mac));
             memcpy(packet.data, data, (size_t)len);
@@ -686,7 +746,7 @@ static void recv_cb(const esp_now_recv_info_t *info, const uint8_t *data, int le
 static void slave_task(void *arg) {
     (void)arg;
     espnow_presence_t pr = { .magic = ESPNOW_MAGIC, .version = ESPNOW_V5_VERSION };
-    uint8_t hello[ESPNOW_V6_HELLO_LEN + 2];
+    uint8_t hello[ESPNOW_SOURCES_HELLO_LEN];
     int64_t next_presence_us = 0;
     slave_packet_t packet;
     while (!slave_stopping()) {
@@ -709,19 +769,20 @@ static void slave_task(void *arg) {
         if (now >= next_presence_us) {
             pr.position = nvs_device_position_get();
             link_send(&pr, sizeof(pr));
-            uint16_t demand_mask;
+            espnow_demand_t demand;
             portENTER_CRITICAL(&s_slaves_mux);
-            demand_mask = s_local_demand_mask;
+            demand = s_local_demand;
             portEXIT_CRITICAL(&s_slaves_mux);
-            link_send(hello, espnow_hello_encode_demand(pr.position,
-                ESPNOW_CAP_V6_DATA | ESPNOW_CAP_DEMAND_MASK, demand_mask,
-                hello, sizeof(hello)));
+            link_send(hello, espnow_sources_hello_encode(pr.position, &demand, hello, sizeof(hello)));
             next_presence_us = now + (int64_t)PRESENCE_INTERVAL_MS * 1000;
         }
         slave_check_timeout(esp_timer_get_time());
         xSemaphoreTake(s_slave_wake, pdMS_TO_TICKS(SLAVE_TICK_MS));
     }
     slave_drop_link();
+    portENTER_CRITICAL(&s_bound_master_mac_mux);
+    memset(&s_tpms_cache, 0, sizeof(s_tpms_cache));
+    portEXIT_CRITICAL(&s_bound_master_mac_mux);
     slave_last_rx_set(0);
     portENTER_CRITICAL(&s_last_rx_mux);
     s_slave_running = false;
@@ -799,6 +860,7 @@ void espnow_link_bind_master(const uint8_t mac[6]) {
     const esp_err_t err = nvs_cfg_update(&base, &cfg);
     if (err == ESP_OK) {
         portENTER_CRITICAL(&s_bound_master_mac_mux);
+        memset(&s_tpms_cache, 0, sizeof(s_tpms_cache));
         memcpy(s_bound_master_mac, mac, sizeof(s_bound_master_mac));
         s_bound_master_mac_active = true;
         portEXIT_CRITICAL(&s_bound_master_mac_mux);
@@ -817,6 +879,7 @@ void espnow_link_unbind_master(void) {
     const esp_err_t err = nvs_cfg_update(&base, &cfg);
     if (err == ESP_OK) {
         portENTER_CRITICAL(&s_bound_master_mac_mux);
+        memset(&s_tpms_cache, 0, sizeof(s_tpms_cache));
         memset(s_bound_master_mac, 0, sizeof(s_bound_master_mac));
         s_bound_master_mac_active = false;
         portEXIT_CRITICAL(&s_bound_master_mac_mux);

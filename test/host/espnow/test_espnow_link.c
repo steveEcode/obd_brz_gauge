@@ -21,12 +21,12 @@
 typedef enum {
     IDLE, LOCAL, REMOTE, V6, RESTART, THRESHOLD, SATURATE, STORM,
     PRE_TAKE, OTA_ACTIVE, OTA_IDLE, CREATE_FAIL, SLAVE, HIGH_CLOCK,
-    ZERO_THRESHOLD, REMOTE_IDLE, SNAPSHOT_RESTART, STOP_COLLECT, SLAVE_FAIL, SCENARIO_COUNT
+    ZERO_THRESHOLD, REMOTE_IDLE, SNAPSHOT_RESTART, STOP_COLLECT, SLAVE_FAIL, MASTER_SOURCES, SLAVE_SOURCES, SCENARIO_COUNT
 } scenario_t;
 static const char *const names[] = {
     "idle", "local", "remote", "v6", "restart", "threshold", "saturate", "storm",
     "before_take", "ota_active", "ota_idle", "create_fail", "slave", "64bit_clock",
-    "zero_threshold", "remote_idle", "snapshot_restart", "stop_during_collect", "slave_create_fail"
+    "zero_threshold", "remote_idle", "snapshot_restart", "stop_during_collect", "slave_create_fail", "master_sources", "slave_sources"
 };
 static scenario_t scenario;
 static TaskFunction_t worker;
@@ -48,6 +48,20 @@ static unsigned slave_wait_phase, slave_invalidations, slave_data_writes;
 static int32_t slave_rpm, slave_link;
 static bool slave_stop_requested;
 static void slave_receive(int32_t rpm);
+static unsigned sources_packets;
+static void slave_sources_receive(uint8_t source, uint32_t seq)
+{
+    uint8_t frame[ESPNOW_FRAME_MAX], mac[6] = {source};
+    esp_now_recv_info_t info = {.src_addr=mac};
+    tpms_wheel_data_t wheels[4] = {0};
+    memcpy(wheels[0].sensor_id, "18010F", 7);
+    wheels[0].bound = wheels[0].received = true;
+    wheels[0].sample.data.pressure_pa = 210000;
+    wheels[0].age_ms = 1000;
+    size_t len = espnow_tpms_encode(seq, 15, wheels, frame, sizeof(frame));
+    CHECK(len && late_recv_fn); late_recv_fn(&info, frame, (int)len);
+    memset(frame, 0xa5, sizeof(frame));
+}
 
 QueueHandle_t xQueueCreateStatic(UBaseType_t capacity, UBaseType_t item_size,
                                 uint8_t *bytes, StaticQueue_t *storage)
@@ -121,7 +135,50 @@ BaseType_t xSemaphoreGive(SemaphoreHandle_t sem)
 { CHECK(sem == wake_sem && !lock_depth); gives++; sem->token = true; return pdTRUE; }
 BaseType_t xSemaphoreTake(SemaphoreHandle_t sem, TickType_t ticks)
 {
-    CHECK(sem == wake_sem && !lock_depth && ticks && ticks <= (scenario == SLAVE ? 250u : 100u));
+    CHECK(sem == wake_sem && !lock_depth && ticks && ticks <= ((scenario == SLAVE || scenario == SLAVE_SOURCES) ? 250u : 100u));
+    if (scenario == SLAVE_SOURCES) {
+        tpms_wheel_data_t wheels[4];
+        CHECK(++waits < 16);
+        if (sem->token) { sem->token = false; return pdTRUE; }
+        espnow_link_tpms_snapshot(wheels);
+        switch (slave_wait_phase++) {
+        case 0: // Queued old master was rejected after the binding change.
+            CHECK(!wheels[0].bound);
+            slave_sources_receive(2, 2);
+            espnow_link_tpms_snapshot(wheels); CHECK(!wheels[0].bound); // callback only queued
+            break;
+        case 1:
+            CHECK(wheels[0].fresh && wheels[0].age_ms == 1000 && wheels[0].sample.data.pressure_pa == 210000);
+            now_us += 500000;
+            espnow_link_tpms_snapshot(wheels); CHECK(wheels[0].age_ms == 1500);
+            slave_sources_receive(2, 1); // out-of-order must not reset the age
+            break;
+        case 2:
+            CHECK(wheels[0].age_ms == 1500);
+            now_us += 1500000;
+            espnow_link_tpms_snapshot(wheels); CHECK(!wheels[0].received); // link expiry, not 120s
+            slave_sources_receive(2, 1); // reboot after silence
+            break;
+        case 3: {
+            CHECK(wheels[0].fresh);
+            uint8_t mac[6] = {3}; espnow_link_bind_master(mac);
+            espnow_link_tpms_snapshot(wheels); CHECK(!wheels[0].received);
+            slave_sources_receive(2, 3); // bound filter, cannot revive former master
+            break;
+        }
+        case 4:
+            CHECK(!wheels[0].bound);
+            slave_sources_receive(3, 1);
+            break;
+        case 5:
+            CHECK(wheels[0].fresh);
+            CHECK(!espnow_link_pause_for_ota()); // worker owns its exit and cache clear
+            break;
+        default: CHECK(false);
+        }
+        sem->token = false;
+        return pdTRUE;
+    }
     if (scenario == SLAVE) {
         CHECK(++waits < 10);
         if (sem->token) { sem->token = false; return pdTRUE; }
@@ -178,7 +235,7 @@ BaseType_t xTaskCreate(TaskFunction_t fn, const char *name, uint32_t stack,
 {
     (void)arg; CHECK(!lock_depth && priority == 4 && !handle); creates++;
     CHECK(creates == 1);  // no independent 3KB link-test task
-    if (scenario == SLAVE || scenario == SLAVE_FAIL) { CHECK(!strcmp(name, "espnow_pres") && stack == 3584 && !handle); }
+    if (scenario == SLAVE || scenario == SLAVE_FAIL || scenario == SLAVE_SOURCES) { CHECK(!strcmp(name, "espnow_pres") && stack == 3584 && !handle); }
     else CHECK(!strcmp(name, "espnow_tx") && stack == 3584);
     if (scenario == CREATE_FAIL || scenario == SLAVE_FAIL) return pdFALSE;
     worker = fn; if (handle) *handle = &worker; return pdPASS;
@@ -283,10 +340,24 @@ esp_err_t esp_now_deinit(void) { deinit_count++; deinitialized = true; return ES
 esp_err_t esp_now_send(const uint8_t *mac, const uint8_t *data, size_t len)
 {
     (void)mac; CHECK(!lock_depth && !deinitialized);
-    if (scenario == SLAVE) {
+    if (scenario == SLAVE || scenario == SLAVE_SOURCES) {
         espnow_pkt_kind_t kind = espnow_classify(data, len);
         CHECK(kind == ESPNOW_PKT_V5_CTRL || kind == ESPNOW_PKT_V5_PRESENCE || kind == ESPNOW_PKT_V6_HELLO);
+        if (scenario == SLAVE_SOURCES && kind == ESPNOW_PKT_V6_HELLO) {
+            espnow_demand_t d;
+            CHECK(espnow_sources_hello_decode(data, len, NULL, NULL, &d));
+            CHECK(d.tpms == 15 && d.obd == 1 && d.veh == UINT32_C(0x80000000));
+        }
         if (kind == ESPNOW_PKT_V5_CTRL) { CHECK(len == 6 && data[3] == 1); slave_requests++; }
+        return ESP_OK;
+    }
+    if (scenario == MASTER_SOURCES && espnow_classify(data, len) == ESPNOW_PKT_V6_TPMS) {
+        uint8_t mask; tpms_wheel_data_t wheels[4];
+        CHECK(espnow_tpms_decode(data, len, NULL, &mask, wheels));
+        CHECK(mask == 5 && now_us == origin + (int64_t)sources_packets * 500000);
+        CHECK(wheels[0].fresh && wheels[0].sample.data.pressure_pa == 210000);
+        CHECK(wheels[2].bound && !wheels[1].bound);
+        sources_packets++;
         return ESP_OK;
     }
     const uint16_t rpm = expected_rpm;
@@ -333,6 +404,15 @@ static void setup(void)
     now_us = origin; end_us = origin + 9000000;
     cfg.rpm_warn_threshold = scenario == SATURATE ? UINT16_MAX : scenario == ZERO_THRESHOLD ? 0 : 7000;
     cfg.rpm_warn_linked_en = 1;
+    if (scenario == SLAVE_SOURCES) {
+        cfg.device_role = ESPNOW_ROLE_SLAVE;
+        espnow_demand_t d = {.obd=1, .veh=UINT32_C(0x80000000), .tpms=15};
+        espnow_link_set_data_demand(&d);
+        espnow_link_start_slave();
+        slave_sources_receive(1, 1);
+        uint8_t mac[6] = {2}; espnow_link_bind_master(mac);
+        return;
+    }
     if (scenario == SLAVE_FAIL) {
         espnow_link_start_slave(); CHECK(!worker && !espnow_link_slave_has_data());
         slave_receive(1234); CHECK(!slave_data_writes && !espnow_link_slave_has_data());
@@ -355,6 +435,22 @@ static void setup(void)
         espnow_link_pause_for_ota(); CHECK(!deletes && deinit_count == 1); return;
     }
     switch (scenario) {
+    case MASTER_SOURCES: {
+        uint8_t mac[6] = {1}, hello[15]; esp_now_recv_info_t info = {.src_addr=mac};
+        espnow_demand_t d = {.obd=2, .veh=1, .tpms=1};
+        size_t len = espnow_sources_hello_encode(1, &d, hello, sizeof(hello)); recv_fn(&info, hello, (int)len);
+        mac[0] = 2; d = (espnow_demand_t){.obd=4, .veh=UINT32_C(0x80000000), .tpms=4};
+        len = espnow_sources_hello_encode(2, &d, hello, sizeof(hello)); recv_fn(&info, hello, (int)len);
+        espnow_demand_t merged = espnow_link_remote_data_demand();
+        CHECK(merged.obd == 6 && merged.veh == UINT32_C(0x80000001) && merged.tpms == 5);
+        d.tpms = 8; len = espnow_sources_hello_encode(2, &d, hello, sizeof(hello)); recv_fn(&info, hello, (int)len);
+        CHECK(espnow_link_remote_data_demand().tpms == 9); // replace, not OR forever
+        d.tpms = 4; len = espnow_sources_hello_encode(2, &d, hello, sizeof(hello)); recv_fn(&info, hello, (int)len);
+        mac[0] = 3; uint8_t presence[] = {(uint8_t)ESPNOW_MAGIC, (uint8_t)(ESPNOW_MAGIC >> 8), 5, 3};
+        recv_fn(&info, presence, sizeof(presence)); // mixed legacy peer must not suppress extensions
+        end_us = origin + 3000000;
+        break;
+    }
     case IDLE: end_us = origin + 1000000; break;
     case REMOTE: start(true); break;
     case V6: {
@@ -398,8 +494,18 @@ static void run(scenario_t value)
         slave_receive(9999); // retained late callback must not revive a stopped worker
         CHECK(slave_data_writes == before && !espnow_link_slave_has_data());
     }
+    if (scenario == MASTER_SOURCES) {
+        CHECK(sources_packets == 4 && packets == 30);
+        espnow_demand_t d = espnow_link_remote_data_demand();
+        CHECK(!d.obd && !d.veh && !d.tpms);
+    }
+    if (scenario == SLAVE_SOURCES) {
+        tpms_wheel_data_t wheels[4]; espnow_link_tpms_snapshot(wheels);
+        CHECK(!wheels[0].received && deleted && deletes == 1);
+        CHECK(espnow_link_pause_for_ota() && deinit_count == 1);
+    }
     CHECK(!lock_depth);
-    if (scenario != SLAVE && scenario != CREATE_FAIL && scenario != STOP_COLLECT) CHECK(configs == packets);
+    if (scenario != SLAVE && scenario != SLAVE_SOURCES && scenario != CREATE_FAIL && scenario != STOP_COLLECT) CHECK(configs == packets);
     if (scenario == IDLE) CHECK(packets == 10 && waits == 10 && !overrides);
     if (scenario == LOCAL || scenario == REMOTE || scenario == SATURATE || scenario == HIGH_CLOCK || scenario == ZERO_THRESHOLD)
         CHECK(active_packets == 415 && idle_packets == 7 && overrides == 416);
@@ -425,6 +531,18 @@ int main(void)
         int status; CHECK(waitpid(pid, &status, 0) == pid);
         CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
     }
-    puts("19 real ESP-NOW worker/callback/lifecycle scenarios passed");
+    puts("21 real ESP-NOW worker/callback/lifecycle scenarios passed");
     return 0;
+}
+
+void tpms_ble_snapshot(tpms_wheel_data_t out[TPMS_WHEEL_COUNT]) {
+    CHECK(!lock_depth);
+    memset(out, 0, TPMS_WHEEL_COUNT * sizeof(*out));
+    // A slave deliberately has different local bindings: they must never leak
+    // into delivered data when its master is absent or its cache is cleared.
+    unsigned wheel = scenario == SLAVE_SOURCES ? 3 : 0;
+    memcpy(out[wheel].sensor_id, "18010F", 7);
+    out[wheel].bound = out[wheel].received = out[wheel].fresh = true;
+    out[wheel].sample.data.pressure_pa = 210000;
+    out[2].bound = true; memcpy(out[2].sensor_id, "ABCDEF", 7);
 }

@@ -295,10 +295,11 @@ a time.
 | Frame | Direction | Length | Content |
 |-------|-----------|--------|---------|
 | v5 presence | slave → master | 4 B | magic, version `5`, position 1..3; every 500 ms |
-| v6 HELLO | slave → master | 8 B (10 B with demand mask) | see table below; every 500 ms, sent together with v5 presence |
+| v6 HELLO | slave → master | 8 / 10 / 15 B (extended demand) | see table below; every 500 ms, sent together with v5 presence |
 | v5 control | both ways | 6 B | magic, version `5`, cmd (`1` linked-test start / `2` sync RPM warning threshold), u16 arg |
 | v5 DATA | master → slave | 47 B | legacy fixed structure, see below |
 | v6 DATA | master → slave | 38 + 6n + 2 B (≤250) | see table below |
+| v6 TPMS | master → slave | 142 B | type `3`; every 500 ms while subscribed |
 
 The master broadcasts one snapshot every 100 ms (20 ms during the linked
 test). It sends v6 only while at least one slave is online and every online
@@ -348,14 +349,46 @@ slave is bound to a master MAC, it only accepts frames from that MAC.
 | 2 | 1 | version `6` |
 | 3 | 1 | type `2` |
 | 4 | 1 | position 1..3 |
-| 5 | 1 | caps: bit0 = decodes v6 DATA; bit1 = appended local page demand mask |
+| 5 | 1 | caps: bit0 = decodes v6 DATA; bit1 = appended local OBD demand; bit2 = extended source subscriptions and TPMS reception |
 | 6 | 2 | reserved, 0 (receivers accept length ≥ 8) |
 | 8 | 2 | local OBD demand mask when caps bit1 is set; bit i maps to `SIG_OBD_*` |
+| 10 | 4 | `veh.*` demand mask when caps bit2 is set; bit i maps to vehicle extension slot i |
+| 14 | 1 | TPMS wheel demand when caps bit2 is set; bit0..3 = FL / FR / RL / RR, upper four bits 0 |
 
-Each slave advertises the OBD signals needed by its current page. The master unions
-fresh masks from all slaves within the 2 s online window, then asks the single OBD
-poller for those signals and broadcasts them. Older firmware keeps using the 8-byte
-HELLO and ignores the appended fields.
+Slaves advertise all shareable sources used by current-page bindings, value-driven videos and rules. Navigation replaces rather than accumulates page demand. The master unions slave masks within a 2-second demand window and requests required standard signals through the single serial OBD poller. `veh.*` keeps broadcasting all valid values with profile_hash checks without changing vehicle sampling policy. `sys.*` is neither subscribed nor forwarded (`sys.obd_link` still represents the master's OBD link via DATA flags). Caps bit2 requires bit1 and at least 15 B; missing extension fields are rejected. Undeclared demand in legacy HELLOs is zero. Old masters ignore appended fields; old slaves continue using 8 / 10 B HELLO but cannot receive TPMS extensions.
+
+**v6 TPMS (type 3, 142 B)**: negotiated independently of DATA. While an extended HELLO has subscribed to wheels within the last 2 seconds, the master sends a complete snapshot of all subscribed wheels every 500 ms. Nothing is sent without subscriptions. Other old slaves forcing v5 DATA do not suppress this extension; old firmware ignores it. The master forwards local sensor data without needing to display TPMS or issuing additional ELM requests.
+
+| Off | Len | Field |
+|-----|-----|-------|
+| 0 | 2 | magic `0x4F42` |
+| 2 | 1 | version `6` |
+| 3 | 1 | type `3` |
+| 4 | 4 | seq, from the same master DATA snapshot cycle |
+| 8 | 1 | wheel mask, bit0..3 = FL / FR / RL / RR; 1..15 |
+| 9 | 3 | reserved, 0 |
+| 12 | 128 | four 32 B wheel records, fixed FL / FR / RL / RR order |
+| 140 | 2 | CRC-16/CCITT-FALSE over all preceding bytes |
+
+Offsets within each 32 B wheel record:
+
+| Off | Len | Field |
+|-----|-----|-------|
+| 0 | 1 | flags: bit0 bound, bit1 received; received requires bound |
+| 1 | 3 | six-HEX sensor ID as u24 LE, including leading zeros |
+| 4 | 4 | pressure_pa, u32 |
+| 8 | 2 | temperature_c, i16 |
+| 10 | 2 | voltage_mv, u16; receiver derives estimated battery from voltage |
+| 12 | 1 | state |
+| 13 | 1 | version |
+| 14 | 1 | ble_version_code |
+| 15 | 4 | RSSI, i32 |
+| 19 | 6 | MAC, diagnostic only, not TPMS binding identity |
+| 25 | 1 | addr_type |
+| 26 | 4 | age_ms since the original sensor broadcast at the master, saturated u32 |
+| 30 | 2 | reserved, 0 |
+
+Unsubscribed or unbound wheel records are zero-filled. Bound but unreceived wheels carry only ID and flags; other bytes are zero. The slave maintenance worker applies data; the receive callback only queues it, and the worker rechecks the bound MAC and the queued packet's 2-second lifetime. Only increasing seq values are accepted, including u32 wrap. After 2 seconds without an applied snapshot, a restarted master's new sequence is allowed. Slaves advance age_ms from reception time; measurements become invalid at 120000 ms. Forwarding heartbeats do not reset sensor age. Two seconds without a new TPMS snapshot, rebinding or link shutdown clears the slave TPMS view without falling back to old local bindings.
 
 **v5 DATA** (47 B, legacy units): offset 0 magic, 2 version, 3 flags (same
 bit layout as v6), 4 seq u32, 8 rpm u16, 10 speed u8, 11 sweep_step, 12

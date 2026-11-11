@@ -17,7 +17,7 @@
  *
  * Capability handshake: a v6-capable slave keeps sending the 4-byte v5
  * presence (old masters count it) and additionally an 8-byte base v6 HELLO
- * (10 bytes when the demand capability is set) with ESPNOW_CAP_V6_DATA. A master switches to v6 DATA only while every online
+ * (10 bytes with OBD demand, 15 with source subscriptions; espnow_sources.h) with ESPNOW_CAP_V6_DATA. A master switches to v6 DATA only while every online
  * slave has a fresh HELLO; otherwise it keeps sending v5. Slaves accept both.
  *
  * v6 DATA frame (38 + 6*n + 2 bytes):
@@ -75,6 +75,7 @@ extern "C" {
 #define ESPNOW_V6_VERSION         6
 #define ESPNOW_V6_TYPE_DATA       1
 #define ESPNOW_V6_TYPE_HELLO      2
+#define ESPNOW_V6_TYPE_TPMS       3
 #define ESPNOW_V6_HDR_LEN         38
 #define ESPNOW_V6_REC_LEN         6
 #define ESPNOW_V6_CRC_LEN         2
@@ -110,6 +111,7 @@ typedef enum {
     ESPNOW_PKT_V5_CTRL,
     ESPNOW_PKT_V6_DATA,
     ESPNOW_PKT_V6_HELLO,
+    ESPNOW_PKT_V6_TPMS,
 } espnow_pkt_kind_t;
 
 typedef struct {

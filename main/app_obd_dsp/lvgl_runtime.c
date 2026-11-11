@@ -44,8 +44,10 @@ void lvgl_runtime_task(void *mux)
                 nvs_user_cfg_t cfg = nvs_cfg_read();
                 bool obd_configured = cfg.ble_device_name[0] != '\0';
                 for (unsigned i = 0; i < 6; ++i) obd_configured |= cfg.ble_obd_mac[i] != 0;
-                tpms_ble_service_step(cfg.device_role == ESPNOW_ROLE_SLAVE || !obd_configured ||
-                                      elm327_ble_is_connected());
+                // Slaves render the master's TPMS cache. Do not spend radio time
+                // scanning their old local bindings in the background.
+                tpms_ble_service_step(cfg.device_role != ESPNOW_ROLE_SLAVE &&
+                                      (!obd_configured || elm327_ble_is_connected()));
             }
             delay_ms = lv_timer_handler();
             PERF_END(PERF_LVGL_HANDLER, perf_handler_start, 1);

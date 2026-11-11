@@ -12,7 +12,7 @@
 
 lv_obj_t *ui_ScreenPageEasterEgg, *ui_ScreenPageBLEScan, *ui_ScreenPageOilPressure;
 static tpms_wheel_data_t live_wheels[4];
-void tpms_ble_snapshot(tpms_wheel_data_t out[4]) { memcpy(out, live_wheels, sizeof(live_wheels)); }
+void espnow_link_tpms_snapshot(tpms_wheel_data_t out[4]) { memcpy(out, live_wheels, sizeof(live_wheels)); }
 void tpms_ble_background_pause(bool pause) { (void)pause; }
 void ui_ScreenPageOilPressure_screen_init(void) { ui_ScreenPageOilPressure = lv_obj_create(NULL); }
 static nvs_user_cfg_t config;

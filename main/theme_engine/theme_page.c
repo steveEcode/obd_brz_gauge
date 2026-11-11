@@ -29,6 +29,7 @@
 #include "rules/tr_eval.h"
 #include "app_obd_dsp/signal_store.h"
 #include "app_obd_dsp/tpms_theme_source.h"
+#include "bsp_obd_dsp/espnow_link.h"
 #include "app_obd_dsp/signal_delivery.h"
 #include "app_obd_dsp/storage_util.h"
 #include "media/video_elem.h"
@@ -219,7 +220,7 @@ static void te_read_sources(te_live_page_t *p)
     const uint64_t standard_mask = UINT64_MAX >> (64 - SIG_SLOT_COUNT);
     if (!(p->used_mask & ~standard_mask) && !p->used_high) return;
     tpms_wheel_data_t wheels[NVS_TPMS_WHEELS];
-    tpms_ble_snapshot(wheels);
+    espnow_link_tpms_snapshot(wheels);
     tpms_theme_values(wheels, p->values + SIG_SLOT_COUNT);
 }
 
@@ -1169,27 +1170,34 @@ void theme_tick(void)
     te_unlock();
 }
 
-bool theme_page_obd_demand_mask(lv_obj_t *screen, uint16_t *mask)
+bool theme_page_data_demand(lv_obj_t *screen, espnow_demand_t *demand)
 {
     te_ctx_t *c = g_te;
-    uint16_t result = 0;
-
-    if (!mask) return false;
-    if (!c) {
-        *mask = 0;
-        return true;
-    }
+    espnow_demand_t result = {0};
+    if (!demand) return false;
+    if (!c) { *demand = result; return true; }
     if (!te_trylock()) return false;
     if (screen) {
         for (te_live_page_t *p = c->live; p; p = p->next) {
-            if (p->scr == screen) {
-                result = (uint16_t)(p->used_mask & ((UINT64_C(1) << SIG_OBD_COUNT) - 1u));
-                break;
-            }
+            if (p->scr != screen) continue;
+            result.obd = (uint16_t)(p->used_mask & ((UINT64_C(1) << SIG_OBD_COUNT) - 1u));
+            for (unsigned i = 0; i < SIG_VEH_MAX; ++i)
+                if (te_source_used(p, SIG_VEH_BASE + i)) result.veh |= UINT32_C(1) << i;
+            for (unsigned i = 0; i < TPMS_THEME_COUNT; ++i)
+                if (te_source_used(p, SIG_SLOT_COUNT + i)) result.tpms |= (uint8_t)(1u << (i / TPMS_THEME_FIELDS));
+            break;
         }
     }
     te_unlock();
-    *mask = result;
+    *demand = result;
+    return true;
+}
+
+bool theme_page_obd_demand_mask(lv_obj_t *screen, uint16_t *mask)
+{
+    espnow_demand_t demand;
+    if (!mask || !theme_page_data_demand(screen, &demand)) return false;
+    *mask = demand.obd;
     return true;
 }
 

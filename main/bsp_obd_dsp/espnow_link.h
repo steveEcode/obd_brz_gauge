@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include "espnow_sources.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -17,6 +18,14 @@ void espnow_link_start_master(void);
 
 // Slave: init WiFi + ESP-NOW, receive the master's broadcast and write it into the local OBD data cache (no ELM327 link).
 void espnow_link_start_slave(void);
+
+// Replace all shareable source subscriptions for the local page. System sources
+// remain device-local. Online slave demands expire after two seconds.
+void espnow_link_set_data_demand(const espnow_demand_t *demand);
+espnow_demand_t espnow_link_remote_data_demand(void);
+// Delivered four-wheel data: local on master/standalone, master snapshot on
+// slave (no local fallback, no slave NVS pairing changes).
+void espnow_link_tpms_snapshot(tpms_wheel_data_t out[TPMS_WHEEL_COUNT]);
 
 // Publish the local page's OBD demand mask. Slaves advertise it in HELLO;
 // masters retain their own mask and merge masks from online slaves.

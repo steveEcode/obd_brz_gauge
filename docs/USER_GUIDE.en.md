@@ -193,10 +193,11 @@ three gauges light up in position order and then all flash (toggleable as
 Linked mode on the RPM warning page), plus the synchronized "RACE / AS / ONE"
 boot animation.
 
-The master merges the signals demanded by each online slave's current page.
-When a slave switches to boost, oil temperature or another signal page, the
-master adds that signal on the next poll round; slaves never open their own
-OBD connection or create extra requests.
+The master merges `obd.*`, `veh.*` and `tpms.*` subscriptions from each online slave's current page. When a slave switches to boost, oil temperature or another signal page, the master adds the required OBD signals on the next poll round; vehicle extensions continue broadcasting all valid values. Slaves never open their own OBD connection or create extra requests. `sys.*` (role, page, uptime, etc.) retains each gauge's local meaning rather than copying master system state.
+
+**Pair TPMS on the master only.** An updated slave automatically subscribes to all four wheels on the built-in TPMS page. Custom-theme labels, pointers, videos or rules referencing any `tpms.<wheel>.*` field subscribe to that wheel, without requiring the master to display TPMS. Every 500 ms the master forwards complete snapshots of subscribed wheels; pressure, temperature, battery and diagnostics share that snapshot. Slaves do not need duplicate bindings or background scans of their old local bindings. Those local bindings are preserved, but slave displays use only master data, never stale local values.
+
+Navigation replaces subscriptions; when a slave leaves or stops reporting, the master withdraws its subscriptions after the 2-second demand window. After 2 seconds without a TPMS extension frame, a slave clears its master TPMS view and shows `--`. The independent 120-second sensor expiry still applies; repeated forwarding does not reset sample age. Rebinding the master or stopping ESP-NOW also clears old TPMS data. TPMS forwarding requires updated firmware on both the master and receiving slave. Other old slaves in the group do not block TPMS reception on updated slaves, but an old master cannot forward TPMS.
 
 TEST on the RPM warning page uses the master-generated ramp; pressing TEST again on either
 master or slave restarts it. A request shortens the master's idle broadcast wait, but send batches

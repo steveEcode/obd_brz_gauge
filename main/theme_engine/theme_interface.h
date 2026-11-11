@@ -17,6 +17,7 @@
 #include <stdbool.h>
 #include "esp_err.h"
 #include "lvgl.h"
+#include "bsp_obd_dsp/espnow_sources.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -93,6 +94,9 @@ void theme_tick(void);
 
 /** Resolve the standard OBD signals used by a live theme page's bindings/rules.
  * Returns false only when the theme lock is busy; on false, `mask` is untouched. */
+/** All shareable sources used by bindings, video drivers and rule operands.
+ * System sources stay local; any TPMS field subscribes to its coherent wheel. */
+bool theme_page_data_demand(lv_obj_t *screen, espnow_demand_t *demand);
 bool theme_page_obd_demand_mask(lv_obj_t *screen, uint16_t *mask);
 
 /**

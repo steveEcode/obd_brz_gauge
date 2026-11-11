@@ -1,7 +1,8 @@
 #pragma once
 #include "bsp_obd_dsp/tpms_ble_client.h"
 
-/* Firmware-local theme namespace; not an OBD PID, signal wire ID or NVS slot. */
+/* Theme namespace, not an OBD PID, registry wire ID or NVS slot. ESP-NOW
+ * forwards raw subscribed wheel snapshots; all derived fields stay identical. */
 #define TPMS_THEME_FIELDS 16
 #define TPMS_THEME_COUNT (NVS_TPMS_WHEELS * TPMS_THEME_FIELDS)
 int tpms_theme_source_index(const char *key);

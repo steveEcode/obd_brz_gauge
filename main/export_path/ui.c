@@ -538,23 +538,24 @@ void my_timerMain(lv_timer_t * timer)
     const uint8_t needle_source = user_cfg.needle_source_idx < DISP_ITEM_COUNT ?
                                  user_cfg.needle_source_idx : DISP_ITEM_CLT;
 
-    static uint16_t last_obd_demand_mask = (uint16_t)(1u << SIG_OBD_RPM);
-    static uint16_t last_local_demand_mask;
+    static espnow_demand_t last_local_demand;
     static uint16_t last_published_obd_demand_mask;
     static bool demand_masks_initialized;
+    espnow_demand_t local_demand = {0};
     uint16_t obd_demand_mask = ui_data_mask_for_screen(scr, &user_cfg, needle_source);
     if (scr == ui_ScreenPageThemeGauge) {
-        if (!theme_page_obd_demand_mask(scr, &obd_demand_mask))
-            obd_demand_mask = last_obd_demand_mask;
-        obd_demand_mask |= (uint16_t)(1u << SIG_OBD_RPM);
+        if (!theme_page_data_demand(scr, &local_demand)) local_demand = last_local_demand;
+        obd_demand_mask = local_demand.obd | (uint16_t)(1u << SIG_OBD_RPM);
     }
+    if (scr == ui_ScreenPageTPMS) local_demand.tpms = 0x0f;
+    local_demand.obd = obd_demand_mask;
     // Advertise this unit's page demand. A master separately unions fresh
     // masks received from slaves before asking the OBD worker for a snapshot.
-    if (!demand_masks_initialized || obd_demand_mask != last_local_demand_mask) {
-        espnow_link_set_demand_mask(obd_demand_mask);
-        last_local_demand_mask = obd_demand_mask;
+    if (!demand_masks_initialized || local_demand.obd != last_local_demand.obd ||
+        local_demand.veh != last_local_demand.veh || local_demand.tpms != last_local_demand.tpms) {
+        espnow_link_set_data_demand(&local_demand);
+        last_local_demand = local_demand;
     }
-    last_obd_demand_mask = obd_demand_mask;
     obd_demand_mask |= espnow_link_remote_demand_mask();
     if (!demand_masks_initialized || obd_demand_mask != last_published_obd_demand_mask) {
         elm327_ble_set_obd_demand_mask(obd_demand_mask);

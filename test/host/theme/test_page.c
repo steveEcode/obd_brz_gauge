@@ -11,7 +11,7 @@ te_ctx_t *g_te;
 static int64_t clock_ms;
 static double samples[SIG_SLOT_COUNT];
 static tpms_wheel_data_t tpms_samples[4];
-void tpms_ble_snapshot(tpms_wheel_data_t out[4]) { memcpy(out, tpms_samples, sizeof(tpms_samples)); }
+void espnow_link_tpms_snapshot(tpms_wheel_data_t out[4]) { memcpy(out, tpms_samples, sizeof(tpms_samples)); }
 int64_t esp_timer_get_time(void) { return clock_ms * 1000; }
 uint64_t signal_store_get_delivered_mask(uint64_t mask, double *out)
 {
@@ -42,7 +42,8 @@ char *te_strdup(const char *s)
 }
 void te_lock(void) {}
 void te_unlock(void) {}
-bool te_trylock(void) { return true; }
+static bool theme_lock_busy;
+bool te_trylock(void) { return !theme_lock_busy; }
 static bool te_read_fail;
 esp_err_t te_read(uint32_t offset, void *dst, uint32_t size)
 {
@@ -794,6 +795,39 @@ static void test_tpms_bindings_and_high_change(void)
     destroy_fixture(&f); memset(tpms_samples, 0, sizeof(tpms_samples));
 }
 
+static void test_source_subscriptions(void)
+{
+    fixture_t f;
+    init_fixture(&f, false);
+    f.ctx.live = &f.page;
+    f.page.used_mask = f.page.used_high = 0;
+    te_use_source(&f.page, SIG_OBD_RPM);
+    te_use_source(&f.page, SIG_OBD_BOOST);
+    te_use_source(&f.page, SIG_SYS_ROLE); // never a remote demand
+    te_use_source(&f.page, SIG_VEH_BASE);
+    te_use_source(&f.page, SIG_VEH_BASE + 31);
+    espnow_demand_t d;
+    TH_CHECK(theme_page_data_demand(f.page.scr, &d));
+    TH_CHECK(d.obd == ((1u << SIG_OBD_RPM) | (1u << SIG_OBD_BOOST)));
+    TH_CHECK(d.veh == UINT32_C(0x80000001) && !d.tpms);
+    for (unsigned i = 0; i < TPMS_THEME_COUNT; ++i) {
+        // Every field (including rule-only/status/video sources), crossing the
+        // two 64-bit used masks, must request the correct wheel snapshot.
+        f.page.used_mask = f.page.used_high = 0;
+        te_use_source(&f.page, SIG_SLOT_COUNT + i);
+        TH_CHECK(theme_page_data_demand(f.page.scr, &d));
+        TH_CHECK(!d.obd && !d.veh && d.tpms == (1u << (i / TPMS_THEME_FIELDS)));
+    }
+    theme_lock_busy = true;
+    d = (espnow_demand_t){.obd=3, .veh=4, .tpms=5};
+    TH_CHECK(!theme_page_data_demand(f.page.scr, &d) && d.obd == 3 && d.veh == 4 && d.tpms == 5);
+    theme_lock_busy = false;
+    TH_CHECK(theme_page_data_demand(NULL, &d) && !d.obd && !d.veh && !d.tpms);
+    destroy_fixture(&f);
+    g_te = NULL;
+    TH_CHECK(theme_page_data_demand(NULL, &d) && !d.tpms);
+}
+
 int main(void)
 {
     lv_init();
@@ -804,7 +838,7 @@ int main(void)
     lv_disp_drv_init(&drv); drv.hor_res = drv.ver_res = 360;
     drv.draw_buf = &draw; drv.flush_cb = flush;
     lv_disp_t *disp = lv_disp_drv_register(&drv);
-    test_tpms_sources(); test_tpms_bindings_and_high_change();
+    test_source_subscriptions(); test_tpms_sources(); test_tpms_bindings_and_high_change();
     test_track_opacity();
     test_sweep_rule_inputs(); test_sweep_color_preserves_track(); test_transitions();
     test_sweep_label_values(); test_video_layer_order(); test_sweep_video_opacity(); test_replay();

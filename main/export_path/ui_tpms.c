@@ -1,5 +1,6 @@
 #include "ui_tpms.h"
 #include "ui.h"
+#include "bsp_obd_dsp/espnow_link.h"
 #include "app_obd_dsp/tpms_theme_source.h"
 #include <stdio.h>
 #include <string.h>
@@ -40,7 +41,7 @@ static void refresh(lv_timer_t *timer)
 {
     (void)timer;
     tpms_wheel_data_t wheels[NVS_TPMS_WHEELS];
-    tpms_ble_snapshot(wheels);
+    espnow_link_tpms_snapshot(wheels);
     char buf[420];
     if (s_selected < 0) {
         for (unsigned w = 0; w < NVS_TPMS_WHEELS; ++w) {

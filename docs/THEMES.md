@@ -320,9 +320,9 @@ LCD 输出还包含 ESP-IDF 5.5.3 SPI bus-lock 的上游唤醒修复，防止跨
 
 例如布局标签绑定 `"data_source":"tpms.fl.pressure_bar"`，对应 sidecar overlay 设置 `"dataDisplay":{"precision":2,"unit":"bar"}`，可显示 `2.10 bar`。**不要写 `format:"%.2f"`**：现有布局 format 只处理整数格式；小数位由 sidecar 的 `dataDisplay.precision` 指定。需要把同一 element id 配对到 theme.bin 和 sidecar；未安装 overlay 时遵循原整数格式化逻辑。
 
-标签、弧形、条形、指针和数值驱动视频可绑定这些源，条件与 change 规则可读取。每帧共用一份四轮快照，胎压不参与 OBD 扫表、不因 ELM 断开自动失效，也不增加 OBD 轮询需求。实时数据不落 NVS，不自动通过 ESP-NOW 传给从表；从表需在本机绑定并接收传感器广播。
+标签、弧形、条形、指针和数值驱动视频可绑定这些源，条件与 change 规则可读取。每帧共用一份四轮快照，胎压不参与 OBD 扫表、不因 ELM 断开自动失效，也不增加 OBD 轮询需求。实时数据不落 NVS。独立表/主表使用本机传感器快照；从表页面自动将绑定、数值视频和规则用到的全部 `obd.*` / `veh.*` / `tpms.*` 源注册给主表，任一胎压字段订阅对应轮位的完整快照，不需要在从表重复配对。切页替换注册，`sys.*` 保持本机语义；主题锁忙时保留上次需求。主表胎压快照每 500 ms 转发，连续 2 秒未收到就清空从表视图，传感器 120 秒过期独立计算，转发不刷新原始年龄。
 
-本次仅扩展固件主题解析，不改前端编辑器、标准信号 registry 或线协议。编辑器暂无新增胎压选项；主题包布局和 sidecar 必须携带上述完整键，前端导出/预览兼容性尚未验证。内置胎压总览本身不依赖 sidecar。
+胎压继续使用完整键，不分配标准信号 registry 槽位；ESP-NOW 使用独立的 v6 胎压扩展帧，兼容规则见 [APP_PROTOCOL.md](APP_PROTOCOL.md)。本次转发改动不修改前端编辑器；主题包布局和 sidecar 必须携带上述完整键。内置胎压总览本身不依赖 sidecar。
 
 ### PSRAM 预算与跳过顺序
 
