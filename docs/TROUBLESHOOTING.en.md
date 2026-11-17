@@ -56,9 +56,10 @@ ATZ / ATD / ATD0 → common setup → ATSP<n> → check_connection (default 0100
 all failed → ATSP0 → init → polling
 ```
 
-- Each connection check defaults to 2 seconds; protocols 3/4 allow 10 seconds, protocol 5 allows 5 seconds, and fallback `ATSP0` allows 30 seconds. With setup, retries and timeout draining, a full search can take several minutes.
+- Command responses, protocol probes and connection warm-up default to at most 5 seconds, including protocols 3/4/5 and `ATSP0`; a prompt advances the engine immediately. Waiting for `>` after a timeout allows a separate 5 seconds. Protocol candidates, setup and retries add up, so first data is not guaranteed within 5 seconds; adapters/vehicles needing longer to establish a connection may be interrupted early.
 - After a timeout, the engine interrupts the adapter and waits for `>`; a missing prompt triggers reconnection so another command cannot collide with ongoing initialization.
 - Detection uses the profile's `bus.check_connection` (default `0100`) and accepts only a matching positive response. Probe data is not displayed as gauge data.
+- The default automatic-detection connection check is `0100`. If no matching positive response arrives and the profile contains an RPM request, the same protocol candidate is checked once with `010C`. This applies to the built-in generic profile, imported profiles and explicit `check_connection: "0100"`. A timed-out `0100` is interrupted and drained to `>` before checking RPM; a missing prompt requires reconnection. Other explicit connection checks retain their meaning, and profiles without RPM do not gain an implicit PID.
 - Successful results are reused only in the current session and do not change the NVS Automatic selection into a fixed protocol. After 10 seconds without valid polling data, Auto probes again. Profile or manual protocol locks retain their normal self-heal/reconnect behavior.
 - Older firmware may have saved an automatic result as a nonzero setting. After upgrading, select `0 - Automatic` once on the protocol page, then long-press to save and reboot.
 - CAN reception supports compact `ATH1 + ATS0` output; protocols 7/9 use the corresponding 29-bit standard OBD request addresses, while protocols 1–5 retain native addressing and `ATH0`.

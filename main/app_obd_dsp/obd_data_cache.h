@@ -17,6 +17,10 @@ extern "C" {
  * directly.
  * -------------------------------------------------------------------------- */
 
+/* Snapshot-only sentinel: -1 is a legitimate signed pressure sample.
+ * The legacy OBD/local-ADC setter still treats negative input as invalid. */
+#define OBD_OIL_PRESSURE_INVALID INT16_MIN
+
 #define OBD_GEAR_UNKNOWN  127   /* snapshot.gear when obd.gear is invalid */
 
 typedef struct {
@@ -34,10 +38,11 @@ typedef struct {
     int16_t  load_pct;          /* %, -1 = invalid */
     int16_t  tps;               /* %, -1 = invalid */
     int32_t  bat_mv;            /* mV, -1 = invalid */
-    int16_t  oil_pressure_x10;  /* 0.1 bar, -1 = invalid */
+    int16_t  oil_pressure_x10;  /* signed 0.1 bar, OBD_OIL_PRESSURE_INVALID = invalid */
     int16_t  boost_x10;         /* 0.1 bar gauge, -32768 = invalid */
     int8_t   gear;              /* -1 R, 0 N, 1..8, OBD_GEAR_UNKNOWN = invalid */
     int16_t  afr_x100;          /* AFR x100, -1 = invalid */
+    int16_t  oil_pressure_x100; /* signed 0.01 bar (kPa), no rounding; same invalid sentinel */
 } obd_data_snapshot_t;
 
 void obd_data_set_rpm(uint16_t rpm);

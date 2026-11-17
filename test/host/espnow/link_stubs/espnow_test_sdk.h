@@ -27,6 +27,7 @@ esp_err_t esp_wifi_init(const wifi_init_config_t *cfg);
 esp_err_t esp_wifi_set_storage(int storage);
 esp_err_t esp_wifi_set_mode(int mode);
 esp_err_t esp_wifi_start(void);
+esp_err_t esp_wifi_get_mac(int ifidx, uint8_t mac[6]);
 esp_err_t esp_wifi_set_channel(uint8_t channel, int secondary);
 esp_err_t esp_wifi_set_ps(int ps);
 esp_err_t esp_now_init(void);
@@ -38,6 +39,7 @@ esp_err_t esp_now_send(const uint8_t *mac, const uint8_t *data, size_t len);
 esp_err_t esp_now_deinit(void);
 int64_t esp_timer_get_time(void);
 void *heap_caps_malloc(size_t bytes, unsigned caps);
+void *heap_caps_calloc(size_t count, size_t bytes, unsigned caps);
 const char *esp_err_to_name(esp_err_t err);
 void link_test_log(const char *tag, const char *fmt, ...);
 #define ESP_ERROR_CHECK(expr) do { if ((expr) != ESP_OK) abort(); } while (0)

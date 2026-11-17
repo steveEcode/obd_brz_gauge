@@ -444,6 +444,8 @@ void app_main(void)
         /* 8.3 Start ESP-NOW broadcast (sends this unit's OBD data cache to the slave) -- MASTER only. */
         if (espnow_on) {
             espnow_link_start_master();
+        } else {
+            espnow_link_start_standalone();
         }
 
         /* 8.4 Start RaceChrono BLE GATTS immediately after ESP-NOW (Master/Standalone). */

@@ -83,6 +83,9 @@ defaults are header `7E0`, `ATST=0x19` and a 30 ms request gap. Inherited standa
 vehicle's `bus.hdr`; special headers remain configurable through each `src.hdr`.
 On J1850 / ISO 9141-2 / ISO KWP2000 (protocols 1–5), ordinary OBD requests retain the ELM327's native addressing. CAN-style `bus.hdr` / `src.hdr` values such as `7E0` do not cause `ATSH` commands; `ATH0` hides response headers. Protocols 7/9 map standard OBD request headers `7DF` and `7E0`–`7E7` to their 29-bit functional/physical equivalents; existing 29-bit headers are retained. CAN responses support compact `ATH1 + ATS0` output and 29-bit headers printed as separate bytes.
 An imported `ATSP0` does not overwrite an already selected concrete protocol. After adapter auto mode (`ATSP0` / `ATSPAh`), `ATDPN` confirms the actual protocol before polling. A rejected protocol-selection command cannot make a reply on the previous protocol count as a successful candidate. On protocols 7/9, standard receive filters `7E8`–`7EF` are also mapped to 29-bit addresses; native 29-bit physical requests support Mode 01 functional fallback. Ordinary request/setup timeouts also interrupt and wait for `>`; BLE write failures reconnect before another command can extend a partial line.
+The default automatic-detection connection check is `0100`. If no matching positive response arrives and the profile contains an RPM request, the same protocol candidate is checked once with `010C`. This applies to the built-in generic profile, imported profiles and explicit `check_connection: "0100"`. A timed-out `0100` is interrupted and drained to `>` before checking RPM; a missing prompt requires reconnection. Other explicit connection checks retain their meaning, and profiles without RPM do not gain an implicit PID.
+
+Command responses, protocol probes and connection warm-up default to at most 5 seconds, including protocols 3/4/5 and `ATSP0`; a prompt advances the engine immediately. Waiting for `>` after a timeout allows a separate 5 seconds. Protocol candidates, setup and retries add up, so first data is not guaranteed within 5 seconds; adapters/vehicles needing longer to establish a connection may be interrupted early.
 Drivetrain ratios and ratio-derived `obd.gear` are not inherited: declare a direct gear
 source or supply the vehicle's own `drivetrain`. Automatic completion does not imply
 ECU support for a PID; unavailable values still follow existing failure rules and
@@ -92,6 +95,8 @@ after completion.
 [Sparse examples](../vehicles/examples/README.en.md) include a minimal standard OBD2
 profile and a BMW G profile that declares only direct gear. Installation works the
 same way and requires firmware with this inheritance feature.
+
+For fixed-protocol testing, import [`custom.obd2.iso9141.vehicle.json`](../vehicles/examples/custom.obd2.iso9141.vehicle.json): explicit standard Mode 01 requests with `bus.proto: 3` locking ISO 9141-2 and bypassing automatic detection. Activate `custom.obd2.iso9141` after installation and reboot. This example does not change the catalog count.
 
 ## 2. The simplest case: a standard OBD2 PID (coolant temperature)
 
@@ -476,3 +481,9 @@ Firmware schedules demanded RPM, speed, boost and throttle requests ahead of bac
 Deadlines use actual send times. Signals sharing a PID are deduplicated within a batch. After at least two requests have completed in a longer batch with at least two requests remaining, at most one overdue RPM refresh is inserted before finishing the remaining parameters. Background polling retains service, and before/after commands, multiframe transactions and prompt waits remain uninterrupted. Consecutive failures back off for 1 / 2 / 4 / 8 / 16 seconds; success and reconnect reset the backoff. Only demanded page/gear signals are requested; RPM remains enabled.
 
 The speed cache retains actual samples. Built-in numeric, speed and needle pages show the latest RPM, speed, boost, throttle and load samples without an additional display ramp; slower inputs such as temperature retain smoothing. Periods are minimum intervals, not guaranteed 20 / 10 Hz rates: adapter, protocol, timeouts, request count and profile determine throughput. Additional simultaneous priority inputs share the serial bandwidth; see the simulated scheduling comparison in [PERFORMANCE.en.md](PERFORMANCE.en.md#driver-input-priority-scheduling-validation).
+
+### Per-field Sky Hub override
+
+After pairing Sky Hub in ALONE / MASTER, only valid coolant, oil-temperature and oil-pressure fields are subtracted from the OBD demand mask. Dedicated requests stop; a request still serving other required signals remains scheduled, while signal-store ownership prevents it from overwriting Hub values. Invalid/missing fields are released immediately; 2 seconds without a new Hub frame releases all fields and restores page-demanded OBD polling. Vehicle PID definitions and decode formulas are unchanged. Hub pressure in bar × 100 directly matches the signal registry's internal kPa, with a Hub-specific accepted range of −100–2000 (−1–20 bar). Valid negative pressure is preserved and keeps the dedicated OBD request suppressed; ordinary OBD sources retain their existing nonnegative range.
+
+The built-in UI snapshot additionally keeps `oil_pressure_x100` (signed `bar × 100`, numerically identical to internal kPa), displaying two decimals without an extra ramp. The legacy `oil_pressure_x10` API keeps its conversion for compatibility but is no longer used for built-in oil-pressure values. Persisted alarm units remain `bar × 10` and are converted for comparison, without migrating existing settings.

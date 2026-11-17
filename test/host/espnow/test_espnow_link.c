@@ -8,6 +8,10 @@
 #include "freertos/queue.h"
 #include "bsp_obd_dsp/espnow_link.h"
 #include "bsp_obd_dsp/espnow_v6.h"
+#include "bsp_obd_dsp/skyhub_protocol.h"
+extern unsigned skyhub_test_writes;
+extern uint8_t skyhub_test_mask;
+extern int32_t skyhub_test_values[3];
 #include "bsp_obd_dsp/nvs_storage.h"
 #include "vehicle/vp_manager.h"
 #include "app_obd_dsp/app_event.h"
@@ -21,12 +25,12 @@
 typedef enum {
     IDLE, LOCAL, REMOTE, V6, RESTART, THRESHOLD, SATURATE, STORM,
     PRE_TAKE, OTA_ACTIVE, OTA_IDLE, CREATE_FAIL, SLAVE, HIGH_CLOCK,
-    ZERO_THRESHOLD, REMOTE_IDLE, SNAPSHOT_RESTART, STOP_COLLECT, SLAVE_FAIL, MASTER_SOURCES, SLAVE_SOURCES, SCENARIO_COUNT
+    ZERO_THRESHOLD, REMOTE_IDLE, SNAPSHOT_RESTART, STOP_COLLECT, SLAVE_FAIL, MASTER_SOURCES, SLAVE_SOURCES, SLAVE_HUB, SCENARIO_COUNT
 } scenario_t;
 static const char *const names[] = {
     "idle", "local", "remote", "v6", "restart", "threshold", "saturate", "storm",
     "before_take", "ota_active", "ota_idle", "create_fail", "slave", "64bit_clock",
-    "zero_threshold", "remote_idle", "snapshot_restart", "stop_during_collect", "slave_create_fail", "master_sources", "slave_sources"
+    "zero_threshold", "remote_idle", "snapshot_restart", "stop_during_collect", "slave_create_fail", "master_sources", "slave_sources", "slave_hub"
 };
 static scenario_t scenario;
 static TaskFunction_t worker;
@@ -61,6 +65,20 @@ static void slave_sources_receive(uint8_t source, uint32_t seq)
     size_t len = espnow_tpms_encode(seq, 15, wheels, frame, sizeof(frame));
     CHECK(len && late_recv_fn); late_recv_fn(&info, frame, (int)len);
     memset(frame, 0xa5, sizeof(frame));
+}
+
+/* Accessory relay must remain worker-applied and bound-master-only. */
+static void slave_hub_receive(uint8_t source, uint32_t seq, uint8_t mask, int32_t pressure, bool wrong_target)
+{
+    uint8_t mac[6]={source}, bytes[SH_MAX_FRAME];
+    sh_frame_t f={.type=SH_RELAY,.session=source==2 ? 100 : 200,.seq=seq,.mask=mask,.values={90,110,pressure}};
+    memset(f.target,wrong_target ? 0 : 255,6);
+    size_t len=sh_encode(&f,bytes,sizeof(bytes));
+    esp_now_recv_info_t info={.src_addr=mac};
+    unsigned writes=skyhub_test_writes;
+    CHECK(len && late_recv_fn); late_recv_fn(&info,bytes,(int)len);
+    CHECK(skyhub_test_writes==writes);
+    memset(bytes,0xa5,sizeof(bytes));
 }
 
 QueueHandle_t xQueueCreateStatic(UBaseType_t capacity, UBaseType_t item_size,
@@ -135,7 +153,51 @@ BaseType_t xSemaphoreGive(SemaphoreHandle_t sem)
 { CHECK(sem == wake_sem && !lock_depth); gives++; sem->token = true; return pdTRUE; }
 BaseType_t xSemaphoreTake(SemaphoreHandle_t sem, TickType_t ticks)
 {
-    CHECK(sem == wake_sem && !lock_depth && ticks && ticks <= ((scenario == SLAVE || scenario == SLAVE_SOURCES) ? 250u : 100u));
+    CHECK(sem == wake_sem && !lock_depth && ticks && ticks <= ((scenario == SLAVE || scenario == SLAVE_SOURCES || scenario == SLAVE_HUB) ? 250u : 100u));
+    if (scenario == SLAVE_HUB) {
+        CHECK(++waits<24);
+        if (sem->token) { sem->token=false; return pdTRUE; }
+        switch (slave_wait_phase++) {
+        case 0:
+            CHECK(skyhub_test_writes==1 && skyhub_test_mask==4 && skyhub_test_values[2]==-96);
+            slave_hub_receive(4,10,4,999,false); // wrong bound master
+            slave_hub_receive(2,1,4,999,false); // duplicate
+            slave_hub_receive(2,0,4,999,false); // out of order
+            slave_hub_receive(2,2,4,999,true); // wrong target
+            break;
+        case 1:
+            CHECK(skyhub_test_writes==1 && skyhub_test_values[2]==-96);
+            slave_hub_receive(2,2,1,0,false);
+            break;
+        case 2: {
+            CHECK(skyhub_test_mask==1 && skyhub_test_values[0]==90);
+            uint8_t mac[6]={4}; espnow_link_bind_master(mac);
+            slave_hub_receive(4,1,4,300,false);
+            break;
+        }
+        case 3: {
+            CHECK(skyhub_test_mask==4 && skyhub_test_values[2]==300);
+            uint8_t mac[6]={2}; espnow_link_bind_master(mac);
+            slave_hub_receive(2,3,4,400,false); // A -> B -> A, same running boots
+            break;
+        }
+        case 4:
+            CHECK(skyhub_test_mask==4 && skyhub_test_values[2]==400);
+            now_us+=SH_TIMEOUT_US;
+            break;
+        case 5:
+            CHECK(!skyhub_test_mask);
+            slave_hub_receive(2,4,4,450,false);
+            break;
+        case 6:
+            CHECK(skyhub_test_mask==4 && skyhub_test_values[2]==450);
+            CHECK(!espnow_link_pause_for_ota());
+            break;
+        default: CHECK(false);
+        }
+        sem->token=false;
+        return pdTRUE;
+    }
     if (scenario == SLAVE_SOURCES) {
         tpms_wheel_data_t wheels[4];
         CHECK(++waits < 16);
@@ -235,7 +297,7 @@ BaseType_t xTaskCreate(TaskFunction_t fn, const char *name, uint32_t stack,
 {
     (void)arg; CHECK(!lock_depth && priority == 4 && !handle); creates++;
     CHECK(creates == 1);  // no independent 3KB link-test task
-    if (scenario == SLAVE || scenario == SLAVE_FAIL || scenario == SLAVE_SOURCES) { CHECK(!strcmp(name, "espnow_pres") && stack == 3584 && !handle); }
+    if (scenario == SLAVE || scenario == SLAVE_FAIL || scenario == SLAVE_SOURCES || scenario == SLAVE_HUB) { CHECK(!strcmp(name, "espnow_pres") && stack == 3584 && !handle); }
     else CHECK(!strcmp(name, "espnow_tx") && stack == 3584);
     if (scenario == CREATE_FAIL || scenario == SLAVE_FAIL) return pdFALSE;
     worker = fn; if (handle) *handle = &worker; return pdPASS;
@@ -340,7 +402,8 @@ esp_err_t esp_now_deinit(void) { deinit_count++; deinitialized = true; return ES
 esp_err_t esp_now_send(const uint8_t *mac, const uint8_t *data, size_t len)
 {
     (void)mac; CHECK(!lock_depth && !deinitialized);
-    if (scenario == SLAVE || scenario == SLAVE_SOURCES) {
+    if (len>=2 && data[0]=='S' && data[1]=='H') return ESP_OK;
+    if (scenario == SLAVE || scenario == SLAVE_SOURCES || scenario == SLAVE_HUB) {
         espnow_pkt_kind_t kind = espnow_classify(data, len);
         CHECK(kind == ESPNOW_PKT_V5_CTRL || kind == ESPNOW_PKT_V5_PRESENCE || kind == ESPNOW_PKT_V6_HELLO);
         if (scenario == SLAVE_SOURCES && kind == ESPNOW_PKT_V6_HELLO) {
@@ -404,6 +467,13 @@ static void setup(void)
     now_us = origin; end_us = origin + 9000000;
     cfg.rpm_warn_threshold = scenario == SATURATE ? UINT16_MAX : scenario == ZERO_THRESHOLD ? 0 : 7000;
     cfg.rpm_warn_linked_en = 1;
+    if (scenario == SLAVE_HUB) {
+        cfg.device_role=ESPNOW_ROLE_SLAVE;
+        espnow_link_start_slave();
+        uint8_t mac[6]={2}; espnow_link_bind_master(mac);
+        slave_hub_receive(2,1,4,-96,false);
+        return;
+    }
     if (scenario == SLAVE_SOURCES) {
         cfg.device_role = ESPNOW_ROLE_SLAVE;
         espnow_demand_t d = {.obd=1, .veh=UINT32_C(0x80000000), .tpms=15};
@@ -494,6 +564,10 @@ static void run(scenario_t value)
         slave_receive(9999); // retained late callback must not revive a stopped worker
         CHECK(slave_data_writes == before && !espnow_link_slave_has_data());
     }
+    if (scenario == SLAVE_HUB) {
+        CHECK(slave_wait_phase==7 && !skyhub_test_mask && deleted && deletes==1);
+        CHECK(espnow_link_pause_for_ota() && deinit_count==1);
+    }
     if (scenario == MASTER_SOURCES) {
         CHECK(sources_packets == 4 && packets == 30);
         espnow_demand_t d = espnow_link_remote_data_demand();
@@ -505,7 +579,7 @@ static void run(scenario_t value)
         CHECK(espnow_link_pause_for_ota() && deinit_count == 1);
     }
     CHECK(!lock_depth);
-    if (scenario != SLAVE && scenario != SLAVE_SOURCES && scenario != CREATE_FAIL && scenario != STOP_COLLECT) CHECK(configs == packets);
+    if (scenario != SLAVE && scenario != SLAVE_SOURCES && scenario != SLAVE_HUB && scenario != CREATE_FAIL && scenario != STOP_COLLECT) CHECK(configs == packets);
     if (scenario == IDLE) CHECK(packets == 10 && waits == 10 && !overrides);
     if (scenario == LOCAL || scenario == REMOTE || scenario == SATURATE || scenario == HIGH_CLOCK || scenario == ZERO_THRESHOLD)
         CHECK(active_packets == 415 && idle_packets == 7 && overrides == 416);
@@ -531,7 +605,7 @@ int main(void)
         int status; CHECK(waitpid(pid, &status, 0) == pid);
         CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
     }
-    puts("21 real ESP-NOW worker/callback/lifecycle scenarios passed");
+    puts("22 real ESP-NOW worker/callback/lifecycle scenarios passed");
     return 0;
 }
 

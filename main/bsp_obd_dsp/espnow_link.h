@@ -88,3 +88,6 @@ bool espnow_link_linked_en_with_local(bool local_enabled);
 #ifdef __cplusplus
 }
 #endif
+
+/* Standalone: receive Sky Hub only, no master DATA broadcast. */
+void espnow_link_start_standalone(void);

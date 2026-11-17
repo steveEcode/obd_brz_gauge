@@ -231,7 +231,7 @@ void ui_needle_apply_source(void)
 static void ui_needle_page_update_with_source(uint8_t src, float sweep_ratio,
                            int16_t clt, int16_t iat, int16_t oil,
                            int16_t load_pct, int16_t tps, int32_t bat_mv,
-                           int16_t oilp_x10,
+                           int16_t oilp_x100,
                            uint16_t rpm, uint16_t speed, int16_t boost_x10,
                            int16_t afr_x100)
 {
@@ -253,7 +253,7 @@ static void ui_needle_page_update_with_source(uint8_t src, float sweep_ratio,
 
     int32_t raw = 0;
     bool valid = disp_item_read_value(src, clt, iat, oil, load_pct, tps, bat_mv,
-                                      oilp_x10, rpm, speed, boost_x10, afr_x100, &raw);
+                                      oilp_x100, rpm, speed, boost_x10, afr_x100, &raw);
 
     static int32_t s_disp_needle = 0;
     static uint8_t s_last_needle_src = 0xFF;
@@ -378,6 +378,20 @@ static void ui_update_metric_header(lv_obj_t *name_label,
     }
 }
 
+/* Two-decimal pressure needs more room than the old one-decimal value.
+ * Keep the existing font family and restore the original layout on source changes. */
+static void ui_update_metric_value_layout(lv_obj_t *label, disp_item_t item,
+                                         bool temp_row)
+{
+    if (!label) return;
+    bool oil_pressure = item == DISP_ITEM_OILP;
+    lv_obj_set_style_text_font(label, oil_pressure ? &ui_font_FontTypoderSize36
+                                                  : &ui_font_FontTypoderSize40, LV_PART_MAIN);
+    lv_obj_set_width(label, oil_pressure ? 140 : (temp_row ? 110 : 120));
+    if (temp_row) lv_obj_align(label, LV_ALIGN_LEFT_MID, oil_pressure ? 40 : 70,
+                              lv_obj_get_style_y(label, LV_PART_MAIN));
+}
+
 static uint32_t ui_refresh_period_ms_for_screen(lv_obj_t *scr,
                                                 bool in_sweep,
                                                 bool rpm_flashing,
@@ -406,6 +420,7 @@ static uint32_t ui_refresh_period_ms_for_screen(lv_obj_t *scr,
     if (scr == ui_ScreenPageSettings || scr == ui_ScreenPageMultiGauge ||
         scr == ui_ScreenPageVehicle ||
         scr == ui_ScreenPageBluetooth || scr == ui_ScreenPageTPMSPairing ||
+        scr == ui_ScreenPageSkyHub ||
         scr == ui_ScreenPageBLEScan || scr == ui_ScreenPageOTAMode || scr == ui_ScreenPageODBProtocal ||
         scr == ui_ScreenPageTempCustom || scr == ui_ScreenPageInfoCustom ||
         scr == ui_ScreenPageNeedleConfig || scr == ui_ScreenPageChartConfig ||
@@ -506,7 +521,7 @@ void my_timerMain(lv_timer_t * timer)
     int16_t clt = 0;
     int16_t iat = 0;
     int16_t oil = 0;
-    int16_t oilp_x10 = 0;
+    int16_t oilp_x100 = OBD_OIL_PRESSURE_INVALID;
     int16_t load_pct = 0;
     int16_t tps = 0;
     int32_t bat_mv = 0;
@@ -581,7 +596,7 @@ void my_timerMain(lv_timer_t * timer)
             clt       = obd.coolant_temp;
             iat       = obd.intake_temp;
             oil       = obd.oil_temp;      // real oil temperature °C (SSM 22 10 17), -100=invalid
-            oilp_x10  = obd.oil_pressure_x10; // oil pressure 0.1bar, -1=invalid
+            oilp_x100  = obd.oil_pressure_x100; // signed 0.01bar, OBD_OIL_PRESSURE_INVALID=invalid
             load_pct  = obd.load_pct;      // engine load 0~100%, -1=invalid
             tps       = obd.tps;
             bat_mv    = obd.bat_mv;
@@ -609,7 +624,7 @@ void my_timerMain(lv_timer_t * timer)
         // Needle/Temp/Info pages read these locals; real OBD reads are skipped while IN_SWEEP.
         clt       = (int16_t)disp_item_sweep_value(DISP_ITEM_CLT, sweep_ratio);
         oil       = (int16_t)disp_item_sweep_value(DISP_ITEM_OIL, sweep_ratio);
-        oilp_x10  = (int16_t)disp_item_sweep_value(DISP_ITEM_OILP, sweep_ratio);
+        oilp_x100  = (int16_t)disp_item_sweep_value(DISP_ITEM_OILP, sweep_ratio);
         bat_mv    = disp_item_sweep_value(DISP_ITEM_BAT, sweep_ratio);
         boost_x10 = (int16_t)disp_item_sweep_value(DISP_ITEM_BOOST, sweep_ratio);
         afr_x100  = (int16_t)disp_item_sweep_value(DISP_ITEM_AFR, sweep_ratio);
@@ -667,7 +682,7 @@ void my_timerMain(lv_timer_t * timer)
     if (scr == ui_ScreenPageNeedle) {
         ui_needle_page_update_with_source(needle_source, sweep_ratio,
                               clt, iat, oil, load_pct, tps, bat_mv,
-                              oilp_x10, usRpm, ucSpeed, boost_x10, afr_x100);
+                              oilp_x100, usRpm, ucSpeed, boost_x10, afr_x100);
     }
 
     /*Temp page*/
@@ -686,6 +701,7 @@ void my_timerMain(lv_timer_t * timer)
                     s_last_temp_map[i] = map_idx;
                     s_disp_temp[i] = 0;  // reset on source switch, avoiding a ramp from the old source's value
                     ui_update_metric_header(ui_LabelTempName[i], ui_LabelTempUnit[i], ui_LabelTempDot[i], item);
+                    ui_update_metric_value_layout(ui_LabelTempValue[i], item, true);
                 }
 
                 int32_t sw = disp_item_sweep_value(item, r);
@@ -701,10 +717,11 @@ void my_timerMain(lv_timer_t * timer)
                     s_last_temp_map[i] = map_idx;
                     s_disp_temp[i] = 0;  // reset on source switch, avoiding a ramp from the old source's value
                     ui_update_metric_header(ui_LabelTempName[i], ui_LabelTempUnit[i], ui_LabelTempDot[i], item);
+                    ui_update_metric_value_layout(ui_LabelTempValue[i], item, true);
                 }
 
                 int32_t value = 0;
-                bool valid = disp_item_read_value(item, clt, iat, oil, load_pct, tps, bat_mv, oilp_x10, usRpm, ucSpeed, boost_x10, afr_x100, &value);
+                bool valid = disp_item_read_value(item, clt, iat, oil, load_pct, tps, bat_mv, oilp_x100, usRpm, ucSpeed, boost_x10, afr_x100, &value);
                 disp_item_update(&s_disp_temp[i], ui_LabelTempValue[i], item, value, valid, ANIM_THRESH_TEMP);
             }
         }
@@ -730,7 +747,7 @@ void my_timerMain(lv_timer_t * timer)
             disp_item_set_value_color(ui_LabelOilPressureText, citem, s_disp_chart, cvalid);
         } else {
             cvalid = disp_item_read_value(citem, clt, iat, oil, load_pct, tps, bat_mv,
-                                          oilp_x10, usRpm, ucSpeed, boost_x10, afr_x100, &cval);
+                                          oilp_x100, usRpm, ucSpeed, boost_x10, afr_x100, &cval);
             disp_item_update(&s_disp_chart, ui_LabelOilPressureText, citem, cval, cvalid, ANIM_THRESH_TEMP);
         }
 
@@ -768,6 +785,7 @@ void my_timerMain(lv_timer_t * timer)
                     s_last_info_map[i] = map_idx;
                     s_disp_info[i] = 0;  // reset on source switch, avoiding a ramp from the old source's value
                     ui_update_metric_header(ui_LabelInfoName[i], ui_LabelInfoUnit[i], NULL, item);
+                    ui_update_metric_value_layout(ui_LabelInfoValue[i], item, false);
                 }
 
                 int32_t sw = disp_item_sweep_value(item, r);
@@ -783,10 +801,11 @@ void my_timerMain(lv_timer_t * timer)
                     s_last_info_map[i] = map_idx;
                     s_disp_info[i] = 0;  // reset on source switch, avoiding a ramp from the old source's value
                     ui_update_metric_header(ui_LabelInfoName[i], ui_LabelInfoUnit[i], NULL, item);
+                    ui_update_metric_value_layout(ui_LabelInfoValue[i], item, false);
                 }
 
                 int32_t value = 0;
-                bool valid = disp_item_read_value(item, clt, iat, oil, load_pct, tps, bat_mv, oilp_x10, usRpm, ucSpeed, boost_x10, afr_x100, &value);
+                bool valid = disp_item_read_value(item, clt, iat, oil, load_pct, tps, bat_mv, oilp_x100, usRpm, ucSpeed, boost_x10, afr_x100, &value);
                 disp_item_update(&s_disp_info[i], ui_LabelInfoValue[i], item, value, valid, ANIM_THRESH_TEMP);
             }
         }

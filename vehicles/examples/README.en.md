@@ -2,7 +2,7 @@
 
 English | [简体中文](README.md)
 
-These two examples use default OBD2 inheritance and require firmware with that feature.
+The two sparse examples use default OBD2 inheritance and require firmware with that feature.
 They are separate from the 17 catalog profiles and 18 complete import templates. Copy
 one `*.vehicle.json` to the SD card's `OBD/IMPORT/`, install, activate on the Vehicle
 page and reboot.
@@ -21,6 +21,8 @@ An explicit signal replaces its whole default definition. Add
 `"defaults":"none"` disables all inheritance. Inherited OBD requests use `bus.hdr`,
 while special requests use their own `src.hdr`. See
 [PID_GUIDE.md](../../docs/PID_GUIDE.en.md) for the full rules.
+
+The fixed-protocol example [`custom.obd2.iso9141.vehicle.json`](custom.obd2.iso9141.vehicle.json) explicitly declares standard Mode 01 requests and locks `bus.proto` to `3` (ISO 9141-2, 5 baud init, 10.4 kbaud). After installation, activate `custom.obd2.iso9141` through the web interface or app and reboot; it overrides the automatic protocol selection in settings. It contains no vehicle-specific PIDs or ratio-derived gear; unsupported signals still show `--`.
 
 ```sh
 python3 contracts/check_contracts.py --profiles vehicles/examples

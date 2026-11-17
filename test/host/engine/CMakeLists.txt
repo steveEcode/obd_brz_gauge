@@ -256,3 +256,8 @@ if(EH_WRITE_BENCHMARK)
     target_compile_options(bench_write_rounding PRIVATE ${EH_WARN})
     target_link_libraries(bench_write_rounding PRIVATE write_rounding_probe)
 endif()
+
+add_test(NAME engine_skyhub COMMAND test_engine --skyhub)
+
+# Protocol regressions can run independently of historical request fixtures.
+add_test(NAME engine_protocol COMMAND test_engine --protocol)

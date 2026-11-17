@@ -94,7 +94,8 @@ signals default to OBD2. Use `disabled: true` for one signal or root
 - **RaceChrono BLE output** — can act as a RaceChrono DIY device
 - **Self-healing link** — re-initializes and reconnects automatically when
   data stalls; Auto retains its selection and re-probes on decode failures,
-  supporting 11/29-bit CAN, J1850 and K-line responses
+  supporting 11/29-bit CAN, J1850 and K-line responses.
+  Default `0100` probe failures retry the configured RPM request `010C` after safe synchronization.
 
 ## Quick start
 

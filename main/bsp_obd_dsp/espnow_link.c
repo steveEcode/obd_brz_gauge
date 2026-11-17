@@ -12,6 +12,8 @@
 
 #include "espnow_link.h"
 #include "espnow_v6.h"
+#include "skyhub_client.h"
+#include "esp_random.h"
 #include "tpms_ble_client.h"
 #include "app_obd_dsp/app_event.h"
 #include <stdlib.h>
@@ -106,9 +108,24 @@ static espnow_tpms_cache_t s_tpms_cache;
 static espnow_snapshot_t *s_snap = NULL;   // master tx snapshot (PSRAM, allocated once)
 static bool s_tx_v6 = false;               // master: currently sending v6
 
+static const uint8_t s_broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+static bool s_standalone;
+static uint8_t s_hub_relay_mac[6];
+static uint32_t s_hub_relay_session;
+static sh_order_t s_hub_relay_order;
+static int64_t s_hub_relay_us;
+
+static void hub_relay_send(uint32_t seq)
+{
+    sh_frame_t f={.type=SH_RELAY,.session=s_hub_relay_session,.seq=seq};
+    memcpy(f.target,s_broadcast_mac,6);
+    f.mask=signal_store_hub_snapshot(f.values);
+    uint8_t bytes[SH_MAX_FRAME]; size_t len=sh_encode(&f,bytes,sizeof(bytes));
+    if (len) esp_now_send(s_broadcast_mac,bytes,len);
+}
+
 static void recv_cb(const esp_now_recv_info_t *info, const uint8_t *data, int len);
 
-static const uint8_t s_broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 static int64_t s_last_rx_us = 0;
 static portMUX_TYPE s_last_rx_mux = portMUX_INITIALIZER_UNLOCKED;
 /* Callback-owned payloads expire on return. Copy a bounded burst into a
@@ -148,6 +165,14 @@ static bool s_bound_master_mac_active = false;
 static portMUX_TYPE s_bound_master_mac_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static char s_master_name[MASTER_NAME_LEN] = {0};  // slave side: name of the last master heard
+
+static bool hub_relay_source_allowed(const uint8_t mac[6])
+{
+    portENTER_CRITICAL(&s_bound_master_mac_mux);
+    bool allowed=s_bound_master_mac_active && !memcmp(mac,s_bound_master_mac,6);
+    portEXIT_CRITICAL(&s_bound_master_mac_mux);
+    return allowed;
+}
 
 // ---- WiFi + ESP-NOW low-level init (shared by master and slave) ----
 static void wifi_espnow_init(void) {
@@ -372,6 +397,7 @@ static void master_task(void *arg) {
         } else {
             link_send(frame, espnow_v5_encode(s_snap, frame, sizeof(frame)));
         }
+        hub_relay_send(s_snap->seq);
         // Extensions do not participate in the v5/v6 DATA fallback: old peers
         // ignore type 3, new peers still receive TPMS in a mixed-version group.
         int64_t now = esp_timer_get_time();
@@ -409,6 +435,7 @@ void espnow_link_start_master(void) {
         }
     }
     wifi_espnow_init();
+    s_hub_relay_session=esp_random(); if (!s_hub_relay_session) s_hub_relay_session=1;
     s_is_master = true;
     s_tx_v6 = false;
     portENTER_CRITICAL(&s_linktest_mux);
@@ -418,6 +445,7 @@ void espnow_link_start_master(void) {
     portEXIT_CRITICAL(&s_linktest_mux);
     add_broadcast_peer();
 
+    skyhub_client_start();
     ESP_ERROR_CHECK(esp_now_register_recv_cb(recv_cb));   // receive slave presence/HELLO/control packets
     if (xTaskCreate(master_task, "espnow_tx", 3584, NULL, 4, NULL) != pdPASS) {
         portENTER_CRITICAL(&s_linktest_mux);
@@ -429,6 +457,17 @@ void espnow_link_start_master(void) {
         return;
     }
     ESP_LOGI(TAG, "ESP-NOW MASTER up (broadcast %dms, ch%d)", BROADCAST_INTERVAL_MS, ESPNOW_CHANNEL);
+}
+
+/* Alone keeps its own vehicle/BLE behaviour: only the accessory worker is
+ * started, never the master broadcast/presence/control machinery. */
+void espnow_link_start_standalone(void)
+{
+    wifi_espnow_init();
+    s_standalone=true;
+    add_broadcast_peer();
+    skyhub_client_start();
+    ESP_ERROR_CHECK(esp_now_register_recv_cb(recv_cb));
 }
 
 void espnow_link_set_data_demand(const espnow_demand_t *demand)
@@ -602,6 +641,7 @@ static void slave_on_data(const espnow_rx_frame_t *f, int64_t received_us) {
 // Slave side: link lost -> sys.obd_link = 0 and drop every vehicle value
 static void slave_drop_link(void) {
     s_rx_live = false;
+    signal_store_hub_apply(0,NULL); s_hub_relay_us=0;
     slave_set_link(SIG_LINK_NONE);
     signal_store_invalidate_vehicle();
     s_rx_veh_ok = false;
@@ -662,6 +702,19 @@ static void handle_ctrl(const espnow_ctrl_packet_t *c) {
 
 static void handle_rx(const uint8_t *mac, const uint8_t *data, int len, int64_t received_us) {
     if (!data || len <= 0) return;
+    sh_frame_t hub;
+    if (!s_is_master && !s_standalone && mac && hub_relay_source_allowed(mac) &&
+        sh_decode(data,(size_t)len,&hub) && hub.type==SH_RELAY &&
+        !memcmp(hub.target,s_broadcast_mac,6)) {
+        /* Ordering belongs to a sender, not to the slave's lifetime. A -> B
+         * -> A rebinding must not mistake A's still-running boot for replay. */
+        if (memcmp(s_hub_relay_mac,mac,6)) s_hub_relay_order=(sh_order_t){0};
+        if (!sh_order_accept(&s_hub_relay_order,&hub)) return;
+        signal_store_hub_apply(hub.mask,hub.values);
+        s_hub_relay_us=received_us;
+        memcpy(s_hub_relay_mac,mac,6);
+        return;
+    }
     espnow_rx_frame_t f;
     uint8_t pos, caps;
 
@@ -719,6 +772,10 @@ static bool slave_source_allowed(const uint8_t *mac) {
 }
 
 static void recv_cb(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+    if (s_is_master || s_standalone) {
+        if (skyhub_client_receive(info ? info->src_addr : NULL,data,len>0 ? (size_t)len : 0)) return;
+        if (s_standalone) return;
+    }
     if (!s_is_master) {
         portENTER_CRITICAL(&s_last_rx_mux);
         bool accepting = s_slave_accepting;
@@ -726,7 +783,8 @@ static void recv_cb(const esp_now_recv_info_t *info, const uint8_t *data, int le
         if (!accepting || !info || !slave_source_allowed(info->src_addr)) return;
         if (!data || len <= 0 || len > ESPNOW_FRAME_MAX) return;
         espnow_pkt_kind_t kind = espnow_classify(data, (size_t)len);
-        if (kind == ESPNOW_PKT_V5_DATA || kind == ESPNOW_PKT_V6_DATA || kind == ESPNOW_PKT_V6_TPMS) {
+        if (kind == ESPNOW_PKT_V5_DATA || kind == ESPNOW_PKT_V6_DATA || kind == ESPNOW_PKT_V6_TPMS ||
+            (len>=4 && data[0]=='S' && data[1]=='H' && data[3]==SH_RELAY)) {
             slave_packet_t packet = {.received_us = esp_timer_get_time(), .len = (uint16_t)len};
             memcpy(packet.mac, info->src_addr, sizeof(packet.mac));
             memcpy(packet.data, data, (size_t)len);
@@ -750,6 +808,10 @@ static void slave_task(void *arg) {
     int64_t next_presence_us = 0;
     slave_packet_t packet;
     while (!slave_stopping()) {
+        if (s_hub_relay_us && (esp_timer_get_time()-s_hub_relay_us>=SH_TIMEOUT_US ||
+                               !hub_relay_source_allowed(s_hub_relay_mac))) {
+            signal_store_hub_apply(0,NULL); s_hub_relay_us=0;
+        }
         for (int i = 0; i < SLAVE_RX_QUEUE_LEN && !slave_stopping(); i++) {
             if (xQueueReceive(s_slave_queue, &packet, 0) != pdTRUE) break;
             /* A binding may change while a packet is queued. Do not revive
@@ -980,7 +1042,9 @@ static bool stop_link_tasks(void)
 // the TCP upload on the ESP32-S3's single 2.4 GHz radio.
 bool espnow_link_pause_for_ota(void)
 {
-    if (!stop_link_tasks()) return false;
+    bool hub_stopped=skyhub_client_pause();
+    bool link_stopped=stop_link_tasks();
+    if (!hub_stopped || !link_stopped) return false;
 
     if (!s_espnow_started) {
         ESP_LOGI(TAG, "ESP-NOW already inactive for OTA");

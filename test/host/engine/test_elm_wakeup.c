@@ -70,6 +70,9 @@ static void *xStreamBufferCreateWithCaps(unsigned size, unsigned trigger, unsign
 { assert(size == RX_BUF_BYTES && trigger == 1 && caps); return (void *)1; }
 static int xTaskCreate(TaskFunction_t fn, const char *name, unsigned stack, void *arg, unsigned prio, void *handle)
 { (void)name; assert(stack == TASK_STACK && !arg && prio == TASK_PRIO && !handle); creates++; if (fail_create) return 0; worker=fn; return pdPASS; }
+#define APP_TASK_OBD_POLL_BLE 1
+static bool app_task_start(int id, TaskFunction_t fn, void *arg)
+{ assert(id==APP_TASK_OBD_POLL_BLE); return xTaskCreate(fn,"obd_poll",TASK_STACK,arg,TASK_PRIO,NULL)==pdPASS; }
 static void vTaskDelete(void *task) { assert(!task); task_deletes++; deleted=true; longjmp(exit_worker, 1); }
 static void esp_task_wdt_add(void *t) { (void)t; }
 static void esp_task_wdt_reset(void) {}
@@ -83,6 +86,7 @@ static bool ui_showroom_is_active(void) { return false; }
 static void vp_engine_link_up(void *e) { (void)e; }
 static void vp_engine_link_down(void *e) { (void)e; }
 static void rx_drain(void) {}
+static unsigned signal_store_hub_obd_mask(void) { return 0; }
 static unsigned obd_demand_mask_get(void) { return 0; }
 static void vp_engine_set_obd_demand_mask(void *e, unsigned mask) { (void)e; (void)mask; }
 static uint32_t vp_engine_run(void *e) { (void)e; return 1; }

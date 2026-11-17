@@ -351,3 +351,37 @@ token 缺失或错误 401 `unauthorized`，路径未知 404 `not_found`，方法
 
 从表 2 s 收不到主表数据即判定断链，`obd.*` / `veh.*` 全部置无效。
 v5 帧不带挡位和 `veh.*`，所以只有主表和所有从表都是新固件时，从表才显示挡位。
+
+## Sky Hub ESP-NOW 配件协议 v1
+
+独立于原仪表 v5/v6 协议，不复用退役槽位。双方使用 WiFi STA MAC、信道 1、广播 ESP-NOW 传输；应用层校验目标 MAC。绑定是未加密 MAC 白名单，不是抗伪造认证。固件事实源为 `main/bsp_obd_dsp/skyhub_protocol.h`，Hub 工程保留同内容副本，可独立构建。
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 2 | `SH` |
+| 2 | 1 | version `1` |
+| 3 | 1 | type |
+| 4 | 4 | boot session, nonzero, LE |
+| 8 | 4 | sequence, LE |
+| 12 | 6 | target MAC |
+| 18 | 1 | valid/present mask |
+| 19 | 1 | reserved `0` |
+| 20 | variable | payload |
+| end-2 | 2 | CRC16-CCITT-FALSE, init `0xFFFF`, polynomial `0x1021`, LE |
+
+| Type | Name | Mask | Payload |
+|---|---|---|---|
+| 1 | DISCOVER | 0 | empty |
+| 2 | ANNOUNCE | 0..7 | bound gauge MAC (6 bytes; zero = unbound) |
+| 3 | PAIR | 0 | nonzero transaction nonce, uint32 LE |
+| 4 | PAIR_ACK | 0 | echoed nonce, uint32 LE |
+| 5 | DATA | 0..7 | int32 LE for each present field |
+| 6 | UNPAIR | 0 | nonce, uint32 LE |
+| 7 | RELAY | 0..7 | int32 LE for each present field |
+
+- mask bit 0 = coolant °C；bit 1 = oil temperature °C；bit 2 = oil pressure bar × 100（数值与 kPa 相同）。只按位序放入实际有效字段，每项 4 字节；mask=0 合法，表示无可用字段，不包含占位零值。帧总长 `22 + payload`，当前最长 34 字节，解析器上限 40 字节；拒绝未知类型/位、错误长度、保留字段和 CRC。
+- 发现每 500 ms 请求、15 秒结束；Hub 每秒公告 MAC/已绑定主表/有效字段。配对针对扫描结果中的 MAC，每 400 ms 重试、8 秒超时。Hub 先保存绑定再确认；主表只接受目标为自己、来源为待配 Hub 且 nonce 匹配的确认，保存成功后切换绑定。不会远程抢占别的表已绑定的 Hub；在线解绑是尽力发送，离线解绑需 Hub 本机长按 BOOT。
+- DATA 每 100 ms，只接受已绑定 Hub 且目标为本机的帧。worker 校验 boot session、递增序号及入队时刻，拒绝重复/倒序/已过期帧；换 boot session 后记住上一个 session，避免迟到旧帧立即切回。MAC/session/CRC 不能替代密码学认证。
+- 每帧 mask 是完整的当前有效集合。signal store 原子更新 Hub 来源和值；普通 OBD/本地 ADC 写入和失效不能覆盖被接管字段。2 秒无有效新帧会释放 Hub 来源。Hub 不改 `sys.obd_link`；OBD 调度从当前需求中扣除 Hub 接管字段，共享请求按剩余所需信号继续。
+- MASTER 另发 type 7、目标 `FF:FF:FF:FF:FF:FF` 的新扩展，把当前 Hub 有效字段原子快照转给新版 SLAVE。SLAVE 仅接受已绑定主表，WiFi 回调只入队，由从表 worker 应用、处理换绑和 2 秒超时；独立来源不受 ELM link gating。旧 v5/v6 DATA 与退役槽位完全不变。
+- 主表持久化在 `nvs_app` namespace `hub` / key `mac`（6 字节），不增改 `nvs_user_cfg_t`；Hub 在其默认 NVS namespace `skyhub` / key `gauge`（6 字节）。OTA 等待 Hub worker 完成退出后才 deinit ESP-NOW，不在回调或 LVGL task 写 NVS。

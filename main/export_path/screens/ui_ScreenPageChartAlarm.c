@@ -37,6 +37,8 @@ void ui_ScreenPageChartAlarm_screen_init(void)
 {
     s_alarm_item = nvs_cfg_read().chart_source_idx;
     ui_disp_item_range(s_alarm_item, &s_alarm_nmin, &s_alarm_nmax, &s_alarm_div);
+    // Persisted oil-pressure thresholds remain x10, independent of x100 display.
+    s_alarm_div = ui_disp_item_alarm_div(s_alarm_item);
     if (s_alarm_div < 1) s_alarm_div = 1;
 
     ui_ScreenPageChartAlarm = lv_obj_create(NULL);

@@ -72,8 +72,9 @@ static int check_masks(void)
 {
     const obd_data_snapshot_t empty = {
         .coolant_temp = -40, .oil_temp = -100, .intake_temp = -40,
-        .load_pct = -1, .tps = -1, .bat_mv = -1, .oil_pressure_x10 = -1,
-        .boost_x10 = -32768, .gear = OBD_GEAR_UNKNOWN, .afr_x100 = -1
+        .load_pct = -1, .tps = -1, .bat_mv = -1, .oil_pressure_x10 = OBD_OIL_PRESSURE_INVALID,
+        .boost_x10 = -32768, .gear = OBD_GEAR_UNKNOWN, .afr_x100 = -1,
+        .oil_pressure_x100 = OBD_OIL_PRESSURE_INVALID
     };
     obd_data_snapshot_t full;
     obd_data_get_snapshot(&full);
@@ -94,6 +95,7 @@ static int check_masks(void)
         FIELD(SIG_OBD_THROTTLE, tps);
         FIELD(SIG_OBD_BATTERY_VOLTAGE, bat_mv);
         FIELD(SIG_OBD_OIL_PRESSURE, oil_pressure_x10);
+        FIELD(SIG_OBD_OIL_PRESSURE, oil_pressure_x100);
         FIELD(SIG_OBD_BOOST, boost_x10);
         FIELD(SIG_OBD_GEAR, gear);
         FIELD(SIG_OBD_AFR, afr_x100);
@@ -113,6 +115,7 @@ static int test_masks(void)
     CHECK(initial.rpm == 3500 && initial.speed == UINT8_MAX && initial.gear == -1);
     CHECK(initial.coolant_temp == -10 && initial.oil_temp == 97 && initial.intake_temp == 24);
     CHECK(initial.load_pct == 61 && initial.tps == 31 && initial.bat_mv == 12345);
+    CHECK(initial.oil_pressure_x100 == 155);
     CHECK(initial.oil_pressure_x10 == 16 && initial.boost_x10 == -12 && initial.afr_x100 == 1470);
     CHECK(check_masks() == 0);
     obd_data_rpm_override_set(true, 7200);
@@ -149,6 +152,30 @@ static int test_masks(void)
         CHECK(masked.boost_x10 == full.boost_x10);
         CHECK(masked.oil_pressure_x10 == full.oil_pressure_x10);
     }
+    const int32_t hub_pressure[] = {-100, -99, -96, -15, -10, -5, -1, 0, 1, 5, 96, 155, 1000, 1001, 2000};
+    for (unsigned i=0; i<sizeof(hub_pressure)/sizeof(hub_pressure[0]); ++i) {
+        CHECK(signal_store_set(SIG_SYS_OBD_LINK, SIG_LINK_NONE));
+        int32_t sample[3]={0,0,hub_pressure[i]};
+        signal_store_hub_apply(4,sample);
+        obd_data_snapshot_t full, masked;
+        obd_data_get_snapshot(&full);
+        obd_data_get_snapshot_mask(&masked,1u<<SIG_OBD_OIL_PRESSURE);
+        int32_t p=hub_pressure[i];
+        int16_t expected=(int16_t)(p>=0 ? (p+5)/10 : -((-p+5)/10));
+        CHECK(full.oil_pressure_x100==p && masked.oil_pressure_x100==p);
+        CHECK(full.oil_pressure_x10==expected && masked.oil_pressure_x10==expected);
+        CHECK(masked.oil_pressure_x10!=OBD_OIL_PRESSURE_INVALID);
+        CHECK(check_masks()==0);
+        obd_data_set_oil_pressure_x10(-1); /* offline local ADC cannot invalidate Hub */
+        obd_data_get_snapshot(&full);
+        CHECK(full.oil_pressure_x10==expected && full.oil_pressure_x100==p);
+    }
+    signal_store_hub_apply(0,NULL);
+    obd_data_snapshot_t missing;
+    obd_data_get_snapshot(&missing);
+    CHECK(missing.oil_pressure_x10==OBD_OIL_PRESSURE_INVALID);
+    CHECK(missing.oil_pressure_x100==OBD_OIL_PRESSURE_INVALID);
+    CHECK(check_masks()==0);
     puts("snapshot masks: all 4096 masks x 8 validity/override scenarios OK");
     return 0;
 }

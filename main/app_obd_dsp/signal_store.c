@@ -25,6 +25,7 @@ typedef struct {
     signal_entry_t e[SIG_SLOT_COUNT];
     veh_def_t      veh[SIG_VEH_MAX];
     int            n_veh;
+    uint64_t       hub_mask;     /* external accessory ownership, separate from board sensors */
     uint64_t       local_mask;   /* slots fed by on-board sensors: not gated by obd_link */
 } store_t;
 
@@ -77,7 +78,7 @@ static inline fresh_snapshot_t fresh_snapshot_locked(void)
 {
     const signal_entry_t *link = &s_st->e[SIG_SYS_OBD_LINK];
     return (fresh_snapshot_t){
-        .local_mask = s_st->local_mask,
+        .local_mask = s_st->local_mask | s_st->hub_mask,
         .n_veh = s_st->n_veh,
         .link_has_data = link->valid && link->value >= SIG_LINK_DATA,
     };
@@ -89,7 +90,7 @@ static inline bool fresh_locked(int slot, uint32_t now)
     const signal_entry_t *e = &s_st->e[slot];
     if (!e->valid) return false;
     if (slot >= SIG_VEH_BASE && slot - SIG_VEH_BASE >= s_st->n_veh) return false;
-    if (is_vehicle_slot(slot) && !(s_st->local_mask & (1ULL << slot))) {
+    if (is_vehicle_slot(slot) && !((s_st->local_mask | s_st->hub_mask) & (1ULL << slot))) {
         const signal_entry_t *link = &s_st->e[SIG_SYS_OBD_LINK];
         if (!link->valid || link->value < SIG_LINK_DATA) return false;
     }
@@ -136,7 +137,7 @@ bool signal_store_is_local(int slot)
 {
     if (!slot_ok(slot)) return false;
     portENTER_CRITICAL(&s_mux);
-    const bool local = (s_st->local_mask & (1ULL << slot)) != 0;
+    const bool local = ((s_st->local_mask | s_st->hub_mask) & (1ULL << slot)) != 0;
     portEXIT_CRITICAL(&s_mux);
     return local;
 }
@@ -146,6 +147,10 @@ bool signal_store_set(int slot, int32_t internal)
     if (!slot_ok(slot)) return false;
     bool ok;
     portENTER_CRITICAL(&s_mux);
+    if (s_st->hub_mask & (1ULL << slot)) {
+        portEXIT_CRITICAL(&s_mux);
+        return false;
+    }
     uint32_t t = now_ms();
     int32_t mn, mx;
     bounds_of(slot, &mn, &mx);
@@ -166,7 +171,7 @@ void signal_store_set_many(const int *slots, const int32_t *values, size_t count
     uint32_t t = now_ms();
     for (size_t i = 0; i < count; i++) {
         int slot = slots[i];
-        if (!slot_ok(slot) || (s_st->local_mask & (1ULL << slot))) continue;
+        if (!slot_ok(slot) || ((s_st->local_mask | s_st->hub_mask) & (1ULL << slot))) continue;
         int32_t mn, mx;
         bounds_of(slot, &mn, &mx);
         bool ok = values[i] >= mn && values[i] <= mx;
@@ -183,6 +188,10 @@ void signal_store_invalidate(int slot)
 {
     if (!slot_ok(slot)) return;
     portENTER_CRITICAL(&s_mux);
+    if (s_st->hub_mask & (1ULL << slot)) {
+        portEXIT_CRITICAL(&s_mux);
+        return;
+    }
     signal_entry_t *e = &s_st->e[slot];
     if (e->valid) {
         e->valid = false;
@@ -197,7 +206,7 @@ void signal_store_invalidate_many(const int *slots, size_t count)
     portENTER_CRITICAL(&s_mux);
     for (size_t i = 0; i < count; i++) {
         int slot = slots[i];
-        if (!slot_ok(slot) || (s_st->local_mask & (1ULL << slot))) continue;
+        if (!slot_ok(slot) || ((s_st->local_mask | s_st->hub_mask) & (1ULL << slot))) continue;
         signal_entry_t *e = &s_st->e[slot];
         if (!e->valid) continue;
         e->valid = false;
@@ -211,7 +220,7 @@ void signal_store_invalidate_vehicle(void)
     if (!s_st) return;
     portENTER_CRITICAL(&s_mux);
     for (int i = 0; i < SIG_SLOT_COUNT; i++) {
-        if (!is_vehicle_slot(i) || (s_st->local_mask & (1ULL << i))) continue;
+        if (!is_vehicle_slot(i) || ((s_st->local_mask | s_st->hub_mask) & (1ULL << i))) continue;
         signal_entry_t *e = &s_st->e[i];
         if (!e->valid) continue;
         e->valid = false;
@@ -443,4 +452,62 @@ int signal_store_veh_count(void)
     const int count = s_st->n_veh;
     portEXIT_CRITICAL(&s_mux);
     return count;
+}
+
+/* Atomically replace accessory ownership and values. The normal producers may
+ * neither overwrite nor invalidate an owned slot. Clearing ownership invalidates
+ * its old sample before the original producer is allowed to resume. */
+void signal_store_hub_apply(uint8_t mask, const int32_t values[3])
+{
+    static const int slots[3] = {SIG_OBD_COOLANT_TEMP, SIG_OBD_OIL_TEMP, SIG_OBD_OIL_PRESSURE};
+    if (!s_st) return;
+    portENTER_CRITICAL(&s_mux);
+    uint64_t next = 0;
+    uint32_t t = now_ms();
+    for (unsigned i=0; i<3; i++) {
+        int slot=slots[i];
+        uint64_t bit=UINT64_C(1)<<slot;
+        int32_t mn, mx;
+        bounds_of(slot, &mn, &mx);
+        /* Hub's calibrated -100..1000 kPa probe can report vacuum. Keep
+         * signed samples; the ordinary OBD producer's 0 kPa floor is unchanged. */
+        if (slot == SIG_OBD_OIL_PRESSURE) mn = -100;
+        signal_entry_t *e=&s_st->e[slot];
+        if (values && (mask & (1u<<i)) && values[i]>=mn && values[i]<=mx) {
+            next |= bit;
+            e->value=values[i]; e->valid=true; e->ts_ms=t; e->seq++;
+        } else if (s_st->hub_mask & bit) {
+            e->valid=false; e->seq++;
+        }
+    }
+    s_st->hub_mask=next;
+    portEXIT_CRITICAL(&s_mux);
+}
+
+uint16_t signal_store_hub_obd_mask(void)
+{
+    if (!s_st) return 0;
+    portENTER_CRITICAL(&s_mux);
+    uint16_t mask=(uint16_t)s_st->hub_mask;
+    portEXIT_CRITICAL(&s_mux);
+    return mask;
+}
+
+
+uint8_t signal_store_hub_snapshot(int32_t values[3])
+{
+    static const int slots[3]={SIG_OBD_COOLANT_TEMP,SIG_OBD_OIL_TEMP,SIG_OBD_OIL_PRESSURE};
+    if (!values || !s_st) return 0;
+    uint8_t mask=0;
+    portENTER_CRITICAL(&s_mux);
+    uint32_t t=now_ms();
+    for (unsigned i=0;i<3;i++) {
+        int slot=slots[i];
+        values[i]=0;
+        if ((s_st->hub_mask & (UINT64_C(1)<<slot)) && fresh_locked(slot,t)) {
+            mask |= (uint8_t)(1u<<i); values[i]=s_st->e[slot].value;
+        }
+    }
+    portEXIT_CRITICAL(&s_mux);
+    return mask;
 }

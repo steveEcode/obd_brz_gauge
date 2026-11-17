@@ -15,6 +15,7 @@
  *   imp   legacy media CRC ledger, old write markers th_wr / th_mc for
  *         migration recovery, selected SD library theme th_cur
  *   veh   current vehicle profile id, prev id, installation state
+ *   hub   Sky Hub bound WiFi STA MAC (device-local, not config-mirrored)
  *
  * Call nvs_app_init() once at boot, before nvs_storage_init() and before
  * any first-boot migration logic that may read mig_ver.

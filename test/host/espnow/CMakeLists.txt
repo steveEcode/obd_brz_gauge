@@ -71,6 +71,7 @@ set_tests_properties(racechrono_stream PROPERTIES TIMEOUT 30)
 # Real master worker + control callback + OTA stop, virtual time (no RF/RTOS).
 add_executable(test_espnow_link
     "${CMAKE_CURRENT_SOURCE_DIR}/test_espnow_link.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/skyhub_link_mock.c"
     "${REPO_ROOT}/main/bsp_obd_dsp/espnow_link.c")
 target_include_directories(test_espnow_link PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/link_stubs"
@@ -87,7 +88,7 @@ target_compile_options(test_snapshot_append PRIVATE ${EH_WARN})
 target_link_libraries(test_snapshot_append PRIVATE espnow_codec)
 add_test(NAME snapshot_append COMMAND test_snapshot_append)
 
-add_library(collect_probe STATIC collect_probe.c)
+add_library(collect_probe STATIC collect_probe.c skyhub_link_mock.c)
 target_include_directories(collect_probe PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/link_stubs" "${CMAKE_CURRENT_SOURCE_DIR}/stubs"
     "${REPO_ROOT}/main")
@@ -193,13 +194,16 @@ if(EH_TPMS_LVGL)
     add_library(tpms_lvgl STATIC ${EH_LVGL_SOURCES})
     target_include_directories(tpms_lvgl SYSTEM PUBLIC "${EH_LVGL_DIR}")
     target_compile_definitions(tpms_lvgl PUBLIC LV_CONF_SKIP LV_MEM_CUSTOM=1 LV_FONT_MONTSERRAT_12=1)
-    add_executable(test_tpms_ui test_tpms_ui.c
+    add_executable(test_tpms_ui test_tpms_ui.c skyhub_link_mock.c
         "${REPO_ROOT}/main/export_path/ui_bluetooth.c"
         "${REPO_ROOT}/main/export_path/ui_tpms.c"
+        "${REPO_ROOT}/main/export_path/ui_disp_item.c"
+        "${REPO_ROOT}/main/export_path/screens/ui_ScreenPageChartAlarm.c"
         "${REPO_ROOT}/main/app_obd_dsp/tpms_theme_source.c"
         "${REPO_ROOT}/main/export_path/fonts/ui_font_FontTypoderSize16.c"
         "${REPO_ROOT}/main/export_path/fonts/ui_font_FontTypoderSize20.c"
         "${REPO_ROOT}/main/export_path/fonts/ui_font_FontTypoderSize24.c"
+        "${REPO_ROOT}/main/export_path/fonts/ui_font_FontTypoderSize36.c"
         "${REPO_ROOT}/main/export_path/fonts/ui_font_FontTypoderSize40.c")
     target_include_directories(test_tpms_ui PRIVATE stubs "${REPO_ROOT}/main")
     target_link_libraries(test_tpms_ui PRIVATE tpms_lvgl)
@@ -211,3 +215,17 @@ add_executable(test_espnow_sources test_espnow_sources.c)
 target_compile_options(test_espnow_sources PRIVATE ${EH_WARN} -UNDEBUG)
 target_link_libraries(test_espnow_sources PRIVATE espnow_codec)
 add_test(NAME espnow_sources COMMAND test_espnow_sources)
+
+add_executable(test_skyhub_protocol test_skyhub_protocol.c)
+target_include_directories(test_skyhub_protocol PRIVATE "${REPO_ROOT}/main/bsp_obd_dsp")
+target_compile_options(test_skyhub_protocol PRIVATE ${EH_WARN} -UNDEBUG)
+add_test(NAME skyhub_protocol COMMAND test_skyhub_protocol)
+
+add_executable(test_skyhub_client test_skyhub_client.c
+    "${REPO_ROOT}/main/bsp_obd_dsp/skyhub_client.c"
+    "${REPO_ROOT}/main/app_obd_dsp/signal_store.c"
+    "${REPO_ROOT}/main/app_obd_dsp/signal_registry.c")
+target_include_directories(test_skyhub_client PRIVATE link_stubs stubs "${REPO_ROOT}/main")
+target_compile_options(test_skyhub_client PRIVATE ${EH_WARN} -UNDEBUG)
+add_test(NAME skyhub_client COMMAND test_skyhub_client)
+set_tests_properties(skyhub_client PROPERTIES TIMEOUT 30)

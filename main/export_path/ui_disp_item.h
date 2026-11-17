@@ -7,7 +7,7 @@
 //  alarm coloring, natural ranges.
 //
 //  Raw value conventions: temperature °C, percentage %, RPM rpm, speed km/h, voltage mV,
-//              oil pressure / boost pressure are ×10 integers, AFR is ×100.
+//              oil pressure is ×100, boost pressure is ×10, AFR is ×100.
 //  Natural range: nmin/nmax are in natural units, div satisfies raw = natural × div.
 // ================================================================
 
@@ -49,7 +49,8 @@ static inline bool ui_disp_item_is_selectable(uint8_t item)
 static inline bool ui_disp_item_low_latency(disp_item_t item)
 {
     return item == DISP_ITEM_RPM || item == DISP_ITEM_SPEED ||
-           item == DISP_ITEM_BOOST || item == DISP_ITEM_TPS || item == DISP_ITEM_LOAD;
+           item == DISP_ITEM_OILP || item == DISP_ITEM_BOOST ||
+           item == DISP_ITEM_TPS || item == DISP_ITEM_LOAD;
 }
 
 // Invalid-sample sentinel for the generic chart page (distinct from legit negative values like coolant temp -10)
@@ -71,11 +72,12 @@ typedef struct {
 extern const disp_item_meta_t s_disp_meta[DISP_ITEM_COUNT];
 extern const needle_scale_meta_t s_needle_scale_meta[DISP_ITEM_COUNT];
 
+// Oil pressure uses signed bar x100; all other inputs keep their cache units.
 // Read the given data item from the OBD cache raw values; returns true and writes *out on success
 bool disp_item_read_value(disp_item_t item,
                           int16_t clt, int16_t iat, int16_t oil,
                           int16_t load_pct, int16_t tps, int32_t bat_mv,
-                          int16_t oilp_x10,
+                          int16_t oilp_x100,
                           uint16_t rpm, uint16_t speed, int16_t boost_x10,
                           int16_t afr_x100,
                           int32_t *out);
@@ -99,6 +101,8 @@ const char *ui_disp_item_name(uint8_t item);
 const char *ui_disp_item_unit(uint8_t item);
 uint32_t ui_disp_item_color(uint8_t item);
 void ui_disp_item_range(uint8_t item, int32_t *nmin, int32_t *nmax, int32_t *div);
+// Persisted alarm units per natural unit (oil pressure stays x10, display is x100).
+int32_t ui_disp_item_alarm_div(uint8_t item);
 
 #ifdef __cplusplus
 }

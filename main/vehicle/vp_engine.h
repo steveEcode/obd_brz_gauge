@@ -110,8 +110,8 @@ typedef struct {
     uint8_t  proto;              /* ATSP when the profile's bus.proto is 0: 1..12; 0 = auto-detect */
     const uint8_t *detect_protocols; /* optional caller-owned ATSP candidates; NULL = engine default */
     uint8_t  detect_protocol_count;  /* number of entries in detect_protocols */
-    uint16_t resp_timeout_ms;    /* 0 = 2500 */
-    uint16_t detect_timeout_ms;  /* connection probe/warm check; 0 = protocol default (2/5/10/30 s) */
+    uint16_t resp_timeout_ms;    /* 0 = 5000 */
+    uint16_t detect_timeout_ms;  /* connection probe/warm check; 0 = 5000 for all protocols */
     uint16_t link_hold_ms;       /* 0 = 3000 */
     uint16_t vbat_every_ms;      /* ATRV period, 0 = 5000 */
     uint16_t heal_ms;            /* 0 = 10000 */

@@ -823,7 +823,7 @@ static bool engine_create(void)
         ESP_LOGE(TAG, "vp_engine_create failed (profile %s)", vp_manager_active_id());
         return false;
     }
-    vp_engine_set_obd_demand_mask(s_engine, obd_demand_mask_get());
+    vp_engine_set_obd_demand_mask(s_engine, (uint16_t)(obd_demand_mask_get() & ~signal_store_hub_obd_mask()));
     ESP_LOGI(TAG, "engine ready: profile %s, protocol %u%s", vp_manager_active_id(), cfg.proto,
              cfg.proto ? "" : " (auto)");
     return true;
@@ -932,7 +932,7 @@ static void obd_task(void *arg)
         }
         PERF_BEGIN(perf_elm_start);
         rx_drain();
-        vp_engine_set_obd_demand_mask(s_engine, obd_demand_mask_get());
+        vp_engine_set_obd_demand_mask(s_engine, (uint16_t)(obd_demand_mask_get() & ~signal_store_hub_obd_mask()));
         wait_ms = vp_engine_run(s_engine);
         PERF_END(PERF_ELM_RUN, perf_elm_start, 1);
 

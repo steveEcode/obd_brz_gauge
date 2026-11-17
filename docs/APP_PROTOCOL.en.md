@@ -401,3 +401,37 @@ and must **never be reused**.
 A slave treats 2 s with no data from the master as a lost link, invalidating
 all `obd.*` / `veh.*` values. v5 frames carry no gear or `veh.*`, so a slave
 shows gear only once the master and every slave run the new firmware.
+
+## Sky Hub ESP-NOW accessory protocol v1
+
+Independent of the existing gauge v5/v6 protocols, with no retired slots reused. Both devices use WiFi STA MACs, channel 1 and broadcast ESP-NOW transport with application-level target MAC checks. Binding is an unencrypted MAC allowlist, not spoof-resistant authentication. The source of truth is `main/bsp_obd_dsp/skyhub_protocol.h`; the Hub project keeps an identical copy and builds independently.
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 2 | `SH` |
+| 2 | 1 | version `1` |
+| 3 | 1 | type |
+| 4 | 4 | boot session, nonzero, LE |
+| 8 | 4 | sequence, LE |
+| 12 | 6 | target MAC |
+| 18 | 1 | valid/present mask |
+| 19 | 1 | reserved `0` |
+| 20 | variable | payload |
+| end-2 | 2 | CRC16-CCITT-FALSE, init `0xFFFF`, polynomial `0x1021`, LE |
+
+| Type | Name | Mask | Payload |
+|---|---|---|---|
+| 1 | DISCOVER | 0 | empty |
+| 2 | ANNOUNCE | 0..7 | bound gauge MAC (6 bytes; zero = unbound) |
+| 3 | PAIR | 0 | nonzero transaction nonce, uint32 LE |
+| 4 | PAIR_ACK | 0 | echoed nonce, uint32 LE |
+| 5 | DATA | 0..7 | int32 LE for each present field |
+| 6 | UNPAIR | 0 | nonce, uint32 LE |
+| 7 | RELAY | 0..7 | int32 LE for each present field |
+
+- Mask bit 0 = coolant °C; bit 1 = oil temperature °C; bit 2 = oil pressure bar × 100 (numerically equal to kPa). Only valid fields are included in bit order, 4 bytes each. Mask 0 is valid, means no available fields and has no placeholder zeros. Total frame length is `22 + payload`, currently at most 34 bytes; the parser limit is 40 bytes. Unknown types/bits, wrong lengths, reserved fields and CRC errors are rejected.
+- Discovery requests repeat every 500 ms for 15 seconds; the Hub announces its MAC/bound gauge/valid fields every second. Pairing targets a scanned MAC, retries every 400 ms and times out after 8 seconds. The Hub saves its binding before acknowledging. The gauge accepts only an acknowledgment addressed to itself from the pending Hub with the matching nonce, then switches binding after saving successfully. A Hub bound to another gauge cannot be remotely taken over. Online unpairing is best effort; an offline Hub must be released with its own BOOT button.
+- DATA repeats every 100 ms and is accepted only from the bound Hub when targeted at this gauge. The worker checks boot session, increasing sequence and queue arrival time, rejecting duplicate/out-of-order/expired frames. A session change remembers the preceding session so a delayed old frame cannot immediately switch back. MAC/session/CRC checks do not replace cryptographic authentication.
+- Each frame mask is the complete currently valid set. The signal store atomically updates Hub ownership and values; ordinary OBD/local ADC writes and invalidations cannot overwrite owned fields. Two seconds without a valid new frame releases Hub ownership. The Hub does not change `sys.obd_link`. OBD scheduling subtracts owned fields from current demand; shared requests continue for other required signals.
+- MASTER additionally sends type 7, targeted at `FF:FF:FF:FF:FF:FF`, with an atomic snapshot of current valid Hub fields for updated SLAVEs. SLAVE accepts only its bound master. Its WiFi callback only enqueues; the slave worker applies fields and handles rebinding and the 2-second timeout. Independent sources bypass ELM link gating. Existing v5/v6 DATA and retired slots are unchanged.
+- Gauge persistence uses `nvs_app` namespace `hub` / key `mac` (6 bytes), with no changes to `nvs_user_cfg_t`. The Hub uses its default NVS namespace `skyhub` / key `gauge` (6 bytes). OTA waits for the Hub worker to finish exiting before deinitializing ESP-NOW. NVS writes never run on the receive callback or LVGL task.

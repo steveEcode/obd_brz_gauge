@@ -19,6 +19,7 @@
 
 #include "cJSON.h"
 #include "vp_engine.h"
+#include "vp_builtin.h"
 #include "vp_profile.h"
 #include "vp_validate.h"
 #include "app_obd_dsp/signal_registry.h"
@@ -58,6 +59,7 @@ typedef struct {
     bool         verbose;
 
     char      log[LOG_MAX][CMD_W];
+    uint32_t  log_at_ms[LOG_MAX];
     int       n_log;
     req_rec_t reqs[LOG_MAX];
     int       n_req;
@@ -117,6 +119,7 @@ typedef struct {
     bool    elm_up;
     int     proto_detected;
     int     reconnects;
+    uint32_t reconnect_at_ms;
 } fake_t;
 
 static fake_t g_f;
@@ -391,7 +394,10 @@ static bool s_send(void *ctx, const char *cmd)
 {
     fake_t *f = (fake_t *)ctx;
     if (f->verbose) printf("  %6u > %s\n", (unsigned)f->now, cmd[0] ? cmd : "<CR>");
-    if (f->n_log < LOG_MAX) snprintf(f->log[f->n_log++], CMD_W, "%s", cmd);
+    if (f->n_log < LOG_MAX) {
+        f->log_at_ms[f->n_log] = f->now;
+        snprintf(f->log[f->n_log++], CMD_W, "%s", cmd);
+    }
     if (f->send_fail && !strcmp(f->send_fail, cmd)) return false;
     if (cmd[0] && strncmp(cmd, "AT", 2) && f->n_req < LOG_MAX) {
         req_rec_t *r = &f->reqs[f->n_req++];
@@ -467,7 +473,12 @@ static void s_volt(void *ctx, float v)
 
 static void s_elm(void *ctx, bool up) { ((fake_t *)ctx)->elm_up = up; }
 static void s_proto(void *ctx, uint8_t pr) { ((fake_t *)ctx)->proto_detected = pr; }
-static void s_reconnect(void *ctx) { ((fake_t *)ctx)->reconnects++; }
+static void s_reconnect(void *ctx)
+{
+    fake_t *f = (fake_t *)ctx;
+    f->reconnects++;
+    f->reconnect_at_ms = f->now;
+}
 
 static void s_log(void *ctx, const char *msg)
 {
@@ -1361,7 +1372,8 @@ static void test_elm_adapter_check(void)
     f->at_fail = "ATZ";
     f->at_fail_no_prompt = true;
     VT_CHECK(fake_start(f, p, 0) != NULL);
-    sim(f, 3200);
+    sim(f, 5600);
+    VT_CHECK_INT(f->reconnect_at_ms - f->log_at_ms[0], 5000);
     VT_CHECK_INT(count_cmd(f, "ATZ"), 1);
     VT_CHECK_INT(count_cmd(f, "0100"), 0);
     VT_CHECK_INT(f->reconnects, 1);
@@ -1634,6 +1646,40 @@ static void test_screen_demand_polling(void)
     VT_CHECK(count_cmd(f, "010D") > 0);
     VT_CHECK(count_cmd(f, "0105") == 0);
     fake_stop(f, p);
+}
+
+/* Hub exclusion uses the ordinary engine demand contract: dedicated PIDs
+ * stop; a shared request still serving another signal must not be disabled. */
+static void test_hub_field_demand_and_fallback(void)
+{
+    fake_t *f=fake_reset();
+    vp_profile_t *p=compile_q(
+        P_HEAD("t.hub-demand", "{'proto':6,'gap_ms':1}")
+        "'signals':[" S_RPM ","
+        "{'id':'obd.coolant_temp','src':[{'req':'221234','len':2,'rpn':[['A',0]]}]},"
+        "{'id':'obd.oil_pressure','src':[{'req':'221234','len':2,'rpn':[['A',1]]}]},"
+        "{'id':'obd.oil_temp','src':[{'req':'015C','len':1,'rpn':[['A',0]]}]}]}");
+    VT_CHECK(p!=NULL); if (!p) return;
+    set_resp(f,"","010C","41 0C 0B B8");
+    set_resp(f,"","221234","62 12 34 50 64");
+    set_resp(f,"","015C","41 5C 64");
+    fake_start(f,p,0);
+    uint16_t all=(1u<<SIG_OBD_RPM)|(1u<<SIG_OBD_COOLANT_TEMP)|
+                 (1u<<SIG_OBD_OIL_PRESSURE)|(1u<<SIG_OBD_OIL_TEMP);
+    vp_engine_set_obd_demand_mask(f->eng,all);
+    VT_CHECK(pump_rounds(f,1)); sim(f,300);
+    VT_CHECK(count_cmd(f,"221234")>0 && count_cmd(f,"015C")>0);
+    vp_engine_set_obd_demand_mask(f->eng,(uint16_t)(all & ~((1u<<SIG_OBD_OIL_PRESSURE)|(1u<<SIG_OBD_OIL_TEMP))));
+    sim(f,100); int shared=count_cmd(f,"221234"), dedicated=count_cmd(f,"015C");
+    sim(f,500);
+    VT_CHECK(count_cmd(f,"221234")>shared); // coolant still needs shared PID
+    VT_CHECK(count_cmd(f,"015C")==dedicated); // Hub oil temperature has no OBD request
+    vp_engine_set_obd_demand_mask(f->eng,(uint16_t)(1u<<SIG_OBD_RPM));
+    sim(f,100); shared=count_cmd(f,"221234"); sim(f,500);
+    VT_CHECK(count_cmd(f,"221234")==shared); // both shared fields supplied by Hub
+    vp_engine_set_obd_demand_mask(f->eng,all); sim(f,500);
+    VT_CHECK(count_cmd(f,"221234")>shared && count_cmd(f,"015C")>dedicated);
+    fake_stop(f,p);
 }
 
 static void test_functional_fallback(void)
@@ -1977,6 +2023,185 @@ static void test_auto_protocol_wire_responses(void)
     }
 }
 
+/* Exercise the actual flash blob as well as JSON compilation: both store
+ * the default connection command as "0100", never an empty string. */
+static void test_builtin_auto_rpm_fallback(void)
+{
+    for (unsigned variant = 0; variant < 3; variant++) {
+        fake_t *f = fake_reset();
+        vp_profile_t *compiled = variant == 1
+            ? compile_text(vp_builtin_generic_json, vp_builtin_generic_json_len)
+            : variant == 2
+                ? compile_q(P_HEAD("t.explicit-bitmap", "{'proto':0,'check_connection':'0100'}")
+                            "'signals':[" S_RPM "]}") : NULL;
+        const vp_profile_t *p = variant == 0 ? vp_builtin_generic() : compiled;
+        uint8_t proto = 3;
+        vp_engine_cfg_t cfg = {0};
+        VT_CHECK(p != NULL);
+        if (!p) return;
+        VT_CHECK(!strcmp(p->check_connection, "0100"));
+        cfg.detect_protocols = &proto;
+        cfg.detect_protocol_count = 1;
+        cfg.responsive_polling = true;
+        f->detect_proto = proto;
+        set_resp(f, "", "0100", "NO DATA");
+        set_resp(f, "", "010C", "410C0BB8");
+        set_resp(f, "", "0105", "41055A");
+        VT_CHECK(fake_start_with_cfg(f, p, &cfg) != NULL);
+        sim(f, 15000);
+        VT_CHECK_INT(f->proto_detected, 3);
+        VT_CHECK_INT(f->val[SIG_OBD_RPM], 750);
+        VT_CHECK(f->valid[SIG_OBD_RPM]);
+        VT_CHECK_INT(count_cmd(f, "ATSP0"), 0);
+        VT_CHECK_INT(count_cmd(f, "ATSP3"), 2);
+        VT_CHECK_INT(count_cmd(f, "ATSH7DF"), 0);
+        VT_CHECK_INT(count_cmd(f, "ATH1"), 0);
+        if (variant < 2) {
+            VT_CHECK(f->valid[SIG_OBD_COOLANT_TEMP]);
+            VT_CHECK_INT(f->val[SIG_OBD_COOLANT_TEMP], 50);
+        }
+        vp_engine_destroy(f->eng);
+        f->eng = NULL;
+        if (compiled) vp_profile_free(compiled, &vt_malloc_allocator);
+    }
+
+    /* A different explicit connection command must not fall back to RPM. */
+    fake_t *f = fake_reset();
+    vp_profile_t *p = compile_q(P_HEAD("t.explicit-vin", "{'proto':0,'check_connection':'0902'}")
+                                "'signals':[" S_RPM "]}");
+    uint8_t proto = 3;
+    vp_engine_cfg_t cfg = {0};
+    VT_CHECK(p != NULL);
+    if (!p) return;
+    cfg.detect_protocols = &proto;
+    cfg.detect_protocol_count = 1;
+    f->detect_proto = proto;
+    set_resp(f, "", "0902", "NO DATA");
+    set_resp(f, "", "010C", "410C0BB8");
+    VT_CHECK(fake_start_with_cfg(f, p, &cfg) != NULL);
+    sim(f, 1200);
+    VT_CHECK_INT(f->proto_detected, 0);
+    VT_CHECK_INT(count_cmd(f, "010C"), 0);
+    fake_stop(f, p);
+}
+
+/* Keep the normal candidate order: earlier probes may time out, but a
+ * K-line response arriving within the shared deadline must still succeed. */
+static void test_builtin_auto_slow_kline(void)
+{
+    fake_t *f = fake_reset();
+    vp_engine_cfg_t cfg = {0};
+    cfg.responsive_polling = true;
+    f->detect_proto = 3;
+    f->timeout_proto = 6;
+    f->connection_delay_ms = 4500;
+    set_resp(f, "", "0100", "BUS INIT: ...OK\r4100BE3FA813");
+    set_resp(f, "", "010C", "410C0BB8");
+    set_resp(f, "", "0105", "41055A");
+    VT_CHECK(fake_start_with_cfg(f, vp_builtin_generic(), &cfg) != NULL);
+    sim(f, 100000);
+    VT_CHECK_INT(f->proto_detected, 3);
+    VT_CHECK_INT(f->val[SIG_OBD_RPM], 750);
+    VT_CHECK_INT(f->val[SIG_OBD_COOLANT_TEMP], 50);
+    VT_CHECK(f->valid[SIG_OBD_RPM] && f->valid[SIG_OBD_COOLANT_TEMP]);
+    VT_CHECK_INT(count_cmd(f, "ATSP0"), 0);
+    VT_CHECK_INT(f->reconnects, 0);
+    VT_CHECK(count_cmd(f, "ATSP6") > 0 && count_cmd(f, "ATSP4") > 0);
+    VT_CHECK_INT(count_cmd(f, "ATSP3"), 2);
+    vp_engine_destroy(f->eng);
+    f->eng = NULL;
+}
+
+static bool pred_command_sent(fake_t *f, const void *arg)
+{
+    return find_cmd(f, (const char *)arg, 0) >= 0;
+}
+
+/* A late positive connection response must be interrupted at 5 s for every
+ * bus, including the ATSP0 fallback that previously allowed 30 s. */
+static void test_connection_default_timeout(void)
+{
+    static const uint8_t protocols[] = {0, 3, 4, 5, 6};
+    for (unsigned i = 0; i < sizeof(protocols) / sizeof(protocols[0]); i++) {
+        fake_t *f = fake_reset();
+        char json[1024];
+        uint8_t candidate = 6;
+        vp_engine_cfg_t cfg = {0};
+        snprintf(json, sizeof(json), P_HEAD("t.connection-deadline", "{'proto':%u}")
+                 "'signals':[" S_RPM "]}", (unsigned)protocols[i]);
+        vp_profile_t *p = compile_q(json);
+        VT_CHECK(p != NULL);
+        if (!p) return;
+        cfg.detect_protocols = &candidate;
+        cfg.detect_protocol_count = 1;
+        f->detect_proto = protocols[i] ? protocols[i] : 3;
+        f->connection_delay_ms = protocols[i] ? 5100 : 0;
+        set_resp(f, "", "0100", "4100BE3FA813");
+        set_resp(f, "", "010C", "410C0BB8");
+        VT_CHECK(fake_start_with_cfg(f, p, &cfg) != NULL);
+        if (!protocols[i]) {
+            VT_CHECK(sim_until(f, 15000, pred_command_sent, "ATSP0"));
+            f->connection_delay_ms = 5100;
+        }
+        VT_CHECK(sim_until(f, 15000, pred_command_sent, ""));
+        int start = protocols[i] ? 0 : find_cmd(f, "ATSP0", 0);
+        int warm = find_cmd(f, "0100", start >= 0 ? start : 0);
+        int stop = find_cmd(f, "", warm + 1);
+        VT_CHECK(start >= 0 && warm >= start && stop > warm);
+        if (warm >= 0 && stop > warm) {
+            /* Timeout plus the existing post-warm command gap. */
+            VT_CHECK_INT(f->log_at_ms[stop] - f->log_at_ms[warm], 5000 + 150);
+        }
+        sim(f, 500);
+        VT_CHECK_INT(f->reconnects, 0);
+        VT_CHECK_INT(f->val[SIG_OBD_RPM], 750);
+        fake_stop(f, p);
+    }
+}
+
+static void test_builtin_auto_probe_timeout(void)
+{
+    for (unsigned missing_prompt = 0; missing_prompt < 2; missing_prompt++) {
+        fake_t *f = fake_reset();
+        const vp_profile_t *p = vp_builtin_generic();
+        uint8_t proto = 3;
+        vp_engine_cfg_t cfg = {0};
+        cfg.detect_protocols = &proto;
+        cfg.detect_protocol_count = 1;
+        cfg.responsive_polling = true;
+        f->detect_proto = proto;
+        f->stop_without_prompt = missing_prompt != 0;
+        set_resp(f, "", "0100", NULL);
+        set_resp(f, "", "010C", "410C0BB8");
+        VT_CHECK(fake_start_with_cfg(f, p, &cfg) != NULL);
+        sim(f, 25000);
+        int probe = find_cmd(f, "0100", 0);
+        int interrupt = find_cmd(f, "", probe + 1);
+        int rpm = find_cmd(f, "010C", interrupt + 1);
+        VT_CHECK(probe >= 0 && interrupt > probe);
+        if (probe >= 0 && interrupt > probe) {
+            VT_CHECK_INT(f->log_at_ms[interrupt] - f->log_at_ms[probe], 5000);
+            if (missing_prompt) {
+                VT_CHECK_INT(f->reconnect_at_ms - f->log_at_ms[interrupt], 5000);
+            }
+        }
+        if (missing_prompt) {
+            VT_CHECK_INT(rpm, -1);
+            VT_CHECK_INT(f->reconnects, 1);
+            VT_CHECK_INT(f->proto_detected, 0);
+        } else {
+            VT_CHECK(rpm > interrupt);
+            VT_CHECK_INT(f->reconnects, 0);
+            VT_CHECK_INT(f->proto_detected, 3);
+            VT_CHECK_INT(f->val[SIG_OBD_RPM], 750);
+            VT_CHECK_INT(count_cmd(f, "ATSP0"), 0);
+            VT_CHECK_INT(count_cmd(f, "ATSP3"), 2);
+        }
+        vp_engine_destroy(f->eng);
+        f->eng = NULL;
+    }
+}
+
 static void test_legacy_protocol_initiation(void)
 {
     for (uint8_t proto = 1; proto <= 5; proto++) {
@@ -2111,7 +2336,7 @@ static void test_auto_protocol_recovery(void)
         f->stop_without_prompt = true;
         VT_CHECK(fake_start_with_cfg(f, p, &cfg) != NULL);
     }
-    sim(f, 5000);
+    sim(f, 7000);
     VT_CHECK_INT(count_cmd(f, "ATSP6"), 0);
     VT_CHECK_INT(f->reconnects, 1);
     fake_stop(f, p);
@@ -2248,11 +2473,18 @@ static void test_poll_timeout_resync(void)
         set_resp(f, "", "010C", NULL);
         set_resp(f, "", "010D", "410D3C");
         VT_CHECK(fake_start(f, p, 0) != NULL);
-        sim(f, 6000);
+        sim(f, 12000);
         request = find_cmd(f, "010C", 0);
         drain = find_cmd(f, "", request + 1);
         next = find_cmd(f, "010D", drain + 1);
         VT_CHECK(request >= 0 && drain > request);
+        if (request >= 0 && drain > request) {
+            /* Timeout plus the normal request gap. */
+            VT_CHECK_INT(f->log_at_ms[drain] - f->log_at_ms[request], 5000 + 30);
+            if (missing_prompt) {
+                VT_CHECK_INT(f->reconnect_at_ms - f->log_at_ms[drain], 5000);
+            }
+        }
         if (missing_prompt) {
             VT_CHECK(next < 0);
             VT_CHECK_INT(f->reconnects, 1);
@@ -2755,8 +2987,27 @@ static void test_temperature_255(void)
     fake_stop(f, p);
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    if (argc == 2 && !strcmp(argv[1], "--protocol")) {
+        RUN(test_builtin_auto_rpm_fallback);
+        RUN(test_builtin_auto_probe_timeout);
+        RUN(test_builtin_auto_slow_kline);
+        RUN(test_connection_default_timeout);
+        RUN(test_detect);
+        RUN(test_auto_protocol_wire_responses);
+        RUN(test_legacy_protocol_initiation);
+        RUN(test_auto_protocol_recovery);
+        RUN(test_profile_auto_selection);
+        RUN(test_poll_timeout_resync);
+        RUN(test_elm_adapter_check);
+        RUN(test_at_refused_and_state_fail);
+        return VT_SUMMARY("engine_protocol");
+    }
+    if (argc == 2 && !strcmp(argv[1], "--skyhub")) {
+        RUN(test_hub_field_demand_and_fallback);
+        return VT_SUMMARY("engine_skyhub");
+    }
     RUN(test_sparse_defaults);
     RUN(test_init_and_lazy_state);
     RUN(test_request_command_chain);
@@ -2787,9 +3038,14 @@ int main(void)
     RUN(test_multiframe_elm_managed);
     RUN(test_rates);
     RUN(test_screen_demand_polling);
+    RUN(test_hub_field_demand_and_fallback);
     RUN(test_functional_fallback);
     RUN(test_detect);
     RUN(test_auto_protocol_wire_responses);
+    RUN(test_builtin_auto_rpm_fallback);
+    RUN(test_builtin_auto_probe_timeout);
+    RUN(test_builtin_auto_slow_kline);
+    RUN(test_connection_default_timeout);
     RUN(test_legacy_protocol_initiation);
     RUN(test_suzuki_kwp_init_and_reconnect);
     RUN(test_can_protocol_addressing);

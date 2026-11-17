@@ -209,6 +209,62 @@ int main(void)
     signal_store_entry(SIG_OBD_RPM, &e);
     CHECK(!e.valid && e.seq == rpm_seq);
 
-    puts("signal_store batch operations: OK");
+    /* Accessory fields do not depend on ELM and cannot be overwritten by it. */
+    signal_store_set(SIG_SYS_OBD_LINK, SIG_LINK_NONE);
+    const int32_t hub_values[3]={90,110,250};
+    signal_store_hub_apply(4,hub_values);
+    CHECK(signal_store_hub_obd_mask()==(1u<<SIG_OBD_OIL_PRESSURE));
+    int32_t pressure;
+    CHECK(signal_store_get(SIG_OBD_OIL_PRESSURE,&pressure) && pressure==250);
+    CHECK(!signal_store_set(SIG_OBD_OIL_PRESSURE,999));
+    signal_store_invalidate(SIG_OBD_OIL_PRESSURE);
+    signal_store_invalidate_vehicle();
+    const int hub_slots[3]={SIG_OBD_COOLANT_TEMP,SIG_OBD_OIL_TEMP,SIG_OBD_OIL_PRESSURE};
+    const int32_t obd_values[3]={80,95,800};
+    signal_store_set_many(hub_slots,obd_values,3);
+    signal_store_invalidate_many(hub_slots,3);
+    CHECK(signal_store_get(SIG_OBD_OIL_PRESSURE,&pressure) && pressure==250);
+    CHECK(!signal_store_get(SIG_OBD_COOLANT_TEMP,&pressure));
+    CHECK(signal_store_get(SIG_SYS_OBD_LINK,&pressure) && pressure==SIG_LINK_NONE);
+    /* Unprovided fields release ownership immediately, no made-up zeros. */
+    signal_store_hub_apply(1,hub_values);
+    CHECK(!signal_store_get(SIG_OBD_OIL_PRESSURE,&pressure));
+    CHECK(signal_store_get(SIG_OBD_COOLANT_TEMP,&pressure) && pressure==90);
+    signal_store_hub_apply(0,NULL);
+    CHECK(signal_store_hub_obd_mask()==0);
+    signal_store_set(SIG_SYS_OBD_LINK,SIG_LINK_DATA);
+    CHECK(signal_store_set(SIG_OBD_OIL_PRESSURE,800));
+    CHECK(signal_store_get(SIG_OBD_OIL_PRESSURE,&pressure) && pressure==800);
+    /* Hub vacuum is authoritative; legacy OBD cannot overwrite or invalidate it. */
+    const int32_t signed_pressure[] = {-100, -99, -10, -5, -1, 0, 1000, 2000};
+    for (unsigned i=0; i<sizeof(signed_pressure)/sizeof(signed_pressure[0]); ++i) {
+        const int32_t sample[3]={0,0,signed_pressure[i]};
+        signal_store_hub_apply(4,sample);
+        CHECK(signal_store_get(SIG_OBD_OIL_PRESSURE,&pressure) && pressure==sample[2]);
+        CHECK(signal_store_hub_obd_mask()==(1u<<SIG_OBD_OIL_PRESSURE));
+        CHECK(!signal_store_set(SIG_OBD_OIL_PRESSURE,800));
+        signal_store_invalidate(SIG_OBD_OIL_PRESSURE);
+        int32_t relay[3];
+        CHECK(signal_store_hub_snapshot(relay)==4 && relay[2]==sample[2]);
+    }
+    signal_store_hub_apply(0,NULL);
+    CHECK(!signal_store_get(SIG_OBD_OIL_PRESSURE,&pressure));
+    CHECK(!signal_store_set(SIG_OBD_OIL_PRESSURE,-1)); /* ordinary OBD floor unchanged */
+    CHECK(signal_store_set(SIG_OBD_OIL_PRESSURE,800));
+    /* Out-of-range packets remain invalid, never a bogus 0 bar reading. */
+    const int32_t bad_values[3]={-20,300,-101};
+    signal_store_hub_apply(7,bad_values);
+    CHECK(signal_store_hub_obd_mask()==(1u<<SIG_OBD_COOLANT_TEMP));
+    CHECK(signal_store_get(SIG_OBD_COOLANT_TEMP,&pressure) && pressure==-20);
+    const int32_t too_high[3]={0,0,2001};
+    signal_store_hub_apply(4,too_high);
+    CHECK(!signal_store_hub_obd_mask());
+    /* A board-local ADC remains local after the Hub releases the same slot. */
+    signal_store_set_local(SIG_OBD_OIL_PRESSURE,true);
+    signal_store_hub_apply(4,hub_values);
+    signal_store_hub_apply(0,NULL);
+    CHECK(signal_store_is_local(SIG_OBD_OIL_PRESSURE));
+    signal_store_set_local(SIG_OBD_OIL_PRESSURE,false);
+    puts("signal_store batch operations + Sky Hub arbitration: OK");
     return 0;
 }

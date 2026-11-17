@@ -30,17 +30,12 @@
 #define ENG_MAX_LINES       32
 #define ENG_STEPS           40
 #define ENG_CMD_CAP         20
-#define ENG_ISOTP_TIMEOUT   2500
 #define ENG_ISOTP_BLOCK_SIZE 1
 #if ENG_CMD_CAP < 14
 #error "state commands require prefix + 8 hex digits + NUL"
 #endif
 
-#define ENG_DEF_TIMEOUT     2500
-#define ENG_DEF_DETECT      2000
-#define ENG_SLOW_INIT_TIMEOUT 10000
-#define ENG_FAST_INIT_TIMEOUT 5000
-#define ENG_DRAIN_TIMEOUT   1500
+#define ENG_DEF_TIMEOUT     5000    /* command, connection, ISO-TP and stop/drain deadlines */
 #define ENG_DEF_LINK_HOLD   3000
 #define ENG_DEF_VBAT        5000
 #define ENG_DEF_HEAL        10000
@@ -53,8 +48,6 @@
 #define ENG_WARM_DELAY      150
 #define ENG_STOPPED_DELAY   200
 #define ENG_STOPPED_RETRIES 1
-#define ENG_NISSAN_INIT_TIMEOUT 10000
-#define ENG_MA_STOP_MS      300
 #define ENG_CONT_WINDOW_MS  5000
 #define ENG_IDLE_MS         50
 #define ENG_WAIT_CAP        100
@@ -311,16 +304,11 @@ static uint32_t resp_timeout(const vp_engine_t *e)
     return e->cfg.resp_timeout_ms ? e->cfg.resp_timeout_ms : ENG_DEF_TIMEOUT;
 }
 
-/* Slow K-line initiation alone takes longer than the normal CAN deadline.
- * A caller-supplied detection deadline remains authoritative for tests and
- * adapters with known timing. */
+/* Use the same default for every protocol, including ELM automatic search.
+ * Explicit caller overrides remain available for known adapter timing. */
 static uint16_t connection_timeout(const vp_engine_t *e)
 {
-    if (e->cfg.detect_timeout_ms) return e->cfg.detect_timeout_ms;
-    if (e->run_proto == 3 || e->run_proto == 4) return ENG_SLOW_INIT_TIMEOUT;
-    if (e->run_proto == 5) return ENG_FAST_INIT_TIMEOUT;
-    if (e->run_proto == 0) return 30000; /* ELM's complete automatic search */
-    return ENG_DEF_DETECT;
+    return e->cfg.detect_timeout_ms ? e->cfg.detect_timeout_ms : ENG_DEF_TIMEOUT;
 }
 
 static bool legacy_obd_protocol(const vp_engine_t *e)
@@ -505,7 +493,7 @@ static eng_step_t *push_init(vp_engine_t *e, const char *cmd, uint16_t delay_ms)
     }
     s = q_push(e, K_INIT, queued, delay_ms);
 
-    if (s && vp_init_raw_command(cmd)) s->timeout_ms = ENG_NISSAN_INIT_TIMEOUT;
+    if (s && vp_init_raw_command(cmd)) s->timeout_ms = ENG_DEF_TIMEOUT;
     return s;
 }
 
@@ -1479,7 +1467,7 @@ static bool push_iso_flow_control(vp_engine_t *e, int r)
     s = q_push_front(e, K_ISO_FC, "300100", 0);
     if (!s) return false;
     s->req = (int16_t)r;
-    s->timeout_ms = ENG_ISOTP_TIMEOUT;
+    s->timeout_ms = ENG_DEF_TIMEOUT;
     return true;
 }
 
@@ -1489,7 +1477,7 @@ static bool push_iso_wait(vp_engine_t *e, int r)
 
     if (!w) return false;
     w->req = (int16_t)r;
-    w->timeout_ms = ENG_ISOTP_TIMEOUT;
+    w->timeout_ms = ENG_DEF_TIMEOUT;
     w->delay_ms = e->iso_stmin_ms;
     return true;
 }
@@ -2016,6 +2004,28 @@ static void detect_next(vp_engine_t *e)
          (unsigned)e->detect_attempt, (unsigned)ENG_DETECT_ATTEMPTS);
 }
 
+/* Append a single alternate connection check on the current candidate.
+ * Compilation materializes the standard default as "0100" in both JSON
+ * profiles and the flash blob. Other explicit checks retain their meaning. */
+static bool queue_detect_rpm_fallback(vp_engine_t *e, const char *probe)
+{
+    if (e->detect_fallback || strcmp(probe, "0100") ||
+        (e->p->check_connection[0] && strcmp(e->p->check_connection, "0100"))) return false;
+    for (uint16_t i = 0; i < e->p->n_req; i++) {
+        if (!(e->req[i].flags & VP_REQ_F_RAW) && e->req[i].service == 0x01 &&
+            e->req[i].tx_len >= 2 && e->req[i].tx[1] == 0x0C) {
+            eng_step_t *fallback = q_push(e, K_DETECT, "010C", 0);
+            if (!fallback) return false;
+            fallback->timeout_ms = connection_timeout(e);
+            e->detect_fallback = true;
+            elog(e, "protocol %u: 0100 did not match, checking 010C",
+                 (unsigned)e->run_proto);
+            return true;
+        }
+    }
+    return false;
+}
+
 static void detect_done(vp_engine_t *e, const eng_step_t *s, int how)
 {
     bool answered = how == DONE_PROMPT;
@@ -2035,8 +2045,12 @@ static void detect_done(vp_engine_t *e, const eng_step_t *s, int how)
         q_clear(e);
         drain = q_push(e, K_DRAIN, "", 0);
         if (drain) {
-            drain->timeout_ms = ENG_DRAIN_TIMEOUT;
-            elog(e, "protocol probe timed out, interrupting ELM before next candidate");
+            drain->timeout_ms = ENG_DEF_TIMEOUT;
+            /* Keep the fallback behind the drain. Without its prompt the
+             * adapter must reconnect before any further OBD request. */
+            if (queue_detect_rpm_fallback(e, probe)) drain->val = 1;
+            elog(e, "protocol %u: %s timed out, interrupting ELM before continuing",
+                 (unsigned)e->run_proto, probe);
         } else {
             e->phase = e->st.phase = VP_ENGINE_PH_RECONNECT;
             if (e->sink.reconnect) e->sink.reconnect(e->sink.ctx);
@@ -2052,31 +2066,11 @@ static void detect_done(vp_engine_t *e, const eng_step_t *s, int how)
     }
     expect[0] = (uint8_t)(expect[0] + 0x40u);
     if (!answered || !resp_match(e, expect, expect_len, &d, &n)) {
-        /* Some generic ECUs do not implement the supported-PID bitmap (0100)
-         * but do answer the demanded RPM PID. Try that once for each
-         * candidate before discarding the protocol. Explicit profile checks
-         * keep their original semantics. */
-        bool generic_check = e->p->check_connection[0] == '\0';
-        bool has_rpm = false;
-        if (generic_check && !e->detect_fallback) {
-            for (uint16_t i = 0; i < e->p->n_req; i++) {
-                if (!(e->req[i].flags & VP_REQ_F_RAW) && e->req[i].service == 0x01 &&
-                    e->req[i].tx_len >= 2 && e->req[i].tx[1] == 0x0C) {
-                    has_rpm = true;
-                    break;
-                }
-            }
-        }
-        if (has_rpm && !strcmp(probe, "0100")) {
-            eng_step_t *fallback;
-            e->detect_fallback = true;
-            q_clear(e);
-            fallback = q_push(e, K_DETECT, "010C", 0);
-            if (fallback) fallback->timeout_ms = connection_timeout(e);
-            return;
-        }
-        /* APK retries each candidate before moving to the next protocol. */
+        /* Try RPM once before discarding a standard connection check;
+         * profiles without that request never acquire an implicit PID. */
         q_clear(e);
+        if (queue_detect_rpm_fallback(e, probe)) return;
+        /* Retry each candidate before moving to the next protocol. */
         detect_next(e);
         return;
     }
@@ -2895,8 +2889,8 @@ static void step_done(vp_engine_t *e, uint32_t now, int how)
          * or a still-running initialization become the next command's reply. */
         eng_step_t *drain = q_push_front(e, K_DRAIN, "", 0);
         if (drain) {
-            drain->timeout_ms = ENG_DRAIN_TIMEOUT;
-            drain->val = 1; /* resume queued work after the prompt, not detection */
+            drain->timeout_ms = ENG_DEF_TIMEOUT;
+            drain->val = 1; /* resume queued work after the prompt, not a new candidate */
         } else {
             q_clear(e);
             e->phase = e->st.phase = VP_ENGINE_PH_RECONNECT;
@@ -2994,10 +2988,10 @@ static bool ma_poll(vp_engine_t *e, uint32_t now, uint32_t *wait)
     if (!e->ma_stopping) {
         /* any character ends ATMA; the prompt follows */
         e->ma_stopping = true;
-        e->ma_end_ms = now + ENG_MA_STOP_MS;
+        e->ma_end_ms = now + ENG_DEF_TIMEOUT;
         e->st.tx_cmds++;
         e->sink.send(e->sink.ctx, "");
-        *wait = ENG_MA_STOP_MS;
+        *wait = ENG_DEF_TIMEOUT;
         return false;
     }
     step_done(e, now, DONE_TIMEOUT);

@@ -144,7 +144,9 @@ void obd_data_get_snapshot(obd_data_snapshot_t *out)
     out->tps = (valid & (1ULL << SNAP_TPS)) ? (int16_t)v[SNAP_TPS] : -1;
     out->bat_mv = (valid & (1ULL << SNAP_BAT)) ? v[SNAP_BAT] : -1;
     out->oil_pressure_x10 = (valid & (1ULL << SNAP_OIL_PRESSURE)) ?
-                            (int16_t)div10_half_up(v[SNAP_OIL_PRESSURE]) : -1;
+                            (int16_t)div10_half_up(v[SNAP_OIL_PRESSURE]) : OBD_OIL_PRESSURE_INVALID;
+    out->oil_pressure_x100 = (valid & (1ULL << SNAP_OIL_PRESSURE)) ?
+                             (int16_t)v[SNAP_OIL_PRESSURE] : OBD_OIL_PRESSURE_INVALID;
     out->boost_x10 = (valid & (1ULL << SNAP_BOOST)) ?
                      (int16_t)div10_half_up(v[SNAP_BOOST]) : -32768;
     out->gear = (int8_t)((valid & (1ULL << SNAP_GEAR)) ? v[SNAP_GEAR] : OBD_GEAR_UNKNOWN);
@@ -165,8 +167,9 @@ void obd_data_get_snapshot_mask(obd_data_snapshot_t *out, uint16_t requested)
     }
     *out = (obd_data_snapshot_t){
         .coolant_temp = -40, .oil_temp = -100, .intake_temp = -40,
-        .load_pct = -1, .tps = -1, .bat_mv = -1, .oil_pressure_x10 = -1,
-        .boost_x10 = -32768, .gear = OBD_GEAR_UNKNOWN, .afr_x100 = -1
+        .load_pct = -1, .tps = -1, .bat_mv = -1, .oil_pressure_x10 = OBD_OIL_PRESSURE_INVALID,
+        .boost_x10 = -32768, .gear = OBD_GEAR_UNKNOWN, .afr_x100 = -1,
+        .oil_pressure_x100 = OBD_OIL_PRESSURE_INVALID
     };
     if (!requested) return;
 
@@ -191,7 +194,10 @@ void obd_data_get_snapshot_mask(obd_data_snapshot_t *out, uint16_t requested)
         case SIG_OBD_LOAD: out->load_pct = (int16_t)v; break;
         case SIG_OBD_THROTTLE: out->tps = (int16_t)v; break;
         case SIG_OBD_BATTERY_VOLTAGE: out->bat_mv = v; break;
-        case SIG_OBD_OIL_PRESSURE: out->oil_pressure_x10 = (int16_t)div10_half_up(v); break;
+        case SIG_OBD_OIL_PRESSURE:
+            out->oil_pressure_x10 = (int16_t)div10_half_up(v);
+            out->oil_pressure_x100 = (int16_t)v;
+            break;
         case SIG_OBD_BOOST: out->boost_x10 = (int16_t)div10_half_up(v); break;
         case SIG_OBD_GEAR: out->gear = (int8_t)v; break;
         case SIG_OBD_AFR: out->afr_x100 = (int16_t)v; break;

@@ -1,0 +1,356 @@
+{
+  "schema": "skygauge.vehicle/1",
+  "id": "custom.obd2.iso9141",
+  "rev": 1,
+  "name": "OBD2 ISO9141 P3",
+  "origin": {
+    "from": "vehicles/import/OBD/IMPORT/custom.obd2.generic.vehicle.json",
+    "profile_id": "obd2.generic",
+    "profile_rev": 4
+  },
+  "bus": {
+    "proto": 3,
+    "atst": 25,
+    "gap_ms": 30
+  },
+  "signals": [
+    {
+      "id": "obd.rpm",
+      "rate": "round",
+      "src": [
+        {
+          "req": "010C",
+          "len": 2,
+          "expr": "(A*256+B)/4",
+          "rpn": [
+            [
+              "A",
+              0
+            ],
+            [
+              "k",
+              256
+            ],
+            "*",
+            [
+              "A",
+              1
+            ],
+            "+",
+            [
+              "k",
+              4
+            ],
+            "/"
+          ],
+          "expect": "410C",
+          "fail_after": 5
+        }
+      ],
+      "period_ms": 50
+    },
+    {
+      "id": "obd.intake_temp",
+      "src": [
+        {
+          "req": "010F",
+          "len": 1,
+          "expr": "A-40",
+          "rpn": [
+            [
+              "A",
+              0
+            ],
+            [
+              "k",
+              40
+            ],
+            "-"
+          ],
+          "expect": "410F",
+          "fail_after": 5
+        }
+      ],
+      "rate": "round",
+      "period_ms": 1000
+    },
+    {
+      "id": "obd.speed",
+      "post": {
+        "zero_le": 2
+      },
+      "src": [
+        {
+          "req": "010D",
+          "len": 1,
+          "expr": "A",
+          "rpn": [
+            [
+              "A",
+              0
+            ]
+          ],
+          "expect": "410D",
+          "fail_after": 5
+        }
+      ],
+      "rate": "round",
+      "period_ms": 100
+    },
+    {
+      "id": "obd.coolant_temp",
+      "src": [
+        {
+          "req": "0105",
+          "len": 1,
+          "expr": "A-40",
+          "rpn": [
+            [
+              "A",
+              0
+            ],
+            [
+              "k",
+              40
+            ],
+            "-"
+          ],
+          "expect": "4105",
+          "fail_after": 5
+        }
+      ],
+      "rate": "round",
+      "period_ms": 1000
+    },
+    {
+      "id": "obd.load",
+      "src": [
+        {
+          "req": "0104",
+          "len": 1,
+          "expr": "A*100/255",
+          "rpn": [
+            [
+              "A",
+              0
+            ],
+            [
+              "k",
+              100
+            ],
+            "*",
+            [
+              "k",
+              255
+            ],
+            "/"
+          ],
+          "expect": "4104",
+          "fail_after": 5
+        }
+      ],
+      "rate": "round",
+      "period_ms": 200
+    },
+    {
+      "id": "obd.throttle",
+      "src": [
+        {
+          "req": "0111",
+          "len": 1,
+          "expr": "A*100/255",
+          "rpn": [
+            [
+              "A",
+              0
+            ],
+            [
+              "k",
+              100
+            ],
+            "*",
+            [
+              "k",
+              255
+            ],
+            "/"
+          ],
+          "expect": "4111",
+          "fail_after": 5
+        }
+      ],
+      "rate": "round",
+      "period_ms": 200
+    },
+    {
+      "id": "obd.oil_temp",
+      "valid": [
+        -20,
+        255
+      ],
+      "filter": "temp_hyst",
+      "src": [
+        {
+          "req": "015C",
+          "len": 1,
+          "valid": [
+            -40,
+            255
+          ],
+          "expr": "A-40",
+          "rpn": [
+            [
+              "A",
+              0
+            ],
+            [
+              "k",
+              40
+            ],
+            "-"
+          ],
+          "expect": "415C",
+          "fail_after": 5
+        }
+      ],
+      "rate": "round",
+      "period_ms": 1000
+    },
+    {
+      "id": "obd.battery_voltage",
+      "unit": "mV",
+      "src": [
+        {
+          "req": "0142",
+          "len": 2,
+          "expr": "A*256+B",
+          "rpn": [
+            [
+              "R",
+              0,
+              16,
+              "be"
+            ]
+          ],
+          "expect": "4142",
+          "fail_after": 5
+        }
+      ],
+      "rate": "round",
+      "period_ms": 1000
+    },
+    {
+      "id": "obd.boost",
+      "unit": "kPa_rel",
+      "post": {
+        "clamp": [
+          -100,
+          155
+        ]
+      },
+      "src": [
+        {
+          "req": "0170",
+          "len": 10,
+          "multiframe": true,
+          "multiframe_mode": "elm",
+          "valid": [
+            -99,
+            155
+          ],
+          "expr": "((D*256+E)/32)-100",
+          "rpn": [
+            [
+              "A",
+              3
+            ],
+            [
+              "k",
+              256
+            ],
+            "*",
+            [
+              "A",
+              4
+            ],
+            "+",
+            [
+              "k",
+              32
+            ],
+            "/",
+            [
+              "k",
+              100
+            ],
+            "-"
+          ],
+          "expect": "4170",
+          "fail_after": 5
+        },
+        {
+          "req": "010B",
+          "len": 1,
+          "expr": "A-100",
+          "rpn": [
+            [
+              "A",
+              0
+            ],
+            [
+              "k",
+              100
+            ],
+            "-"
+          ],
+          "expect": "410B",
+          "fail_after": 5
+        }
+      ],
+      "rate": "round",
+      "period_ms": 200
+    },
+    {
+      "id": "obd.afr",
+      "src": [
+        {
+          "req": "0144",
+          "len": 2,
+          "valid": [
+            8,
+            22
+          ],
+          "expr": "(A*256+B)*14.7/32768",
+          "rpn": [
+            [
+              "R",
+              0,
+              16,
+              "be"
+            ],
+            [
+              "k",
+              14.7
+            ],
+            "*",
+            [
+              "k",
+              32768
+            ],
+            "/"
+          ],
+          "expect": "4144",
+          "fail_after": 5
+        }
+      ],
+      "rate": "round",
+      "period_ms": 500
+    }
+  ],
+  "notes": [
+    "Editable catalog-derived template; hardware compatibility requires vehicle testing.",
+    "period_ms is a minimum interval; actual rates depend on serial polling and adapter latency.",
+    "expr is informational; edit rpn to change decoding."
+  ],
+  "defaults": "none"
+}

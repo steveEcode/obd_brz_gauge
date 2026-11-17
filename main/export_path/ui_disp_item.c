@@ -3,6 +3,7 @@
 // ================================================================
 
 #include "ui_disp_item.h"
+#include "app_obd_dsp/obd_data_cache.h"
 #include "bsp_obd_dsp/nvs_storage.h"
 
 #include <stdio.h>
@@ -27,7 +28,7 @@ const disp_item_meta_t s_disp_meta[DISP_ITEM_COUNT] = {
 };
 
 // Needle range per data item: nmin/nmax in natural units (used for both scale labels and needle position);
-// div converts the cached raw value to natural units (BAT: mV→V, OILP: 0.1 units → integer); div must be >= 1.
+// div converts the cached raw value to natural units (BAT: mV→V, OILP: 0.01 bar → bar); div must be >= 1.
 const needle_scale_meta_t s_needle_scale_meta[DISP_ITEM_COUNT] = {
     [DISP_ITEM_CLT]   = {-20, 255, 1},
     [DISP_ITEM_IAT]   = {-20, 100, 1},
@@ -37,7 +38,7 @@ const needle_scale_meta_t s_needle_scale_meta[DISP_ITEM_COUNT] = {
     [DISP_ITEM_RPM]   = {0, 8000, 1},
     [DISP_ITEM_SPEED] = {0, 240, 1},
     [DISP_ITEM_BAT]   = {8, 16, 1000},
-    [DISP_ITEM_OILP]  = {0, 10, 10},
+    [DISP_ITEM_OILP]  = {-1, 10, 100},
     [DISP_ITEM_RESERVED_9] = {0, 100, 1},   // placeholder; div >= 1 (ui.c divides by it)
     [DISP_ITEM_BOOST] = {-10, 20, 1}, // 0.1 bar units: -1.0 ~ +2.0 bar, including intake vacuum
     [DISP_ITEM_AFR]   = {8, 22, 100}, // range 8.0~22.0:1, raw value ×100
@@ -46,7 +47,7 @@ const needle_scale_meta_t s_needle_scale_meta[DISP_ITEM_COUNT] = {
 bool disp_item_read_value(disp_item_t item,
                           int16_t clt, int16_t iat, int16_t oil,
                           int16_t load_pct, int16_t tps, int32_t bat_mv,
-                          int16_t oilp_x10,
+                          int16_t oilp_x100,
                           uint16_t rpm, uint16_t speed, int16_t boost_x10,
                           int16_t afr_x100,
                           int32_t *out)
@@ -61,7 +62,7 @@ bool disp_item_read_value(disp_item_t item,
         case DISP_ITEM_RPM: *out = rpm; return true;
         case DISP_ITEM_SPEED: *out = speed; return true;
         case DISP_ITEM_BAT: if (bat_mv > 0) { *out = bat_mv; return true; } return false;
-        case DISP_ITEM_OILP: if (oilp_x10 >= 0) { *out = oilp_x10; return true; } return false;
+        case DISP_ITEM_OILP: if (oilp_x100 != OBD_OIL_PRESSURE_INVALID) { *out = oilp_x100; return true; } return false;
         case DISP_ITEM_BOOST: if (boost_x10 != -32768) { *out = boost_x10; return true; } return false;
         case DISP_ITEM_AFR: if (afr_x100 >= 800 && afr_x100 <= 2200) { *out = afr_x100; return true; } return false;
         default: return false;
@@ -85,7 +86,7 @@ int32_t disp_item_sweep_value(disp_item_t item, float r)
         case DISP_ITEM_BAT:
             return (int32_t)(12000.0f + 2400.0f * r); // 12.0~14.4V
         case DISP_ITEM_OILP:
-            return (int32_t)(100.0f * r); // 0.0~10.0bar (x10)
+            return (int32_t)(1000.0f * r); // 0.00~10.00bar (x100)
         case DISP_ITEM_BOOST:
             return (int32_t)(20.0f * r); // 0.0~2.0bar gauge pressure (x10)
         case DISP_ITEM_AFR:
@@ -106,7 +107,7 @@ void disp_item_set_text(lv_obj_t *label, disp_item_t item, int32_t value, bool v
         snprintf(text, sizeof(text), "%d.%d", (int)(value / 1000), (int)((value % 1000) / 100));
     } else if (item == DISP_ITEM_OILP) {
         int32_t abs_val = (value < 0) ? -value : value;
-        snprintf(text, sizeof(text), "%d.%d", (int)(value / 10), (int)(abs_val % 10));
+        snprintf(text, sizeof(text), "%s%d.%02d", value < 0 ? "-" : "", (int)(abs_val / 100), (int)(abs_val % 100));
     } else if (item == DISP_ITEM_BOOST) {
         // gauge pressure can be negative (vacuum); show signed with one decimal, e.g. -0.6 / 1.2
         int32_t a = (value < 0) ? -value : value;
@@ -123,12 +124,20 @@ void disp_item_set_text(lv_obj_t *label, disp_item_t item, int32_t value, bool v
     }
 }
 
+/* NVS oil-pressure alarms remain in historical 0.1 bar units. Convert only
+ * for comparison; do not reinterpret or migrate existing saved thresholds. */
+static bool disp_item_over_alarm(disp_item_t item, int32_t value, bool valid)
+{
+    int16_t saved = nvs_chart_alarm_get((uint8_t)item);
+    int32_t threshold = (item == DISP_ITEM_OILP) ? (int32_t)saved * 10 : saved;
+    return valid && saved < DISP_ITEM_ALARM_OFF && value >= threshold;
+}
+
 void disp_item_set_value_color(lv_obj_t *label, disp_item_t item, int32_t value, bool valid)
 {
     if (!label) return;
 
-    int16_t thr = nvs_chart_alarm_get((uint8_t)item);   // raw-value units; 32767=disabled
-    lv_color_t color = (valid && value >= (int32_t)thr) ? lv_color_hex(0xFF4D4D) : lv_color_hex(0xFFFFFF);
+    lv_color_t color = disp_item_over_alarm(item, value, valid) ? lv_color_hex(0xFF4D4D) : lv_color_hex(0xFFFFFF);
     if (lv_color_to32(lv_obj_get_style_text_color(label, LV_PART_MAIN)) != lv_color_to32(color)) {
         lv_obj_set_style_text_color(label, color, LV_PART_MAIN);
     }
@@ -140,8 +149,7 @@ static void disp_item_set_value_color_throttled(lv_obj_t *label, disp_item_t ite
 
     if (!label) return;
 
-    int16_t thr = nvs_chart_alarm_get((uint8_t)item);   // raw-value units; 32767=disabled
-    bool over_threshold = valid && thr < DISP_ITEM_ALARM_OFF && value >= (int32_t)thr;
+    bool over_threshold = disp_item_over_alarm(item, value, valid);
     bool use_cooldown = (item == DISP_ITEM_OILP);
     lv_color_t color = lv_color_hex(0xFFFFFF);
 
@@ -243,4 +251,11 @@ void ui_disp_item_range(uint8_t item, int32_t *nmin, int32_t *nmax, int32_t *div
     if (nmin) *nmin = ns->nmin;
     if (nmax) *nmax = ns->nmax;
     if (div)  *div  = ns->div;
+}
+
+/* Slider/save units are stable even when display precision increases. */
+int32_t ui_disp_item_alarm_div(uint8_t item)
+{
+    if (item >= DISP_ITEM_COUNT) item = 0;
+    return item == DISP_ITEM_OILP ? 10 : s_needle_scale_meta[item].div;
 }

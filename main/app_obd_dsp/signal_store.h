@@ -81,6 +81,15 @@ int  signal_store_veh_register(const char *key, int32_t min, int32_t max, uint32
 void signal_store_veh_clear(void);
 int  signal_store_veh_count(void);
 
+/* Sky Hub owns only present, range-valid coolant/oil-temperature/oil-pressure
+ * fields. Hub oil pressure accepts -100..2000 (bar*100), preserving vacuum;
+ * ordinary OBD bounds are unchanged. values order: C, C, bar*100.
+ * mask bits: 0,1,2 respectively. */
+void signal_store_hub_apply(uint8_t mask, const int32_t values[3]);
+uint16_t signal_store_hub_obd_mask(void);
+/* Atomic snapshot for master relay: fresh owned fields only, same bit order. */
+uint8_t signal_store_hub_snapshot(int32_t values[3]);
+
 #ifdef __cplusplus
 }
 #endif

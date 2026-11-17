@@ -87,7 +87,6 @@ static void select_wheel(lv_event_t *event)
     s_selected = (int)(uintptr_t)lv_event_get_user_data(event);
     render();
 }
-static void back(lv_event_t *event) { (void)event; s_selected = -1; render(); }
 
 /* Match INFO's unobtrusive grid rather than drawing filled cards. */
 static void divider(lv_obj_t *parent, int width, int height, int y)
@@ -126,11 +125,6 @@ static void render(void)
     } else {
         s_details = text(s_body, "", 80, 306, &ui_font_FontTypoderSize16);
         lv_obj_set_style_text_line_space(s_details, 9, 0);
-        lv_obj_t *button = lv_btn_create(s_body);
-        lv_obj_set_size(button, 126, 30);
-        lv_obj_align(button, LV_ALIGN_TOP_MID, 0, 292);
-        lv_obj_add_event_cb(button, back, LV_EVENT_CLICKED, NULL);
-        text(button, "BACK", 0, 110, &ui_font_FontTypoderSize16);
     }
     refresh(NULL);
 }

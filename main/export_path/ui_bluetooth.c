@@ -1,5 +1,6 @@
 #include "ui_bluetooth.h"
 #include "ui.h"
+#include "bsp_obd_dsp/skyhub_client.h"
 #include "bsp_obd_dsp/tpms_ble_client.h"
 #include "bsp_obd_dsp/elm327_ble_client.h"
 #include "bsp_obd_dsp/ble_hub.h"
@@ -12,7 +13,7 @@ lv_obj_t *ui_ScreenPageTPMSPairing;
 static const char *const k_wheel[] = {"FRONT LEFT", "FRONT RIGHT", "REAR LEFT", "REAR RIGHT"};
 static lv_obj_t *s_body, *s_status, *s_list;
 static lv_obj_t *s_rows[TPMS_SCAN_MAX];
-static lv_obj_t *s_elm_label;
+static lv_obj_t *s_elm_label, *s_hub_menu;
 static tpms_scan_result_t s_candidates[TPMS_SCAN_MAX];
 static size_t s_row_count;
 static unsigned s_wheel;
@@ -68,7 +69,11 @@ static void menu_select(lv_event_t *e)
     if ((uintptr_t)lv_event_get_user_data(e) == 0)
         _ui_screen_change(&ui_ScreenPageBLEScan, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0,
                           ui_ScreenPageBLEScan_screen_init);
-    else
+    else if ((uintptr_t)lv_event_get_user_data(e) == 2) {
+        if (nvs_cfg_read().device_role != ESPNOW_ROLE_SLAVE)
+            _ui_screen_change(&ui_ScreenPageSkyHub, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0,
+                              ui_ScreenPageSkyHub_screen_init);
+    } else
         _ui_screen_change(&ui_ScreenPageTPMSPairing, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0,
                           ui_ScreenPageTPMSPairing_screen_init);
 }
@@ -95,18 +100,20 @@ static void menu_loaded(lv_event_t *e)
 {
     (void)e;
     bool slave = nvs_cfg_read().device_role == ESPNOW_ROLE_SLAVE;
+    if (slave) lv_obj_add_flag(s_hub_menu, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_clear_flag(s_hub_menu, LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text(s_elm_label, slave ? "GAUGE MASTER PAIRING" : "ELM327 PAIRING");
 }
 
 void ui_ScreenPageBluetooth_screen_init(void)
 {
     screen_init(&ui_ScreenPageBluetooth);
-    label(ui_ScreenPageBluetooth, "BLUETOOTH PAIRING", 55, &ui_font_FontTypoderSize20);
-    lv_obj_t *elm = button(ui_ScreenPageBluetooth, "ELM327 PAIRING", 110, 52, menu_select, 0);
+    label(ui_ScreenPageBluetooth, "CONNECTIONS", 49, &ui_font_FontTypoderSize20);
+    lv_obj_t *elm = button(ui_ScreenPageBluetooth, "ELM327 PAIRING", 94, 44, menu_select, 0);
     s_elm_label = lv_obj_get_child(elm, 0);
     lv_obj_add_event_cb(ui_ScreenPageBluetooth, menu_loaded, LV_EVENT_SCREEN_LOADED, NULL);
-    button(ui_ScreenPageBluetooth, "TPMS PAIRING", 180, 52, menu_select, 1);
-    button(ui_ScreenPageBluetooth, "BACK", 252, 34, menu_back, 0);
+    button(ui_ScreenPageBluetooth, "TPMS PAIRING", 152, 44, menu_select, 1);
+    s_hub_menu = button(ui_ScreenPageBluetooth, "SKY HUB PAIRING", 210, 44, menu_select, 2);
     lv_obj_add_event_cb(ui_ScreenPageBluetooth, menu_gesture, LV_EVENT_GESTURE, NULL);
 }
 
@@ -160,7 +167,6 @@ static void show_wheels(void)
                  (legacy_binding(&cfg.tpms[i]) ? "RE-PAIR" : "--"));
         button(s_body, text, 90 + (int)i * 43, 36, wheel_select, i);
     }
-    button(s_body, "BACK", 274, 32, back, 0);
 }
 
 static void remove_binding(lv_event_t *e)
@@ -186,7 +192,6 @@ static void show_detail(void)
                      112, &lv_font_montserrat_12);
     button(s_body, (paired || legacy) ? "RE-PAIR" : "PAIR SENSOR", 153, 40, scan_begin, 0);
     if (paired || legacy) button(s_body, "DELETE PAIRING", 204, 40, remove_binding, 0);
-    button(s_body, "BACK", 267, 32, back, 0);
 }
 
 static void device_select(lv_event_t *e)
@@ -215,8 +220,6 @@ static void scan_begin(lv_event_t *e)
     lv_obj_clear_flag(s_list, LV_OBJ_FLAG_GESTURE_BUBBLE);
     label(s_body, "Tap sensor ID to save this wheel", 244, &lv_font_montserrat_12);
     button(s_body, "SCAN AGAIN", 265, 30, scan_begin, 0);
-    lv_obj_t *back_btn = button(s_body, "BACK", 300, 28, back, 0);
-    lv_obj_set_width(back_btn, 170);
     s_pending = true;
     s_scan_since = lv_tick_get();
 }
@@ -319,4 +322,120 @@ void ui_ScreenPageTPMSPairing_screen_init(void)
     lv_obj_add_event_cb(ui_ScreenPageTPMSPairing, visibility, LV_EVENT_DELETE, NULL);
     lv_obj_add_event_cb(ui_ScreenPageTPMSPairing, pairing_gesture, LV_EVENT_GESTURE, NULL);
     show_wheels();
+}
+
+
+/* Sky Hub discovery is ESP-NOW, not BLE. Snapshot polling and all LVGL calls
+ * remain on the LVGL task; the radio worker handles pairing/NVS asynchronously. */
+lv_obj_t *ui_ScreenPageSkyHub;
+static lv_obj_t *s_hub_bound, *s_hub_status, *s_hub_fields, *s_hub_list;
+static lv_timer_t *s_hub_timer;
+static skyhub_candidate_t s_hub_candidates[SKYHUB_SCAN_MAX];
+static size_t s_hub_count;
+static bool s_hub_loaded;
+
+static void hub_back(lv_event_t *e)
+{
+    (void)e;
+    _ui_screen_change(&ui_ScreenPageBluetooth, LV_SCR_LOAD_ANIM_FADE_ON, 5, 0,
+                      ui_ScreenPageBluetooth_screen_init);
+}
+static void hub_scan(lv_event_t *e)
+{
+    (void)e;
+    if (!skyhub_client_scan()) lv_label_set_text(s_hub_status,"RADIO UNAVAILABLE");
+}
+static void hub_forget(lv_event_t *e)
+{
+    (void)e;
+    if (!skyhub_client_unbind()) lv_label_set_text(s_hub_status,"RADIO UNAVAILABLE");
+}
+static void hub_select(lv_event_t *e)
+{
+    size_t i=(size_t)(uintptr_t)lv_event_get_user_data(e);
+    if (i<s_hub_count && !s_hub_candidates[i].busy && skyhub_client_bind(s_hub_candidates[i].mac))
+        lv_label_set_text(s_hub_status,"PAIRING...");
+}
+static void hub_poll(lv_timer_t *timer)
+{
+    (void)timer;
+    if (!s_hub_loaded) return;
+    skyhub_status_t status; skyhub_client_snapshot(&status);
+    char text[100];
+    const uint8_t *m=status.bound_mac;
+    if (sh_mac_valid(m)) snprintf(text,sizeof(text),"%02X:%02X:%02X:%02X:%02X:%02X",m[0],m[1],m[2],m[3],m[4],m[5]);
+    else snprintf(text,sizeof(text),"NO SAVED HUB");
+    lv_label_set_text(s_hub_bound,text);
+    lv_label_set_text(s_hub_status,!status.available ? "RADIO UNAVAILABLE" :
+                      status.pairing ? "PAIRING..." : status.scanning ? "SEARCHING..." : status.status);
+    snprintf(text,sizeof(text),"%s%s%s", status.active_mask&SH_COOLANT ? "CLT " : "",
+             status.active_mask&SH_OIL_TEMP ? "OIL TEMP " : "",
+             status.active_mask&SH_OIL_PRESSURE ? "OIL PRESS" : "");
+    lv_label_set_text(s_hub_fields,text[0] ? text : "NO HUB DATA");
+    if (status.count==s_hub_count && !memcmp(s_hub_candidates,status.candidates,status.count*sizeof(*s_hub_candidates))) return;
+    s_hub_count=status.count;
+    memcpy(s_hub_candidates,status.candidates,sizeof(s_hub_candidates));
+    lv_obj_clean(s_hub_list);
+    int row_y=0;
+    for (size_t i=0;i<s_hub_count;i++) {
+        const skyhub_candidate_t *c=&s_hub_candidates[i]; m=c->mac;
+        // A bound Hub is shown as saved/paired; worker refuses a Hub owned by
+        // another gauge. Hold its BOOT button 3s to physically release it.
+        /* Friendly label only; hub_select still binds the full candidate MAC. */
+        snprintf(text,sizeof(text),"SKY HUB %02X%02X%s",m[4],m[5],c->busy ? "\nBUSY" : "");
+        int height=c->busy ? 58 : 40;
+        lv_obj_t *row=button(s_hub_list,text,row_y,height,hub_select,i);
+        row_y+=height+4;
+        lv_obj_set_style_text_align(row,LV_TEXT_ALIGN_CENTER,0);
+        lv_obj_set_width(row,248);
+        if (c->busy) lv_obj_add_state(row,LV_STATE_DISABLED);
+    }
+}
+static void hub_visibility(lv_event_t *e)
+{
+    lv_event_code_t code=lv_event_get_code(e);
+    if (code==LV_EVENT_SCREEN_LOADED) {
+        s_hub_loaded=true; lv_timer_resume(s_hub_timer); hub_poll(NULL);
+        skyhub_client_scan();
+    } else if (code==LV_EVENT_SCREEN_UNLOADED || code==LV_EVENT_DELETE) {
+        s_hub_loaded=false;
+        if (s_hub_timer) lv_timer_pause(s_hub_timer);
+        if (code==LV_EVENT_DELETE) {
+            if (s_hub_timer) lv_timer_del(s_hub_timer);
+            s_hub_timer=NULL; ui_ScreenPageSkyHub=NULL;
+        }
+    }
+}
+static void hub_gesture(lv_event_t *e)
+{
+    lv_indev_t *indev=lv_indev_get_act();
+    if (!indev) return;
+    lv_dir_t dir=lv_indev_get_gesture_dir(indev);
+    if (dir==LV_DIR_LEFT || dir==LV_DIR_RIGHT) { lv_indev_wait_release(indev); hub_back(e); }
+}
+void ui_ScreenPageSkyHub_screen_init(void)
+{
+    screen_init(&ui_ScreenPageSkyHub);
+    lv_obj_t *title=label(ui_ScreenPageSkyHub,"SKY HUB PAIRING",55,&ui_font_FontTypoderSize20);
+    lv_obj_set_width(title,LV_SIZE_CONTENT);
+    s_hub_bound=label(ui_ScreenPageSkyHub,"NO SAVED HUB",82,&ui_font_FontTypoderSize16);
+    s_hub_status=label(ui_ScreenPageSkyHub,"SEARCHING...",108,&ui_font_FontTypoderSize16);
+    lv_obj_set_width(s_hub_status,284);
+    lv_label_set_long_mode(s_hub_status,LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(s_hub_status,LV_TEXT_ALIGN_CENTER,0);
+    s_hub_fields=label(ui_ScreenPageSkyHub,"NO HUB DATA",148,&ui_font_FontTypoderSize16);
+    s_hub_list=lv_obj_create(ui_ScreenPageSkyHub);
+    lv_obj_remove_style_all(s_hub_list); lv_obj_set_size(s_hub_list,270,77);
+    lv_obj_align(s_hub_list,LV_ALIGN_TOP_MID,0,174);
+    lv_obj_set_scroll_dir(s_hub_list,LV_DIR_VER);
+    lv_obj_t *scan=button(ui_ScreenPageSkyHub,"SCAN",263,34,hub_scan,0);
+    lv_obj_set_width(scan,112); lv_obj_align(scan,LV_ALIGN_TOP_MID,-62,263);
+    lv_obj_t *forget=button(ui_ScreenPageSkyHub,"FORGET",263,34,hub_forget,0);
+    lv_obj_set_width(forget,112); lv_obj_align(forget,LV_ALIGN_TOP_MID,62,263);
+    s_hub_count=0; memset(s_hub_candidates,0,sizeof(s_hub_candidates)); s_hub_loaded=false;
+    s_hub_timer=lv_timer_create(hub_poll,250,NULL); lv_timer_pause(s_hub_timer);
+    lv_obj_add_event_cb(ui_ScreenPageSkyHub,hub_visibility,LV_EVENT_SCREEN_LOADED,NULL);
+    lv_obj_add_event_cb(ui_ScreenPageSkyHub,hub_visibility,LV_EVENT_SCREEN_UNLOADED,NULL);
+    lv_obj_add_event_cb(ui_ScreenPageSkyHub,hub_visibility,LV_EVENT_DELETE,NULL);
+    lv_obj_add_event_cb(ui_ScreenPageSkyHub,hub_gesture,LV_EVENT_GESTURE,NULL);
 }
