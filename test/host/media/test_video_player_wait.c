@@ -217,7 +217,7 @@ void tpms_ble_service_step(bool allow_background)
 {
     CHECK(mux_held);
     if (check_tpms_schedule) {
-        const bool expected[] = {true, false, true, true, false};
+        const bool expected[] = {true, false, true, true, true, false, true, false, true};
         CHECK(tpms_service_calls < COUNT_OF(expected));
         CHECK(allow_background == expected[tpms_service_calls]);
     }
@@ -1277,17 +1277,20 @@ static void next_tpms_schedule_case(void)
     case 1: runtime_cfg.ble_obd_mac[0] = 1; break;
     case 2: runtime_elm_connected = true; break;
     case 3: runtime_elm_connected = false; runtime_cfg.device_role = ESPNOW_ROLE_SLAVE; break;
-    case 4:
-        runtime_cfg.device_role = ESPNOW_ROLE_MASTER;
+    case 4: // Slave must ignore both forms of old OBD binding while disconnected.
         runtime_cfg.ble_obd_mac[0] = 0; strcpy(runtime_cfg.ble_device_name, "ELM"); break;
+    case 5: runtime_cfg.device_role = ESPNOW_ROLE_MASTER; break;
+    case 6: runtime_elm_connected = true; break;
+    case 7: runtime_elm_connected = false; runtime_cfg.device_role = ESPNOW_ROLE_STANDALONE; break;
+    case 8: runtime_cfg.ble_device_name[0] = '\0'; break;
     }
 }
 static void test_runtime_tpms_schedule(void)
 {
     now_us = 250000; handler_delay = 2;
     check_tpms_schedule = true; at_handler = next_tpms_schedule_case;
-    run_runtime(5);
-    CHECK(tpms_service_calls == 5);
+    run_runtime(9);
+    CHECK(tpms_service_calls == 9);
 }
 static void select_delay(void)
 {

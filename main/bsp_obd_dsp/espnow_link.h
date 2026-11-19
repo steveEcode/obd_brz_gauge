@@ -9,7 +9,7 @@ extern "C" {
 #endif
 
 #define ESPNOW_ROLE_MASTER    0   // reads ELM327 + broadcasts to slaves over ESP-NOW (WiFi on)
-#define ESPNOW_ROLE_SLAVE     1   // only receives the master's ESP-NOW data and displays it (WiFi on)
+#define ESPNOW_ROLE_SLAVE     1   // receives master OBD; may receive local TPMS (WiFi on)
 #define ESPNOW_ROLE_STANDALONE 2  // standalone: full ELM327 features but no WiFi/ESP-NOW (default for new devices)
 
 // Master: init WiFi + ESP-NOW and periodically broadcast the OBD data cache to slaves.
@@ -23,8 +23,9 @@ void espnow_link_start_slave(void);
 // remain device-local. Online slave demands expire after two seconds.
 void espnow_link_set_data_demand(const espnow_demand_t *demand);
 espnow_demand_t espnow_link_remote_data_demand(void);
-// Delivered four-wheel data: local on master/standalone, master snapshot on
-// slave (no local fallback, no slave NVS pairing changes).
+// Delivered four-wheel data: local on master/standalone. On slaves, each locally
+// bound wheel uses its full local snapshot (even waiting/stale); only unbound
+// wheels use the master's cache. No NVS changes or slave-to-master forwarding.
 void espnow_link_tpms_snapshot(tpms_wheel_data_t out[TPMS_WHEEL_COUNT]);
 
 // Publish the local page's OBD demand mask. Slaves advertise it in HELLO;

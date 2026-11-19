@@ -278,6 +278,75 @@ static void test_binding(void)
     assert(!strcmp(config.tpms_sensor_id[3], saved.tpms_sensor_id[3]));
     assert(tpms_ble_unbind(4) == ESP_ERR_INVALID_ARG);
 }
+/* LVGL runs background maintenance every 250 ms before pairing-page timers.
+ * Cover both master background eligibility and slave/reconnect ineligibility,
+ * with and without saved IDs. Pausing background must not starve manual scans. */
+static void test_manual_scan_while_background_paused(void)
+{
+    for (unsigned allow = 0; allow < 2; ++allow) {
+        for (unsigned bound = 0; bound < 2; ++bound) {
+            memset(&config, 0, sizeof(config));
+            tpms_ble_scan_stop();
+            tpms_ble_background_pause(false);
+            if (bound) assert(tpms_ble_bind(0, "18010F") == ESP_OK);
+            now_us += 600000;
+            tpms_ble_service_step(allow != 0);
+            assert(scanning == (allow && bound));
+            if (scanning) assert(last_duration == 0);
+
+            /* SCREEN_LOADED pauses background; scan_begin stops any old scan. */
+            tpms_ble_background_pause(true);
+            tpms_ble_scan_stop();
+            assert(!scanning);
+            assert(tpms_ble_scan_start() == ESP_ERR_INVALID_STATE);
+            now_us += 250000;
+            tpms_ble_service_step(allow != 0);
+            assert(!scanning);
+            assert(tpms_ble_scan_start() == ESP_ERR_INVALID_STATE);
+            now_us += 250000;
+            tpms_ble_service_step(allow != 0);
+            assert(!scanning);
+            assert(tpms_ble_scan_start() == ESP_OK);
+            assert(scanning && owner == BLE_HUB_APP_TPMS && last_duration == 20);
+
+            /* Paused maintenance must neither stop nor replace a manual scan. */
+            for (unsigned tick = 0; tick < 8; ++tick) {
+                now_us += 250000;
+                tpms_ble_service_step(allow != 0);
+                assert(scanning && last_duration == 20);
+                assert(tpms_ble_scan_snapshot(NULL, 0, NULL) == TPMS_SCAN_RUNNING);
+            }
+            esp_ble_gap_cb_param_t p = packet(0x18010F);
+            emit(&p);
+            tpms_scan_result_t result;
+            size_t count;
+            assert(tpms_ble_scan_snapshot(&result, 1, &count) == TPMS_SCAN_RUNNING);
+            assert(count == 1 && !strcmp(result.data.sensor_id, "18010F"));
+
+            /* SCAN AGAIN retains the controller-stop delay without starvation. */
+            tpms_ble_scan_stop();
+            now_us += 250000;
+            tpms_ble_service_step(allow != 0);
+            assert(tpms_ble_scan_start() == ESP_ERR_INVALID_STATE);
+            now_us += 250000;
+            tpms_ble_service_step(allow != 0);
+            assert(tpms_ble_scan_start() == ESP_OK);
+            assert(scanning && last_duration == 20);
+            tpms_ble_scan_stop();
+
+            /* Leaving pairing keeps the normal background cooldown and policy. */
+            tpms_ble_background_pause(false);
+            tpms_ble_service_step(allow != 0);
+            assert(!scanning);
+            now_us += 500000;
+            tpms_ble_service_step(allow != 0);
+            assert(scanning == (allow && bound));
+            if (scanning) assert(last_duration == 0);
+            tpms_ble_scan_stop();
+        }
+    }
+}
+
 static void test_live_monitor(void)
 {
     memset(&config, 0, sizeof(config));
@@ -331,4 +400,4 @@ static void test_live_monitor(void)
     ready = false; client.shutdown_cb(); scanning = false;
     now_us += 600000; tpms_ble_service_step(true); assert(!scanning);
 }
-int main(void) { test_protocol(); test_scanning(); test_diagnostic_logs(); test_binding(); test_live_monitor(); return 0; }
+int main(void) { test_protocol(); test_scanning(); test_diagnostic_logs(); test_binding(); test_manual_scan_while_background_paused(); test_live_monitor(); return 0; }

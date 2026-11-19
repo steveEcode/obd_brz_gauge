@@ -266,7 +266,11 @@ void tpms_ble_background_pause(bool pause)
 void tpms_ble_service_step(bool allow_background)
 {
     sync_bindings();
-    if (!allow_background || s_paused || !ble_hub_is_ready()) {
+    /* Pairing owns the scanner while background reception is paused. Do not
+     * keep moving its shared retry deadline: this service runs every 250 ms,
+     * so extending the 500 ms cooldown here would starve every manual scan. */
+    if (s_paused) return;
+    if (!allow_background || !ble_hub_is_ready()) {
         if (s_background) tpms_ble_scan_stop();
         s_retry_us = esp_timer_get_time() + 500000;
         return;

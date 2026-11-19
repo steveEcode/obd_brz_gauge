@@ -512,14 +512,19 @@ uint16_t espnow_link_remote_demand_mask(void)
 
 void espnow_link_tpms_snapshot(tpms_wheel_data_t out[TPMS_WHEEL_COUNT])
 {
-    if (nvs_cfg_read().device_role != ESPNOW_ROLE_SLAVE) {
-        tpms_ble_snapshot(out);
-        return;
-    }
+    tpms_ble_snapshot(out);
+    if (nvs_cfg_read().device_role != ESPNOW_ROLE_SLAVE) return;
+
+    tpms_wheel_data_t remote[TPMS_WHEEL_COUNT];
     int64_t now = esp_timer_get_time();
     portENTER_CRITICAL(&s_bound_master_mac_mux);
-    espnow_tpms_cache_snapshot(&s_tpms_cache, now, out);
+    espnow_tpms_cache_snapshot(&s_tpms_cache, now, remote);
     portEXIT_CRITICAL(&s_bound_master_mac_mux);
+    /* Select a complete wheel by binding, not freshness: a waiting/stale local
+     * sensor must never silently turn into a different sensor from the master.
+     * Keep BLE/NVS reads outside the master-cache lock. */
+    for (unsigned w = 0; w < TPMS_WHEEL_COUNT; ++w)
+        if (!out[w].bound) out[w] = remote[w];
 }
 
 // ========================= Slave =========================

@@ -100,7 +100,7 @@ NVS 保留 `nvs_user_cfg_t.tpms[4]`（offset 96，单项 39 字节）的旧 MAC 
 
 INFO 级 `tpms_ble` 日志记录有效 ID、MAC、类型、RSSI、解码值及独立 ADV / RSP 原始 HEX；每个 ID 首次、首次非空响应、其后每 5 秒采样，重扫重置，列表满警告一次。解码、格式化和日志 I/O 在自旋锁外；不创建任务。`test/host/espnow/test_tpms_pairing.c` 覆盖构造报文 CRC/字段、短包/非法长度、分片拒绝、普通设备过滤、ID 去重/MAC 变化、满表更新、生命周期、日志限频与锁约束、NVS 边界及保存失败回滚。`-DEH_TPMS_LVGL=ON` 的真实 LVGL `tpms_ui` 测试覆盖四轮编号保存、精确 ID 行文本、取消/失败保留、旧记录重配、删除、重扫与退出清理；`TPMS_UI_CAPTURE_DIR` 可输出页面 PPM。测试不是实物传感器兼容性验证。
 
-`lvgl_runtime.c` 每 250 ms 在 LVGL 控制上下文调用 `tpms_ble_service_step()`；从表、无 ELM 绑定或 ELM 已连接时允许后台无限扫描。手动配对页暂停后台，退出后恢复；ELM 重连优先，扫描停止后保留 500 ms 冷却、启动失败后 2 秒重试。广播回调按已绑定 ID 更新缓存，即使 20 个候选已满也不丢已绑定轮位更新；仅 CRC 通过的样本更新时间，120 秒后测量失效但保留详情历史。成功换绑清除该轮缓存，保存失败保持原数据；实时值不写 NVS、不经 ESP-NOW 同步。
+`lvgl_runtime.c` 每 250 ms 在 LVGL 控制上下文调用 `tpms_ble_service_step()`；从表、无 ELM 绑定或 ELM 已连接时允许后台无限扫描。后台扫描仅在有本地有效 ID 绑定时启动；从表不受遗留 ELM 绑定影响。手动配对页暂停后台，退出后恢复；主表/独立表的 ELM 重连优先，扫描停止后保留 500 ms 冷却、启动失败后 2 秒重试。广播回调按已绑定 ID 更新缓存，即使 20 个候选已满也不丢已绑定轮位更新；仅 CRC 通过的样本更新时间，120 秒后测量失效但保留详情历史。成功换绑清除该轮缓存，保存失败保持原数据；实时值不写 NVS；主表按从表订阅通过 ESP-NOW 转发快照，从表本地绑定/测量不向主表回传。`espnow_link_tpms_snapshot()` 按轮位优先选择本地有效 ID 绑定对应的完整快照（含等待/过期状态），无本地绑定才取主表缓存；主表缓存失效不影响本地轮位，默认页面和主题共用此入口。
 
 `ui_tpms.c` 实现默认四轮简洁总览（bar 两位小数 / C / 估算电量，无编号）及点击详情。`tpms_theme_source.c` 提供每轮 16 个固件局部数据源：`tpms.fl.*` / `tpms.fr.*` / `tpms.rl.*` / `tpms.rr.*`，不追加 `contracts/signals.json`、OBD PID、NVS 槽位或线协议。主题按帧取一次快照，独立扩展数组与双 64 位使用/变化掩码（总源数不超过 128），条件与 change 规则可用；旧 `tr_inputs_t` / `tr_eval()` 不变，高位变化走 `tr_eval_extended()`。胎压不参与 OBD 扫表，不受 OBD link 缺失影响。电量函数复现 TireKing float32 电压分档，仅用于显示估算；字段/单位与 NaN 语义见 [THEMES.md](THEMES.md)。前端未改。
 

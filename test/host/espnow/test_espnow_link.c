@@ -53,6 +53,7 @@ static int32_t slave_rpm, slave_link;
 static bool slave_stop_requested;
 static void slave_receive(int32_t rpm);
 static unsigned sources_packets;
+static tpms_wheel_data_t slave_local_wheels[TPMS_WHEEL_COUNT];
 static void slave_sources_receive(uint8_t source, uint32_t seq)
 {
     uint8_t frame[ESPNOW_FRAME_MAX], mac[6] = {source};
@@ -62,6 +63,13 @@ static void slave_sources_receive(uint8_t source, uint32_t seq)
     wheels[0].bound = wheels[0].received = true;
     wheels[0].sample.data.pressure_pa = 210000;
     wheels[0].age_ms = 1000;
+    /* Different master sensors on locally bound wheels expose accidental
+     * freshness-based fallback and partial-field mixing. */
+    wheels[2] = wheels[3] = wheels[0];
+    memcpy(wheels[2].sensor_id, "123456", 7);
+    memcpy(wheels[3].sensor_id, "654321", 7);
+    wheels[2].sample.data.pressure_pa = 220000;
+    wheels[3].sample.data.pressure_pa = 230000;
     size_t len = espnow_tpms_encode(seq, 15, wheels, frame, sizeof(frame));
     CHECK(len && late_recv_fn); late_recv_fn(&info, frame, (int)len);
     memset(frame, 0xa5, sizeof(frame));
@@ -203,6 +211,8 @@ BaseType_t xSemaphoreTake(SemaphoreHandle_t sem, TickType_t ticks)
         CHECK(++waits < 16);
         if (sem->token) { sem->token = false; return pdTRUE; }
         espnow_link_tpms_snapshot(wheels);
+        CHECK(!memcmp(&wheels[2], &slave_local_wheels[2], sizeof(wheels[2])));
+        CHECK(!memcmp(&wheels[3], &slave_local_wheels[3], sizeof(wheels[3])));
         switch (slave_wait_phase++) {
         case 0: // Queued old master was rejected after the binding change.
             CHECK(!wheels[0].bound);
@@ -211,6 +221,33 @@ BaseType_t xSemaphoreTake(SemaphoreHandle_t sem, TickType_t ticks)
             break;
         case 1:
             CHECK(wheels[0].fresh && wheels[0].age_ms == 1000 && wheels[0].sample.data.pressure_pa == 210000);
+            CHECK(wheels[2].bound && !wheels[2].received); // waiting local wins over live master
+            CHECK(wheels[3].fresh && wheels[3].sample.data.pressure_pa == 250000);
+            slave_local_wheels[2].received = true;
+            slave_local_wheels[2].age_ms = TPMS_FRESH_MS;
+            slave_local_wheels[2].sample.data.pressure_pa = 190000;
+            espnow_link_tpms_snapshot(wheels);
+            CHECK(!memcmp(&wheels[2], &slave_local_wheels[2], sizeof(wheels[2])));
+            CHECK(!wheels[2].fresh); // stale local must not fall back either
+            slave_local_wheels[2].fresh = true;
+            slave_local_wheels[2].age_ms = 0;
+            slave_local_wheels[2].sample.data.pressure_pa = 260000;
+            espnow_link_tpms_snapshot(wheels);
+            CHECK(wheels[2].fresh && wheels[2].sample.data.pressure_pa == 260000);
+            tpms_wheel_data_t saved[TPMS_WHEEL_COUNT];
+            memcpy(saved, slave_local_wheels, sizeof(saved));
+            memset(slave_local_wheels, 0, sizeof(slave_local_wheels));
+            espnow_link_tpms_snapshot(wheels); // deleting bindings immediately uses master's cache
+            CHECK(wheels[2].fresh && !strcmp(wheels[2].sensor_id, "123456"));
+            CHECK(wheels[2].sample.data.pressure_pa == 220000);
+            CHECK(wheels[3].fresh && !strcmp(wheels[3].sensor_id, "654321"));
+            CHECK(wheels[3].sample.data.pressure_pa == 230000);
+            memcpy(slave_local_wheels, saved, sizeof(saved));
+            slave_local_wheels[2] = (tpms_wheel_data_t){.bound=true};
+            memcpy(slave_local_wheels[2].sensor_id, "ABCDEF", 7);
+            espnow_link_tpms_snapshot(wheels); // new local binding takes priority before first sample
+            CHECK(wheels[2].bound && !wheels[2].received && !wheels[2].fresh);
+            CHECK(!strcmp(wheels[2].sensor_id, "ABCDEF"));
             now_us += 500000;
             espnow_link_tpms_snapshot(wheels); CHECK(wheels[0].age_ms == 1500);
             slave_sources_receive(2, 1); // out-of-order must not reset the age
@@ -476,6 +513,14 @@ static void setup(void)
     }
     if (scenario == SLAVE_SOURCES) {
         cfg.device_role = ESPNOW_ROLE_SLAVE;
+        slave_local_wheels[2].bound = true;
+        memcpy(slave_local_wheels[2].sensor_id, "ABCDEF", 7);
+        slave_local_wheels[3] = (tpms_wheel_data_t){.bound=true, .received=true, .fresh=true};
+        memcpy(slave_local_wheels[3].sensor_id, "000000", 7); // zero is a valid sensor ID
+        slave_local_wheels[3].sample.data.pressure_pa = 250000;
+        slave_local_wheels[3].sample.data.temperature_c = 35;
+        slave_local_wheels[3].sample.data.voltage_mv = 2800;
+        slave_local_wheels[3].sample.rssi = -60;
         espnow_demand_t d = {.obd=1, .veh=UINT32_C(0x80000000), .tpms=15};
         espnow_link_set_data_demand(&d);
         espnow_link_start_slave();
@@ -576,6 +621,8 @@ static void run(scenario_t value)
     if (scenario == SLAVE_SOURCES) {
         tpms_wheel_data_t wheels[4]; espnow_link_tpms_snapshot(wheels);
         CHECK(!wheels[0].received && deleted && deletes == 1);
+        CHECK(!memcmp(&wheels[2], &slave_local_wheels[2], sizeof(wheels[2])));
+        CHECK(!memcmp(&wheels[3], &slave_local_wheels[3], sizeof(wheels[3])));
         CHECK(espnow_link_pause_for_ota() && deinit_count == 1);
     }
     CHECK(!lock_depth);
@@ -612,9 +659,11 @@ int main(void)
 void tpms_ble_snapshot(tpms_wheel_data_t out[TPMS_WHEEL_COUNT]) {
     CHECK(!lock_depth);
     memset(out, 0, TPMS_WHEEL_COUNT * sizeof(*out));
-    // A slave deliberately has different local bindings: they must never leak
-    // into delivered data when its master is absent or its cache is cleared.
-    unsigned wheel = scenario == SLAVE_SOURCES ? 3 : 0;
+    if (scenario == SLAVE_SOURCES) {
+        memcpy(out, slave_local_wheels, sizeof(slave_local_wheels));
+        return;
+    }
+    unsigned wheel = 0;
     memcpy(out[wheel].sensor_id, "18010F", 7);
     out[wheel].bound = out[wheel].received = out[wheel].fresh = true;
     out[wheel].sample.data.pressure_pa = 210000;
