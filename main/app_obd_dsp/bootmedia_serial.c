@@ -10,6 +10,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_rom_crc.h"
+#include "esp_timer.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -96,16 +97,20 @@ static void put_u32le(uint8_t *p, uint32_t value)
     p[3] = (uint8_t)(value >> 24);
 }
 
-static bool read_exact(uint8_t *dst, size_t len, TickType_t timeout)
+static bool read_exact(uint8_t *dst, size_t len, TickType_t timeout, size_t *received)
 {
     size_t got = 0;
     TickType_t started = xTaskGetTickCount();
     while (got < len) {
         TickType_t elapsed = xTaskGetTickCount() - started;
-        if (elapsed >= timeout) return false;
+        if (elapsed >= timeout) {
+            if (received) *received = got;
+            return false;
+        }
         int n = usb_serial_jtag_read_bytes(dst + got, (uint32_t)(len - got), timeout - elapsed);
         if (n > 0) got += (size_t)n;
     }
+    if (received) *received = got;
     return true;
 }
 
@@ -132,7 +137,13 @@ static bool find_frame_header(uint8_t header[FRAME_HEADER_SIZE])
         }
         if (filled == sizeof(window) && memcmp(window, magic, sizeof(magic)) == 0) {
             memcpy(header, magic, sizeof(magic));
-            return read_exact(header + 4, FRAME_HEADER_SIZE - 4, pdMS_TO_TICKS(3000));
+            size_t received = 0;
+            if (!read_exact(header + 4, FRAME_HEADER_SIZE - 4, pdMS_TO_TICKS(3000), &received)) {
+                ESP_LOGW(TAG, "partial frame header timeout: received=%u/%u", (unsigned)received,
+                         FRAME_HEADER_SIZE - 4);
+                return false;
+            }
+            return true;
         }
     }
 }
@@ -279,7 +290,7 @@ static void bootmedia_serial_task(void *arg)
     (void)arg;
     usb_serial_jtag_driver_config_t config = {
         .tx_buffer_size = 4096,
-        .rx_buffer_size = 4096,
+        .rx_buffer_size = 8192,
     };
     if (!usb_serial_jtag_is_driver_installed() &&
         usb_serial_jtag_driver_install(&config) != ESP_OK) {
@@ -313,8 +324,11 @@ static void bootmedia_serial_task(void *arg)
         uint16_t sequence = get_u16le(header + 6);
         uint32_t length = get_u32le(header + 8);
         uint32_t payload_crc = get_u32le(header + 12);
+        size_t payload_received = 0;
         if (version != 1 || length > FRAME_DATA_MAX ||
-            (length && !read_exact(payload, length, SESSION_TIMEOUT))) {
+            (length && !read_exact(payload, length, SESSION_TIMEOUT, &payload_received))) {
+            ESP_LOGW(TAG, "frame payload timeout/invalid: cmd=%u seq=%u version=%u len=%u received=%u",
+                     command, sequence, version, (unsigned)length, (unsigned)payload_received);
             send_reply(command, sequence, 7, upload_sink_is_open(&s_sink) ? s_sink.received : 0);
             abort_session();
             have_last = false;
@@ -332,7 +346,15 @@ static void bootmedia_serial_task(void *arg)
             status = last_status;
             received = last_received;
         } else {
+            int64_t process_started_us = esp_timer_get_time();
             status = process_frame(command, payload, length);
+            int64_t process_elapsed_us = esp_timer_get_time() - process_started_us;
+            if (command == CMD_DATA && process_elapsed_us >= 1000000) {
+                uint32_t offset = length >= 4 ? get_u32le(payload) : 0;
+                ESP_LOGW(TAG, "slow DATA processing: seq=%u offset=%u len=%u elapsed=%lldms status=%u",
+                         sequence, (unsigned)offset, (unsigned)length,
+                         (long long)(process_elapsed_us / 1000), status);
+            }
             received = upload_sink_is_open(&s_sink) ? s_sink.received : 0;
             if (command == CMD_END && status == 0) received = s_sink.expected;
             last_sequence = sequence;
@@ -344,6 +366,10 @@ static void bootmedia_serial_task(void *arg)
         }
         s_activity = xTaskGetTickCount();
         bool acknowledged = send_reply(command, sequence, status, received);
+        if (!acknowledged) {
+            ESP_LOGW(TAG, "ACK transmit failed: cmd=%u seq=%u status=%u received=%u",
+                     command, sequence, status, (unsigned)received);
+        }
         if (command == CMD_END && status == 0) {
             bool was_rpc = s_rpc_reply != NULL;
             bool restart = !was_rpc || s_rpc_restart;

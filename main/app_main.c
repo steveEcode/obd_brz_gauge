@@ -15,6 +15,7 @@
 #include "esp_err.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h"
 #include "esp_task_wdt.h"
 #include "esp_ota_ops.h"
 
@@ -236,6 +237,9 @@ static void lvgl_unlock(void)
 
 void app_main(void)
 {
+    /* ESP32-S3 ROM mirrors UART console output to USB Serial/JTAG channel 2. */
+    esp_rom_install_channel_putc(2, NULL);
+
     /* Hide uninitialized panel RAM even while storage/config bring-up blocks. */
     LCD_BacklightOffEarly();
     perf_stats_start();

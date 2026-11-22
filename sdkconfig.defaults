@@ -74,6 +74,8 @@ CONFIG_MBEDTLS_ECP_FIXED_POINT_OPTIM=y
 
 # ---- Logging ----
 CONFIG_LOG_COLORS=y
+# Native USB Serial/JTAG carries framed web-management traffic; keep logs on UART0.
+CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 
 # ---- LVGL 8.4 (16-bit swapped color, std malloc, fonts used by system pages) ----
 CONFIG_LV_COLOR_16_SWAP=y

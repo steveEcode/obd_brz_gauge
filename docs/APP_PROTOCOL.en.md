@@ -163,8 +163,10 @@ payload CRC-32 `u32`, payload. Command `1` BEGIN carries total size `u32`, manif
 command `3` END verifies and installs; command `4` ABORT removes the temporary file. Replies use
 the command value plus `0x80`; payload is status `u8` and received length `u32`. The client waits
 for each sequence reply and retries the identical frame on timeout; firmware idempotently replays
-the response for its latest frame. Status 0 means success; nonzero means rejection or verification
-failure.
+the response for its latest frame. The web client defaults to 2048 data bytes per DATA frame; the
+protocol limit remains 4096 bytes, and the firmware USB RX ring is 8192 bytes. Status 0 means
+success; nonzero means rejection or verification failure. ESP32-S3 native USB Serial/JTAG is
+reserved for this binary protocol; firmware logs go to UART0 so console text cannot enter framed data.
 
 The web page unpacks theme ZIPs (STORE / DEFLATE; firmware does not decompress ZIP).
 Command `5` BEGIN_THEME uses the same 40-byte BEGIN payload with manifest length `0` and SHA-256 over the whole theme stream;

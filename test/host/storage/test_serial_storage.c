@@ -115,6 +115,7 @@ void upload_sink_abort(upload_sink_t *s)
 esp_err_t theme_bundle_install(const char *path)
 { (void)path; assert(!locked); installs++; return fail_install ? ESP_FAIL : ESP_OK; }
 TickType_t xTaskGetTickCount(void) { return ticks; }
+int64_t esp_timer_get_time(void) { return (int64_t)ticks * 1000; }
 int usb_serial_jtag_read_bytes(void *dst, uint32_t len, TickType_t timeout)
 {
     if (input_mode && len == 1) { *(uint8_t *)dst = (uint8_t)"OBDS"[input_mode++ - 1]; return 1; }
