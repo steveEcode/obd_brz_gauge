@@ -84,6 +84,7 @@ i2c_master_bus_handle_t I2C_GetBusHandle(void)
 esp_err_t I2C_Write(uint8_t Driver_addr, uint8_t Reg_addr, const uint8_t *Reg_data, uint32_t Length)
 {
     if (Length && !Reg_data) return ESP_ERR_INVALID_ARG;
+    if (!s_i2c_bus || !s_cache_lock) return ESP_ERR_INVALID_STATE;
     if (xSemaphoreTake(s_cache_lock, portMAX_DELAY) != pdTRUE) return ESP_ERR_TIMEOUT;
     i2c_master_dev_handle_t dev = NULL;
     esp_err_t err = get_device(Driver_addr, &dev);
@@ -102,6 +103,7 @@ esp_err_t I2C_Write(uint8_t Driver_addr, uint8_t Reg_addr, const uint8_t *Reg_da
 esp_err_t I2C_Read(uint8_t Driver_addr, uint8_t Reg_addr, uint8_t *Reg_data, uint32_t Length)
 {
     if (!Reg_data || !Length) return ESP_ERR_INVALID_ARG;
+    if (!s_i2c_bus || !s_cache_lock) return ESP_ERR_INVALID_STATE;
     if (xSemaphoreTake(s_cache_lock, portMAX_DELAY) != pdTRUE) return ESP_ERR_TIMEOUT;
     i2c_master_dev_handle_t dev = NULL;
     esp_err_t err = get_device(Driver_addr, &dev);

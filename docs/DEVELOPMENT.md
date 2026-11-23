@@ -100,7 +100,7 @@ NVS 保留 `nvs_user_cfg_t.tpms[4]`（offset 96，单项 39 字节）的旧 MAC 
 
 INFO 级 `tpms_ble` 日志记录有效 ID、MAC、类型、RSSI、解码值及独立 ADV / RSP 原始 HEX；每个 ID 首次、首次非空响应、其后每 5 秒采样，重扫重置，列表满警告一次。解码、格式化和日志 I/O 在自旋锁外；不创建任务。`test/host/espnow/test_tpms_pairing.c` 覆盖构造报文 CRC/字段、短包/非法长度、分片拒绝、普通设备过滤、ID 去重/MAC 变化、满表更新、生命周期、日志限频与锁约束、NVS 边界及保存失败回滚。`-DEH_TPMS_LVGL=ON` 的真实 LVGL `tpms_ui` 测试覆盖四轮编号保存、精确 ID 行文本、取消/失败保留、旧记录重配、删除、重扫与退出清理；`TPMS_UI_CAPTURE_DIR` 可输出页面 PPM。测试不是实物传感器兼容性验证。
 
-`lvgl_runtime.c` 每 250 ms 在 LVGL 控制上下文调用 `tpms_ble_service_step()`；从表、无 ELM 绑定或 ELM 已连接时允许后台无限扫描。后台扫描仅在有本地有效 ID 绑定时启动；从表不受遗留 ELM 绑定影响。手动配对页暂停后台，退出后恢复；主表/独立表的 ELM 重连优先，扫描停止后保留 500 ms 冷却、启动失败后 2 秒重试。广播回调按已绑定 ID 更新缓存，即使 20 个候选已满也不丢已绑定轮位更新；仅 CRC 通过的样本更新时间，120 秒后测量失效但保留详情历史。成功换绑清除该轮缓存，保存失败保持原数据；实时值不写 NVS；主表按从表订阅通过 ESP-NOW 转发快照，从表本地绑定/测量不向主表回传。`espnow_link_tpms_snapshot()` 按轮位优先选择本地有效 ID 绑定对应的完整快照（含等待/过期状态），无本地绑定才取主表缓存；主表缓存失效不影响本地轮位，默认页面和主题共用此入口。
+`lvgl_runtime.c` 每 250 ms 在 LVGL 控制上下文调用 `tpms_ble_service_step(true)`；所有角色在 BLE 可用且有本地有效 ID 绑定时允许后台扫描，不依赖 ELM 连接。后台每轮 10 秒、结束后至少 500 ms 冷却；ELM 扫描占用期间，TPMS 作为 BLE hub 的 advertisement-only observer 接收广播，不接收其他所有者的扫描完成事件或改变所有权。手动配对暂停自身后台扫描，仍可更新绑定缓存，退出后恢复；手动窗口 20 秒，启动失败后 2 秒重试。广播回调按已绑定 ID 更新缓存，不依赖自身扫描状态或候选列表容量；仅 CRC 通过的样本更新时间。120 秒后 `fresh=false` 但保留最后测量，默认页标灰并注明 `STALE`，主题数值保留而 `online=0`。成功换绑清除该轮缓存，保存失败保持原数据；实时值不写 NVS，重启后等待首包。主表按从表订阅通过 ESP-NOW 转发快照，从表本地绑定/测量不向主表回传。`espnow_link_tpms_snapshot()` 按轮位优先选择本地有效 ID 绑定对应的完整快照（含等待/过期状态），无本地绑定才取主表缓存；主表缓存失效不影响本地轮位，默认页面和主题共用此入口。
 
 `ui_tpms.c` 实现默认四轮简洁总览（bar 两位小数 / C / 估算电量，无编号）及点击详情。`tpms_theme_source.c` 提供每轮 16 个固件局部数据源：`tpms.fl.*` / `tpms.fr.*` / `tpms.rl.*` / `tpms.rr.*`，不追加 `contracts/signals.json`、OBD PID、NVS 槽位或线协议。主题按帧取一次快照，独立扩展数组与双 64 位使用/变化掩码（总源数不超过 128），条件与 change 规则可用；旧 `tr_inputs_t` / `tr_eval()` 不变，高位变化走 `tr_eval_extended()`。胎压不参与 OBD 扫表，不受 OBD link 缺失影响。电量函数复现 TireKing float32 电压分档，仅用于显示估算；字段/单位与 NaN 语义见 [THEMES.md](THEMES.md)。前端未改。
 
@@ -115,6 +115,7 @@ cJSON hooks（PSRAM；内部 RAM 仅在 PSRAM 耗尽时兜底）
   /OBD/IMPORT 的 RESET.TXT / ACTIVATE.TXT / 车型 JSON）
 → coredump_store_boot_check（在迁移之后——迁移会先擦掉旧 bootmedia 占的转储区）
 → vp_manager_init（找不到待激活车型就回退 obd2.generic）
+→ bootmedia_serial_prepare（预留内部栈/USB 驱动；任务阻塞等待启动完成通知）
 → 任务看门狗 10s → I2C/EXIO/LCD/LVGL 初始化 → ble_hub_init（在 UI 之前）→ 开机动画
 → ui_init（含 theme_engine_init）→ ui_ext_init → app_event_init
 → 按角色分支：从表 = ESP-NOW slave + RaceChrono；主表/独立 = ELM327 BLE
@@ -163,6 +164,10 @@ ESP-IDF 5.5.3 的 SPI LCD 后端忽略完成回调的返回值，因此桥接函
 
 USB 接收任务 `bootmedia_usb` 的优先级为 3，低于 OBD 轮询和 LVGL 的 4，避免 USB 通信繁忙时以更高优先级抢占实时数据与显示任务。USB 仍在正常开机后常驻，空闲时阻塞等待接收；网页刷写、资源上传和管理 RPC 流程保持不变。
 
+USB 资源由 `bootmedia_serial_prepare()` 在 LCD/BLE/Wi-Fi 分配前预留，不能等无线启动后才申请。任务使用 8192 字节内部栈保证 Flash/NVS 操作安全，4100 字节 CPU 帧缓冲优先使用 PSRAM。`bootmedia_serial_start()` 在存储/UI 初始化完成后才释放启动通知门控，预留失败可重试，重复调用不会重复创建任务，防止晚分配内部栈失败而让网页上传入口静默消失。
+
+USB 驱动安装成功后，如果实际配置启用了原生 USB 主/副控制台，接收任务在处理协议前调用 `usb_serial_jtag_vfs_use_driver()`，让控制台与二进制 ACK 共用驱动 TX 队列；ACK 保持整帧单次写入。不能让默认的 VFS 直写 FIFO 与驱动 ISR 同时输出，否则日志可插入帧内造成 CRC 失败和网页 `USB response timeout`。`sdkconfig.defaults` 关闭副控制台只是新配置的默认值，已有本地 `sdkconfig` 不会自动跟随；无需删除配置也能通过运行时绑定兼容旧设置。驱动安装失败时不绑定 VFS、不开始接收。
+
 ## 编译配置
 
 环境：ESP-IDF 5.5.3 + Python 工具链。组件依赖（`main/idf_component.yml`）：
@@ -210,6 +215,14 @@ build tag 就是它，所以发版前必须先 commit，见[发布流程](#发�
 3. 屏幕分辨率 / 色深宏在 `ST77916.h`，UI 按 360×360 设计，换屏要动 `export_path/`
 4. 与车相关的都不用动 —— 车型逻辑在 `main/vehicle/`（引擎/生命周期）+
    `vehicles/catalog/*.vehicle.json`（具体车型），与板子无关
+
+### SD 扇区 IO 与手动格式化
+
+SD 单文件替换由 `sd_card_rename()` 先检查源文件，再把已有目标暂存为 `.obd-bak`，新文件改名失败时恢复旧文件；已有备份不覆盖，恢复失败保留备份。调用方持有 storage job 锁；此规则不保证 FAT 掉电原子性。
+
+`sd_io_guard.c` 通过 `main/CMakeLists.txt` 的 linker `--wrap` 拦截 SDK `sdmmc_read_sectors` / `sdmmc_write_sectors`，覆盖 FatFs 数据与元数据。开机预留 4 KiB 内部 DMA 缓冲和静态互斥锁；对齐且内部 DMA 可用的缓冲直通，其他地址分批 bounce，不在正常 IO 路径申请临时内存。预留失败退回 SDK 安全路径，并保留真实错误；调用者在所有退出路径配对 `sd_io_trace_begin/end`，诊断作用域只收集本任务首个失败。不要通过 `clearerr` 重试 FatFs sticky-error 文件或跳过 CRC/JPEG 校验掩盖失败。
+
+OTA 手动格式化在独立内部栈 worker 执行，不持有 `lvgl_mux`。服务先非阻塞取得生命周期保护，再在 HTTP 任务的请求间隙检查上传/主题任务并锁存维护态，随后停 HTTP、取得 storage job 锁、卸载并用原始 SDMMC / FatFs 建立新分区。格式化期间为 1-bit / 20 MHz，常用卡 FAT32，≥4 GiB 为 32 KiB 簇，较小卡自动簇大小，<64 MiB 为 FAT12/16；两份 FAT、1 MiB 数据区对齐，明确排除 exFAT。未挂载但可识别的卡也可手动修复文件系统；无卡/初始化失败不执行 `f_mkfs`。维护开始后保持生命周期保护和 OTA active，直到 worker 在结果后 5 秒重启，避免 USB 接管/后台卡任务抢占；成功重挂载并重建目录，内部 NVS 不清除。挂载失败绝不自动格式化。
 
 ## 工具脚本
 

@@ -21,6 +21,8 @@ bool tpms_ble_is_bound(const char *sensor_id);
 
 void tpms_ble_snapshot(tpms_wheel_data_t out[NVS_TPMS_WHEELS]);
 /* LVGL control context only; never steals another client's scan ownership.
- * allow=false gives reconnect/manual pairing priority; cached samples survive. */
+ * Background: 10-second scans with a 500ms gap, also observing advertisements
+ * from other scan owners. allow=false disables only our own background scan;
+ * saved samples survive until unbound/rebound or reboot. */
 void tpms_ble_service_step(bool allow_background);
 void tpms_ble_background_pause(bool pause);

@@ -726,6 +726,18 @@ static void test_tpms_sources(void)
     memset(tpms_samples, 0, sizeof(tpms_samples));
     double values[TPMS_THEME_COUNT];
     tpms_theme_values(tpms_samples, values);
+    TH_CHECK(isnan(values[tpms_theme_source_index("tpms.fl.pressure_bar")]));
+    TH_CHECK(isnan(values[tpms_theme_source_index("tpms.fl.temperature_c")]));
+    TH_CHECK(isnan(values[tpms_theme_source_index("tpms.fl.battery_percent")]));
+    TH_CHECK(values[tpms_theme_source_index("tpms.fl.bound")] == 0);
+    tpms_samples[0].bound = true;
+    memcpy(tpms_samples[0].sensor_id, "18010F", 7);
+    tpms_theme_values(tpms_samples, values);
+    TH_CHECK(values[tpms_theme_source_index("tpms.fl.bound")] == 1);
+    TH_CHECK(values[tpms_theme_source_index("tpms.fl.received")] == 0);
+    TH_CHECK(values[tpms_theme_source_index("tpms.fl.online")] == 0);
+    TH_CHECK(isnan(values[tpms_theme_source_index("tpms.fl.pressure_bar")]));
+    TH_CHECK(values[tpms_theme_source_index("tpms.fl.sensor_id")] == 0x18010F);
     const char *const positions[] = {"fl", "fr", "rl", "rr"};
     const char *const keys[] = {"pressure_pa", "pressure_kpa", "pressure_bar", "temperature_c", "voltage_v",
         "state", "version", "ble_version", "rssi", "age_s", "bound", "received", "online", "sensor_id",
@@ -750,8 +762,8 @@ static void test_tpms_sources(void)
     }
     tpms_samples[3].fresh = false; tpms_samples[3].age_ms = 120000;
     tpms_theme_values(tpms_samples, values);
-    TH_CHECK(isnan(values[tpms_theme_source_index("tpms.rr.pressure_bar")]));
-    TH_CHECK(isnan(values[tpms_theme_source_index("tpms.rr.battery_percent")]));
+    TH_CHECK(fabs(values[tpms_theme_source_index("tpms.rr.pressure_bar")] - 2.5152) < 1e-8);
+    TH_CHECK(values[tpms_theme_source_index("tpms.rr.battery_percent")] == 100);
     TH_CHECK(values[tpms_theme_source_index("tpms.rr.online")] == 0);
     TH_CHECK(values[tpms_theme_source_index("tpms.rr.age_s")] == 120);
     TH_CHECK(values[tpms_theme_source_index("tpms.rr.received")] == 1);
@@ -789,9 +801,13 @@ static void test_tpms_bindings_and_high_change(void)
     TH_CHECK(!strcmp(lv_label_get_text(f.items[3].obj), "CHANGED"));
     clock_ms = 500; tpms_samples[3].fresh = false;
     te_page_update(&f.ctx, &f.page);
+    TH_CHECK(!strcmp(lv_label_get_text(f.items[2].obj), "2.25"));
+    TH_CHECK(lv_arc_get_value(f.items[0].obj) == 5625);
+    TH_CHECK(f.page.prog->resolved_mask == 0);
+    clock_ms = 1000; tpms_samples[3].received = false;
+    te_page_update(&f.ctx, &f.page);
     TH_CHECK(!strcmp(lv_label_get_text(f.items[2].obj), THEME_INVALID_TEXT));
     TH_CHECK(lv_arc_get_value(f.items[0].obj) == 0);
-    TH_CHECK(f.page.prog->resolved_mask == 0);
     destroy_fixture(&f); memset(tpms_samples, 0, sizeof(tpms_samples));
 }
 

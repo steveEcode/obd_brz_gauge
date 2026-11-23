@@ -5,7 +5,7 @@
  * selected even before EXIO_Init()).
  * Hardware (V2/V3): 4-bit, CLK=GPIO3, CMD=GPIO4, D0..D3=GPIO2/GPIO1/GPIO6/GPIO5.
  *
- * - Mount tries 40 MHz, then 20 MHz. The card is NEVER formatted.
+ * - Mount tries 40 MHz, then 20 MHz. Mount failure NEVER formats the card.
  * - V2/V3 start in 4-bit and fall back to 1-bit with DAT1..DAT3 parked high.
  * - No card-detect pin: while absent/error/ejected, sd_card_poll() probes the
  *   bus every few seconds; while mounted it sends CMD13 and declares the card
@@ -16,6 +16,7 @@
 
 #include "sdkconfig.h"
 #include "sd_card.h"
+#include "sd_io_guard.h"
 #include "app_obd_dsp/perf_stats.h"
 
 #include <string.h>
@@ -35,6 +36,9 @@ static const char *TAG = "sd_card";
 #include "esp_memory_utils.h"
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
+#include "ff.h"
+#include "diskio_impl.h"
+#include "diskio_sdmmc.h"
 #include "driver/gpio.h"
 #include "driver/sdmmc_host.h"
 #include "bsp_obd_dsp/hw/hw_board.h"
@@ -63,6 +67,7 @@ static const char *TAG = "sd_card";
 
 static SemaphoreHandle_t s_lock;        /* guards mount/unmount/state changes */
 static SemaphoreHandle_t s_io_mutex;    /* guards s_io_buf */
+static StaticSemaphore_t s_lock_storage, s_io_mutex_storage;
 static uint8_t          *s_io_buf;      /* SD_IO_BUF_SIZE, DMA | INTERNAL, never freed */
 static sdmmc_card_t     *s_card;
 static volatile sd_state_t s_state = SD_STATE_ABSENT;
@@ -240,6 +245,99 @@ static void unmount_locked(void)
     s_freq_khz = 0;
 }
 
+/* Destructive maintenance is deliberately separate from mount/recovery. The
+ * raw disk registration works even when the old filesystem cannot be mounted.
+ * No VFS FILE may be alive here; caller has quiesced OTA and holds job lock. */
+esp_err_t sd_card_format(char *detail, size_t capacity)
+{
+    if (detail && capacity) detail[0] = '\0';
+    if (!s_lock || !s_io_mutex) return ESP_ERR_INVALID_STATE;
+    lock();
+    xSemaphoreTake(s_io_mutex, portMAX_DELAY);
+    sd_io_trace_t trace;
+    sd_io_trace_begin(&trace);
+    const char *stage = "unmount";
+    esp_err_t err = ESP_OK;
+    FRESULT fr = FR_OK;
+    BYTE drive = FF_DRV_NOT_USED;
+    bool host_up = false;
+    void *work = NULL;
+    sdmmc_card_t *card = NULL;
+    sdmmc_host_t host;
+    sdmmc_slot_config_t slot;
+    if (s_card) {
+        err = esp_vfs_fat_sdcard_unmount(SD_MOUNT_POINT, s_card);
+        s_card = NULL;
+    }
+    s_state = SD_STATE_ERROR;
+    s_freq_khz = 0;
+    if (err != ESP_OK) goto done;
+    /* Conservative 1-bit / 20 MHz during destructive writes on every board. */
+    host_config(&host, SD_FREQ_SLOW_KHZ, false);
+    slot_config(&slot, false);
+#if HW_SD_BUS_WIDTH > 1
+    park_data_pins_high();
+#endif
+    stage = "allocate format buffers";
+    card = heap_caps_calloc(1, sizeof(*card), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    work = heap_caps_malloc(4096, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    if (!card || !work) { err = ESP_ERR_NO_MEM; goto done; }
+    stage = "initialize SD host";
+    err = host.init();
+    if (err != ESP_OK) goto done;
+    host_up = true;
+    err = sdmmc_host_init_slot(host.slot, &slot);
+    if (err != ESP_OK) goto done;
+    stage = "identify SD card";
+    err = sdmmc_card_init(&host, card);
+    if (err != ESP_OK) goto done;
+    stage = "register SD disk";
+    err = ff_diskio_get_drive(&drive);
+    if (err != ESP_OK) goto done;
+    ff_diskio_register_sdmmc(drive, card);
+    char path[4] = {(char)('0' + drive), ':', 0};
+    /* Auto-detected physical-drive mapping: f_mkfs creates a fresh single
+     * MBR partition. Exclude FM_EXFAT even though read support is enabled. */
+    uint64_t bytes = (uint64_t)card->csd.capacity * card->csd.sector_size;
+#if FF_MULTI_PARTITION
+    if (VolToPart[drive].pd != drive || VolToPart[drive].pt != 0) {
+        stage = "unsupported SD partition mapping";
+        err = ESP_ERR_INVALID_STATE;
+        goto done;
+    }
+#endif
+    MKFS_PARM opt = {.fmt = bytes >= 64ULL * 1024 * 1024 ? FM_FAT32 : FM_FAT,
+                     .n_fat = 2, .align = (1024 * 1024) / card->csd.sector_size, .n_root = 0,
+                     .au_size = bytes >= 4ULL * 1024 * 1024 * 1024 ? 32768 : 0};
+    stage = "create FAT filesystem";
+    fr = f_mkfs(path, &opt, work, 4096);
+    if (fr != FR_OK) err = ESP_FAIL;
+done:
+    if (drive != FF_DRV_NOT_USED) ff_diskio_unregister(drive);
+    if (host_up) sdmmc_host_deinit();
+    free(work);
+    free(card);
+    if (err == ESP_OK) {
+        stage = "remount formatted SD";
+        s_pref_khz = SD_FREQ_SLOW_KHZ;
+        err = do_mount_locked(false);
+    }
+    xSemaphoreGive(s_io_mutex);
+    unlock();
+    if (err == ESP_OK) {
+        stage = "create /OBD directories";
+        err = ensure_directories();
+    }
+    sd_io_trace_end(&trace);
+    if (err != ESP_OK && detail && capacity) {
+        snprintf(detail, capacity, "%s: %s(0x%x) fatfs=%d", stage,
+                 esp_err_to_name(err), (unsigned)err, (int)fr);
+        size_t used = strlen(detail);
+        sd_io_trace_format(&trace, detail + used, capacity - used);
+    }
+    return err;
+}
+
 /* Bare bus probe without mounting (used while EJECTED to notice removal). */
 static bool probe_card_present_locked(void)
 {
@@ -281,11 +379,10 @@ static uint32_t ms_since(TickType_t t)
 
 esp_err_t sd_card_init(void)
 {
-    if (!s_lock) {
-        s_lock = xSemaphoreCreateMutex();
-        s_io_mutex = xSemaphoreCreateMutex();
-        if (!s_lock || !s_io_mutex) return ESP_ERR_NO_MEM;
-    }
+    if (!s_lock) s_lock = xSemaphoreCreateMutexStatic(&s_lock_storage);
+    if (!s_io_mutex) s_io_mutex = xSemaphoreCreateMutexStatic(&s_io_mutex_storage);
+    if (!s_lock || !s_io_mutex) return ESP_ERR_NO_MEM;
+    sd_io_guard_init();
     if (!s_io_buf) {
         s_io_buf = heap_caps_malloc(SD_IO_BUF_SIZE, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
         if (!s_io_buf) ESP_LOGW(TAG, "no internal DMA RAM for bounce buffer; PSRAM I/O will be slow");
@@ -648,13 +745,41 @@ esp_err_t sd_card_rename(const char *src, const char *dst)
     if (!src || !dst) return ESP_ERR_INVALID_ARG;
     if (!sd_card_is_mounted()) return ESP_ERR_INVALID_STATE;
     struct stat st;
-    if (stat(dst, &st) == 0) {
-        if (S_ISDIR(st.st_mode)) return ESP_ERR_INVALID_ARG;
-        unlink(dst);
+    /* Never remove the installed file before proving the source exists. */
+    if (stat(src, &st) != 0) return ESP_FAIL;
+    if (S_ISDIR(st.st_mode)) return ESP_ERR_INVALID_ARG;
+    if (strcmp(src, dst) == 0) return ESP_OK;
+
+    if (stat(dst, &st) != 0) {
+        if (errno != ENOENT) return ESP_FAIL;
+        if (rename(src, dst) == 0) return ESP_OK;
+        ESP_LOGW(TAG, "rename %s -> %s: errno %d", src, dst, errno);
+        return ESP_FAIL;
+    }
+    if (S_ISDIR(st.st_mode)) return ESP_ERR_INVALID_ARG;
+
+    /* FatFs cannot rename over an existing entry. Retain a recoverable copy
+     * until replacement succeeds; never overwrite an earlier recovery file.
+     * Callers serialize this sequence with the storage job lock. This protects
+     * runtime failures, not power-loss atomicity of FAT directory writes. */
+    char backup[SD_PATH_MAX];
+    int n = snprintf(backup, sizeof(backup), "%s.obd-bak", dst);
+    if (n < 0 || n >= (int)sizeof(backup)) return ESP_ERR_INVALID_SIZE;
+    if (stat(backup, &st) == 0) return ESP_ERR_INVALID_STATE;
+    if (errno != ENOENT) return ESP_FAIL;
+    if (rename(dst, backup) != 0) {
+        ESP_LOGW(TAG, "backup %s -> %s: errno %d", dst, backup, errno);
+        return ESP_FAIL;
     }
     if (rename(src, dst) != 0) {
         ESP_LOGW(TAG, "rename %s -> %s: errno %d", src, dst, errno);
+        if (rename(backup, dst) != 0) {
+            ESP_LOGE(TAG, "restore %s -> %s failed: errno %d; backup retained", backup, dst, errno);
+        }
         return ESP_FAIL;
+    }
+    if (unlink(backup) != 0) {
+        ESP_LOGW(TAG, "replacement committed; backup retained at %s: errno %d", backup, errno);
     }
     return ESP_OK;
 }
@@ -695,6 +820,8 @@ esp_err_t   sd_card_init(void)               { ESP_LOGI(TAG, "no SD slot on this
 void        sd_card_poll(void)               { }
 uint32_t    sd_card_poll_wait_ms(void)        { return 1000; }
 esp_err_t   sd_card_eject(void)              { return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t sd_card_format(char *detail, size_t capacity)
+{ if (detail && capacity) snprintf(detail, capacity, "SD slot disabled"); return ESP_ERR_NOT_SUPPORTED; }
 sd_state_t  sd_card_get_state(void)          { return SD_STATE_DISABLED; }
 bool        sd_card_is_mounted(void)         { return false; }
 uint32_t    sd_card_get_freq_khz(void)       { return 0; }

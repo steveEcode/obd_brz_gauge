@@ -5,3 +5,4 @@
 #else
 #define CONFIG_OBD_SD_SLOT_NONE 1
 #endif
+#define CONFIG_OBD_HW_VERSION_V1_WAVESHARE 1

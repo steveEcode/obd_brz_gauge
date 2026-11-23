@@ -388,7 +388,7 @@ int main(void)
     lv_scr_load(ui_ScreenPageBluetooth);
     lv_obj_del(ui_ScreenPageTPMSPairing);
     ui_ScreenPageTPMS_screen_init(); lv_scr_load(ui_ScreenPageTPMS);
-    assert(find_text(lv_scr_act(), "-- C   --%"));
+    assert(find_text(lv_scr_act(), "-- C"));
     assert(!find_text(lv_scr_act(), "Tap tire for all data"));
     lv_obj_t *title = find_text(lv_scr_act(), "TIRE PRESSURE");
     assert(title && lv_obj_get_style_text_font(title, 0) == &ui_font_FontTypoderSize16);
@@ -403,13 +403,15 @@ int main(void)
     assert(lv_obj_get_style_border_width(tile, 0) == 0);
     tpms_wheel_data_t *v = &live_wheels[0];
     memcpy(v->sensor_id, "18010F", 7); v->bound = true;
-    advance(300); assert(find_text(lv_scr_act(), "-- C   --%"));
+    advance(300); assert(find_text(lv_scr_act(), "-- C"));
     v->received = v->fresh = true;
     v->sample.data = (tpms_fbb0_data_t){.pressure_pa=251520, .temperature_c=25,
         .voltage_mv=3000, .state=0, .version=1, .ble_version_code=10};
     v->sample.rssi = -67;
     advance(300); assert(find_text(lv_scr_act(), "2.52"));
-    assert(find_text(lv_scr_act(), "25 C   100%"));
+    assert(find_text(lv_scr_act(), "25 C"));
+    assert(!find_text(lv_scr_act(), "%"));
+    assert(!find_text(lv_scr_act(), "bar"));
     assert(!find_text(lv_scr_act(), "18010F"));
     assert(!find_text(lv_scr_act(), "NORMAL"));
     v->sample.data.pressure_pa = 210000; advance(300);
@@ -427,21 +429,50 @@ int main(void)
     assert(find_text(lv_scr_act(), "2.10")); assert(find_text(lv_scr_act(), "2.20"));
     assert(find_text(lv_scr_act(), "2.30")); assert(find_text(lv_scr_act(), "2.40"));
     for (unsigned w = 0; w < 4; ++w) assert(!find_text(lv_scr_act(), ids[w]));
-    const char *metrics[] = {"25 C   100%", "26 C   100%", "27 C   100%", "28 C   100%"};
+    const char *temperatures[] = {"25 C", "26 C", "27 C", "28 C"};
     const char *values[] = {"2.10", "2.20", "2.30", "2.40"};
     lv_obj_update_layout(lv_scr_act());
     for (unsigned w = 0; w < 4; ++w) {
-        assert_inside_bezel(find_text(lv_scr_act(), metrics[w]));
+        lv_obj_t *temperature = find_text(lv_scr_act(), temperatures[w]);
+        assert(temperature);
+        assert(lv_obj_get_style_text_font(temperature, 0) == &ui_font_FontTypoderSize24);
+        assert(lv_obj_get_height(temperature) == ui_font_FontTypoderSize24.line_height);
+        assert_inside_bezel(temperature);
         lv_obj_t *value = find_text(lv_scr_act(), values[w]);
         assert(lv_obj_get_style_text_font(value, 0) == &ui_font_FontTypoderSize40);
         assert(lv_obj_get_style_text_color(value, 0).full == lv_color_white().full);
+        lv_obj_t *overview_tile = lv_obj_get_parent(value);
+        lv_obj_t *wheel = find_text(overview_tile, (const char *const[]){"FL", "FR", "RL", "RR"}[w]);
+        lv_area_t wheel_area, pressure_area, temperature_area, tile_area;
+        lv_obj_get_coords(wheel, &wheel_area); lv_obj_get_coords(value, &pressure_area);
+        lv_obj_get_coords(temperature, &temperature_area); lv_obj_get_coords(overview_tile, &tile_area);
+        assert(wheel_area.y2 < pressure_area.y1 && pressure_area.y2 < temperature_area.y1);
+        assert(temperature_area.y2 <= tile_area.y2);
+        assert(!find_text(overview_tile, "bar"));
     }
     capture("four-wheel-overview");
+    /* Larger temperatures must stay on one line, including sub-zero readings. */
+    const int test_temperatures[] = {-128, -40, 0, 127};
+    for (unsigned i = 0; i < sizeof(test_temperatures) / sizeof(test_temperatures[0]); ++i) {
+        for (unsigned w = 0; w < 4; ++w)
+            live_wheels[w].sample.data.temperature_c = test_temperatures[i];
+        advance(300); lv_obj_update_layout(lv_scr_act());
+        char expected[16]; snprintf(expected, sizeof(expected), "%d C", test_temperatures[i]);
+        for (unsigned w = 0; w < 4; ++w) {
+            lv_obj_t *wheel_tile = lv_obj_get_parent(find_text(lv_scr_act(), values[w]));
+            lv_obj_t *temperature = find_text(wheel_tile, expected);
+            assert(temperature && lv_obj_get_height(temperature) == ui_font_FontTypoderSize24.line_height);
+            assert_inside_bezel(temperature);
+        }
+    }
+    for (unsigned w = 0; w < 4; ++w) live_wheels[w].sample.data.temperature_c = 25 + w;
+    advance(300);
     v->sample.data.pressure_pa = 251520; advance(300);
     click("FL");
     assert(find_text(lv_scr_act(), "2.52 bar  /  251520 Pa"));
     assert(find_text(lv_scr_act(), "State: 0 NORMAL"));
     assert(find_text(lv_scr_act(), "BLE: V1.0"));
+    assert(find_text(lv_scr_act(), "25 C   /   3.00 V"));
     capture("live-details");
     v->fresh = false; v->age_ms = 120000; advance(300);
     assert(find_text(lv_scr_act(), "STALE"));
@@ -451,8 +482,42 @@ int main(void)
         if (i) click("FL");
         swipe(detail_returns[i]);
         assert(lv_scr_act() == ui_ScreenPageTPMS);
-        assert(find_text(lv_scr_act(), "-- C   --%"));
+        assert(find_text(lv_scr_act(), "25 C"));
+        assert(find_text(lv_scr_act(), "STALE"));
+        lv_obj_t *cached = find_text(lv_scr_act(), "2.52");
+        assert(cached && lv_obj_get_style_text_color(cached, 0).full == lv_color_hex(0x888888).full);
     }
+    /* Every stale wheel must fit the original grid without extra rows. */
+    for (unsigned w = 0; w < 4; ++w) live_wheels[w].fresh = false;
+    advance(300); lv_obj_update_layout(lv_scr_act());
+    const char *cached_values[] = {"2.52", "2.20", "2.30", "2.40"};
+    for (unsigned w = 0; w < 4; ++w) {
+        lv_obj_t *temperature = find_text(lv_scr_act(), temperatures[w]);
+        assert(temperature);
+        assert(lv_obj_get_style_text_font(temperature, 0) == &ui_font_FontTypoderSize24);
+        assert(lv_obj_get_height(temperature) == ui_font_FontTypoderSize24.line_height);
+        assert_inside_bezel(temperature);
+        lv_obj_t *cached_tile = lv_obj_get_parent(find_text(lv_scr_act(), cached_values[w]));
+        lv_obj_t *stale = find_text(cached_tile, "STALE");
+        assert(stale && lv_obj_get_height(stale) == ui_font_FontTypoderSize16.line_height);
+        assert_inside_bezel(stale);
+        lv_area_t header_area, pressure_area;
+        lv_obj_get_coords(stale, &header_area);
+        lv_obj_get_coords(find_text(cached_tile, cached_values[w]), &pressure_area);
+        assert(header_area.y2 < pressure_area.y1);
+        lv_obj_t *cached_wheel = find_text(cached_tile, (const char *const[]){"FL", "FR", "RL", "RR"}[w]);
+        lv_area_t wheel_area;
+        lv_obj_get_coords(cached_wheel, &wheel_area);
+        assert(wheel_area.x2 < header_area.x1 && wheel_area.y2 < pressure_area.y1);
+        assert_inside_bezel(cached_wheel);
+        assert(!find_text(cached_tile, "bar"));
+    }
+    capture("stale-overview");
+    v->fresh = true; v->age_ms = 0; advance(300);
+    lv_obj_t *live = find_text(lv_scr_act(), "2.52");
+    assert(live && lv_obj_get_style_text_color(live, 0).full == lv_color_white().full);
+    assert(!find_text(lv_obj_get_parent(live), "STALE"));
+    assert(!strcmp(lv_label_get_text(find_text(lv_obj_get_parent(live), "FL")), "FL"));
     assert(!find_text(lv_scr_act(), "Tap tire for all data"));
     lv_scr_load(ui_ScreenPageBluetooth);
     lv_obj_del(ui_ScreenPageTPMS); assert(!ui_ScreenPageTPMS);

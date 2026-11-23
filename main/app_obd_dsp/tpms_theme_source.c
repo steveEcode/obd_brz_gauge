@@ -31,7 +31,8 @@ void tpms_theme_values(const tpms_wheel_data_t wheels[NVS_TPMS_WHEELS], double o
         p[10] = v->bound; p[11] = v->received; p[12] = v->fresh;
         if (v->bound) p[13] = (double)strtoul(v->sensor_id, NULL, 16);
         if (v->received) p[9] = v->age_ms / 1000.0;
-        if (!v->fresh) continue;
+        /* Age/online distinguish cached measurements from a live sample. */
+        if (!v->bound || !v->received) continue;
         p[0] = d->pressure_pa; p[1] = d->pressure_pa / 1000.0;
         p[2] = d->pressure_pa / 100000.0; p[3] = d->temperature_c;
         p[4] = d->voltage_mv / 1000.0; p[5] = d->state; p[6] = d->version;

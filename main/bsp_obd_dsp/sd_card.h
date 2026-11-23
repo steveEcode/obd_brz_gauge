@@ -15,7 +15,7 @@ extern "C" {
  * sd_card - SDMMC slot 1. V1: 1-bit (CLK GPIO14 / CMD GPIO17 / D0 GPIO16).
  * V2/V3: 4-bit (CLK GPIO3 / CMD GPIO4 / D0..D3 GPIO2/GPIO1/GPIO6/GPIO5).
  *
- * - Mount tries 40 MHz, then 20 MHz. The card is NEVER formatted.
+ * - Mount tries 40 MHz, then 20 MHz. Mount failure NEVER formats the card.
  * - No card-detect pin: sd_card_poll() probes for insertion while absent and
  *   checks CMD13 while mounted; two consecutive failures mean "removed".
  * - All file I/O that may touch PSRAM goes through the shared 16 KB internal
@@ -58,6 +58,13 @@ void sd_card_poll(void);
 uint32_t sd_card_poll_wait_ms(void);
 /* Flush and unmount; state becomes EJECTED until the card is pulled and reinserted. */
 esp_err_t sd_card_eject(void);
+/* DESTRUCTIVE. Only from the quiesced OTA maintenance worker, with the storage
+ * job lock held and all file users stopped. Erases the whole card, creates one
+ * FAT32 partition (32 KiB clusters on >=4 GiB cards; smaller cards adapt), then
+ * remounts and recreates /OBD. Tiny cards (<64 MiB) use FAT16/12. Never automatic.
+ * Always reboot afterwards, including failures. */
+esp_err_t sd_card_format(char *detail, size_t capacity);
+
 
 sd_state_t  sd_card_get_state(void);
 bool        sd_card_is_mounted(void);

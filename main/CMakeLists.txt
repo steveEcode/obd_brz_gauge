@@ -138,3 +138,7 @@ add_custom_command(OUTPUT "${BOOTMEDIA_RAW}"
             "${CMAKE_CURRENT_LIST_DIR}/../tools/make_bootmedia_raw.py"
     VERBATIM)
 add_custom_target(bootmedia_raw ALL DEPENDS "${BOOTMEDIA_RAW}")
+
+# Intercept SDK sector IO (including FatFs metadata), not just application fread.
+target_link_options(${COMPONENT_LIB} INTERFACE
+    "-Wl,--wrap=sdmmc_read_sectors" "-Wl,--wrap=sdmmc_write_sectors")

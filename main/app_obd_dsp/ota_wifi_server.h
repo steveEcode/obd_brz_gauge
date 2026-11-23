@@ -2,6 +2,8 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
+#include "esp_err.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -40,6 +42,14 @@ bool ota_wifi_server_stop(void);
 // 从 ota_wifi_server_start() 进入起到 ota_wifi_server_stop() 结束为 true。
 // SD 导入、主题库切换等后台任务据此暂停。
 bool ota_wifi_server_is_active(void);
+
+/* Destructive, local-screen confirmation only; call from an internal-stack
+ * worker, NEVER under lvgl_mux. Gates new requests on the HTTP task, refuses
+ * active uploads, stops HTTP and takes the storage job lock before formatting.
+ * If reboot_required is set, maintenance stays latched until caller reboots,
+ * even on error. No USB takeover/background card jobs are allowed meanwhile. */
+esp_err_t ota_wifi_server_format_sd(char *detail, size_t capacity, bool *reboot_required);
+
 
 // 当前 SoftAP SSID；未启动时为 ""。
 const char *ota_wifi_server_get_ssid(void);

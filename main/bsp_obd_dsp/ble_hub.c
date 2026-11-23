@@ -4,7 +4,7 @@
  *
  * Routing (callbacks run on the Bluedroid BTC task):
  *   - GAP: fanned out to every registered module, except SCAN_RESULT_EVT,
- *     which only the current scan owner receives (ownership is released
+ *     which the owner and opt-in advertisement observers receive (ownership is released
  *     before the owner sees INQ_CMPL, so it may restart scanning from there);
  *   - GATTC / GATTS: REG_EVT by app_id (the hub learns gattc_if / gatts_if),
  *     every other event by interface (ESP_GATT_IF_NONE = every module).
@@ -141,7 +141,9 @@ static void hub_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *par
     for (int i = 0; deliver && i < HUB_MAX_APPS; i++) {
         const hub_slot_t *s = &s_slots[i];
         if (!s->used || !s->cb.gap_cb) continue;
-        if (event == ESP_GAP_BLE_SCAN_RESULT_EVT && (int)s->app != only) continue;
+        if (event == ESP_GAP_BLE_SCAN_RESULT_EVT && (int)s->app != only &&
+            !(s->cb.observe_scan_results && param->scan_rst.search_evt == ESP_GAP_SEARCH_INQ_RES_EVT))
+            continue;
         cbs[n++] = s->cb.gap_cb;
     }
     portEXIT_CRITICAL(&s_lock);

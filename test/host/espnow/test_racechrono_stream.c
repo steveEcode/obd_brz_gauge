@@ -34,6 +34,7 @@ static const char *const names[] = {
 };
 static scenario_t scenario;
 static esp_gatts_cb_t hub_gatts;
+static esp_gap_ble_cb_t hub_gap;
 static TaskFunction_t worker;
 static jmp_buf worker_exit;
 static int64_t now_us, last_snapshot_us = -1;
@@ -192,7 +193,7 @@ uint64_t signal_store_get_many(const int *slots, size_t count, int32_t *values)
 
 /* All stack APIs must remain outside critical sections. */
 #define SDK_OK(...) do { CHECK(lock_depth == 0); return ESP_OK; } while (0)
-esp_err_t esp_ble_gap_register_callback(esp_gap_ble_cb_t cb) { (void)cb; SDK_OK(); }
+esp_err_t esp_ble_gap_register_callback(esp_gap_ble_cb_t cb) { hub_gap = cb; SDK_OK(); }
 esp_err_t esp_ble_gattc_register_callback(esp_gattc_cb_t cb) { (void)cb; SDK_OK(); }
 esp_err_t esp_ble_gatts_register_callback(esp_gatts_cb_t cb) { hub_gatts = cb; SDK_OK(); }
 esp_err_t esp_ble_gatt_set_local_mtu(uint16_t mtu) { (void)mtu; SDK_OK(); }
@@ -291,8 +292,73 @@ static void run_scenario(scenario_t which)
     fflush(stdout);
 }
 
+static unsigned owner_ads, owner_done, observer_ads, observer_done, other_results;
+static void owner_gap(esp_gap_ble_cb_event_t e, esp_ble_gap_cb_param_t *p)
+{
+    CHECK(!lock_depth);
+    if (e != ESP_GAP_BLE_SCAN_RESULT_EVT) return;
+    if (p->scan_rst.search_evt == ESP_GAP_SEARCH_INQ_RES_EVT) ++owner_ads;
+    if (p->scan_rst.search_evt == ESP_GAP_SEARCH_INQ_CMPL_EVT) ++owner_done;
+}
+static void observer_gap(esp_gap_ble_cb_event_t e, esp_ble_gap_cb_param_t *p)
+{
+    CHECK(!lock_depth);
+    if (e != ESP_GAP_BLE_SCAN_RESULT_EVT) return;
+    if (p->scan_rst.search_evt == ESP_GAP_SEARCH_INQ_RES_EVT) ++observer_ads;
+    if (p->scan_rst.search_evt == ESP_GAP_SEARCH_INQ_CMPL_EVT) ++observer_done;
+}
+static void other_gap(esp_gap_ble_cb_event_t e, esp_ble_gap_cb_param_t *p)
+{
+    (void)p; CHECK(!lock_depth);
+    if (e == ESP_GAP_BLE_SCAN_RESULT_EVT) ++other_results;
+}
+static void scan_observer_routing(void)
+{
+    CHECK(ble_hub_init() == ESP_OK && hub_gap);
+    ble_hub_client_t elm = {.gap_cb=owner_gap};
+    ble_hub_client_t tpms = {.gap_cb=observer_gap, .observe_scan_results=true};
+    ble_hub_client_t other = {.gap_cb=other_gap};
+    CHECK(ble_hub_register(BLE_HUB_APP_ELM327, &elm) == ESP_OK);
+    CHECK(ble_hub_register(BLE_HUB_APP_TPMS, &tpms) == ESP_OK);
+    CHECK(ble_hub_register(BLE_HUB_APP_GAUGE_PAIR, &other) == ESP_OK);
+    const esp_ble_scan_params_t params = {0};
+    for (unsigned cycle = 0; cycle < 2; ++cycle) {
+        ble_hub_app_t requested = cycle ? BLE_HUB_APP_TPMS : BLE_HUB_APP_ELM327;
+        CHECK(ble_hub_scan_start(requested, &params, 10) == ESP_OK);
+        esp_ble_gap_cb_param_t p = {0};
+        p.scan_param_cmpl.status = ESP_BT_STATUS_SUCCESS;
+        hub_gap(ESP_GAP_BLE_SCAN_PARAM_SET_COMPLETE_EVT, &p);
+        p = (esp_ble_gap_cb_param_t){0};
+        p.scan_start_cmpl.status = ESP_BT_STATUS_SUCCESS;
+        hub_gap(ESP_GAP_BLE_SCAN_START_COMPLETE_EVT, &p);
+        ble_hub_app_t current;
+        CHECK(ble_hub_scan_active(&current) && current == requested);
+        CHECK(ble_hub_scan_start(BLE_HUB_APP_GAUGE_PAIR, &params, 20) == ESP_ERR_INVALID_STATE);
+        p.scan_rst.search_evt = ESP_GAP_SEARCH_INQ_RES_EVT;
+        hub_gap(ESP_GAP_BLE_SCAN_RESULT_EVT, &p);
+        CHECK(ble_hub_scan_active(&current) && current == requested);
+        CHECK(owner_ads == 1 && observer_ads == cycle + 1 && !other_results);
+        p.scan_rst.search_evt = ESP_GAP_SEARCH_INQ_CMPL_EVT;
+        hub_gap(ESP_GAP_BLE_SCAN_RESULT_EVT, &p);
+        CHECK(!ble_hub_scan_active(NULL));
+        CHECK(owner_done == 1 && observer_done == cycle && !other_results);
+        /* No owner: neither consumers nor observers see orphan results. */
+        p.scan_rst.search_evt = ESP_GAP_SEARCH_INQ_RES_EVT;
+        hub_gap(ESP_GAP_BLE_SCAN_RESULT_EVT, &p);
+        CHECK(owner_ads == 1 && observer_ads == cycle + 1 && !other_results);
+    }
+    shutting_down = true;
+    CHECK(ble_hub_shutdown() == ESP_OK);
+    puts("scan observers: ads only, ownership and completion isolation pass");
+}
+
 int main(void)
 {
+    pid_t observer_pid = fork(); CHECK(observer_pid >= 0);
+    if (!observer_pid) { scan_observer_routing(); exit(0); }
+    int observer_status = 0;
+    CHECK(waitpid(observer_pid, &observer_status, 0) == observer_pid);
+    CHECK(WIFEXITED(observer_status) && WEXITSTATUS(observer_status) == 0);
     /* Every scenario gets a fresh boot; one-way shutdown is never reset by
      * reaching into the firmware's static state. */
     for (unsigned i = 0; i < SCENARIO_COUNT; i++) {

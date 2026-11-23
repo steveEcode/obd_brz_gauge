@@ -19,7 +19,7 @@ UI tick 仅在本地页需求掩码变化时发布 ESP-NOW 掩码；合并远端
 | Path | Current implementation | Verification |
 |---|---|---|
 | `signal_store.c` | batch metadata snapshots, sparse masks, generated numeric ID lookup, integer delivered units outside lock | host + device pending |
-| `ui.c` / `app_main.c` | 16/33/200 ms ticks, conditional live snapshots, one NVS/linked-state view per RPM path, page-source sparse snapshots, 40/20-line DMA buffers | target compile + device pending |
+| `ui.c` / `app_main.c` | 16/33/200 ms ticks, conditional live snapshots, one NVS/linked-state view per RPM path, page-source sparse snapshots, 20-line DMA buffers | target compile + device pending |
 | `theme_page.c` / `tr_eval.c` | coherent snapshot, binding cache, active-set output and applied-look reuse | host core + LVGL page + device pending |
 | `theme_pixconv.c` | alpha row bounds, integer round-window/row spans, bounded channel quantization, mode-specific axis capacity | host differential + target compile + device pending |
 | `vp_engine.c` / `vp_rpn.c` | serial polling, request-to-source dispatch index, poll candidate list, local-mask round deduplication, identity-factor single-precision writeback, hex lookup, bytewise bit fields, bounded command copies, fixed-format state commands, one RX-length commit per chunk, single-precision RPN integer checks, hardware raw32-to-float conversion | host + target compile + device pending |

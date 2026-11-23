@@ -41,6 +41,8 @@ BLE 连 ELM327 兼容适配器读车况，ESP-NOW 三连表联动，双主题系
 - `main/export_path/ui_theme_generated.c`、`main/export_path/theme_assets/` 是生成物，永远不要手改
 - `main/export_path/ui_ext.c` 是手写扩展区，SquareLine 重导出不得覆盖
 - ELM327 轮询是**单线程状态机**，不要引入并行/交错请求
+- USB 接收内部栈/驱动须在 LCD/无线初始化前预留，启动完成通知后才处理请求；禁止改用 PSRAM 栈（管理 RPC 写 Flash/NVS，`bootmedia_serial.c` / `app_main.c`）。
+- 原生 USB 驱动安装后，已启用的 USB 控制台必须 `usb_serial_jtag_vfs_use_driver()`，禁止 VFS 直写 FIFO 与二进制 ACK 混写（`bootmedia_serial.c`）
 - ESP-NOW 从表 DATA 回调只入队，维护任务统一应用数据和处理超时；OTA 必须等 `espnow_link_pause_for_ota()` 返回 true，禁止从外部删除主从表维护任务（`espnow_link.c`）
 - 全屏视频借用 LVGL DMA 缓冲时必须保护刷新回调；仅 `lv_timer_pause` 会被切页/布局更新自动恢复（`main/media/video_player.c`）
 - LCD DMA 完成信号量开机常驻，不占 LVGL 通知槽 0；中断先释放缓冲再唤醒，等待端必须重查 `flushing`，防止旧信号提前复用在途缓冲（`main/app_obd_dsp/lvgl_flush_sync.c`）
@@ -50,6 +52,7 @@ BLE 连 ELM327 兼容适配器读车况，ESP-NOW 三连表联动，双主题系
 - 视频 start/stop/pause/resume 在 LVGL task 或持有 `lvgl_mux` 时调用；worker 不操作 LVGL（`main/media/video_player.h`）
 - LVGL task 默认通知槽 0 专用于帧唤醒，绑定后永不删除/重绑；通知不带 session/view 指针（`main/app_obd_dsp/lvgl_runtime.h`）
 - OTA 启停共用非阻塞生命周期保护；`ota_wifi_server_stop()` 返回 false 时不得继续 USB 接管或退出重启，稍后重试，避免持有 LVGL 锁等待 HTTP 清理造成互锁（`ota_wifi_server.c` / `ui_ScreenPageOTAMode.c`）
+- 手动 SD 格式化只走 `ota_wifi_server_format_sd()` 的 HTTP 门控和独占存储流程，在非 LVGL worker 执行；进入维护后必须重启，挂载失败不得自动格式化（`sd_card.c` / `ota_wifi_server.c`）。
 - 发版前必须先 commit——build tag 的 count 取 git 提交数（`tools/release.sh` 流程）
 
 ## 构建与验证

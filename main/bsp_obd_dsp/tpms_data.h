@@ -2,7 +2,8 @@
 #include "tpms_fbb0.h"
 
 #define TPMS_WHEEL_COUNT 4u
-/* Freshness is a display timeout, not a guaranteed sensor reporting period. */
+/* Freshness marks online status; keep received measurements when stale.
+ * This is not a guaranteed sensor reporting period. */
 #define TPMS_FRESH_MS 120000u
 
 typedef struct {

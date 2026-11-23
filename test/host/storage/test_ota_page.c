@@ -13,6 +13,8 @@ typedef struct { int unused; } lv_obj_t;
 #define ESP_LOGE(tag, ...) ((void)(tag))
 #define pdMS_TO_TICKS(ms) (ms)
 static const char *TAG = "test";
+static bool s_format_busy;
+static lv_obj_t *s_format_dialog;
 static lv_timer_t timer_storage, *s_start_timer;
 static lv_obj_t label, theme, *s_label_wifi_ssid = &label, *ui_ScreenPageThemeGauge = &theme;
 static bool link_stopped, stop_ready, timer_fail, start_ok = true;
@@ -50,7 +52,10 @@ int main(void)
     link_stopped = true; start_ota_when_ready(s_start_timer);
     assert(!s_start_timer && timer_deletes == 1 && object_deletes == 1 && starts == 1);
     assert(!strcmp(label_text, "WiFi: test-ssid"));
-    stop_ready = true; exit_ota_mode(); assert(reboots == 1 && delays == 1);
+    stop_ready = true;
+    s_format_busy = true; exit_ota_mode(); assert(!reboots);
+    s_format_busy = false; s_format_dialog = &label; exit_ota_mode(); assert(!reboots);
+    s_format_dialog = NULL; exit_ota_mode(); assert(reboots == 1 && delays == 1);
     /* Leaving while startup is deferred cancels the retry before reboot. */
     link_stopped = false; start_ota_when_ready(NULL); assert(s_start_timer);
     exit_ota_mode(); assert(!s_start_timer && timer_deletes == 2 && reboots == 2);

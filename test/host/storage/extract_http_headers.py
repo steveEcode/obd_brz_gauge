@@ -10,6 +10,7 @@ def section(source, start, end):
     return source[a:source.index(end, a)]
 
 parts = [
+    section(ota, 'static esp_err_t send_err(', 'static esp_err_t send_204('),
     section(ota, 'static bool hdr_present(', '/* Prepare / erase bodies'),
     section(ota, 'static bool parse_chunk_headers(', 'static bool chunk_in_sequence('),
 ]

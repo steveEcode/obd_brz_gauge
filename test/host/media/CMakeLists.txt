@@ -45,8 +45,8 @@ enable_testing()
 # The repo root enables the bootmedia/slot_a legacy stream round trip.
 add_test(NAME media COMMAND test_media "${REPO_ROOT}")
 
-add_executable(test_boot_obv_validate test_boot_obv_validate.c
-    "${REPO_ROOT}/main/media/boot_obv_validate.c")
+# Includes the production validator to inject IO/allocation failures locally.
+add_executable(test_boot_obv_validate test_boot_obv_validate.c)
 target_include_directories(test_boot_obv_validate PRIVATE player_stubs "${REPO_ROOT}/main")
 target_compile_options(test_boot_obv_validate PRIVATE ${MH_WARN} -UNDEBUG)
 target_link_libraries(test_boot_obv_validate PRIVATE media_core)

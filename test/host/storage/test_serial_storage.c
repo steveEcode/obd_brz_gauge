@@ -1,10 +1,15 @@
 #include <assert.h>
+#include <setjmp.h>
 #include <errno.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+#include "freertos/task.h"
+uint32_t ulTaskNotifyTake(BaseType_t clear, TickType_t timeout);
+BaseType_t xTaskNotifyGive(TaskHandle_t task);
 
 static int serial_test_fflush(FILE *stream);
 static int serial_test_fsync(int fd);
@@ -13,6 +18,13 @@ static int serial_test_fsync(int fd);
 #include "app_obd_dsp/bootmedia_serial.c"
 #undef fflush
 #undef fsync
+
+static bool inject_sd_trace;
+void sd_io_trace_begin(sd_io_trace_t *t) { memset(t, 0, sizeof(*t)); }
+
+void sd_io_trace_end(sd_io_trace_t *t) { if (inject_sd_trace) t->error = ESP_ERR_TIMEOUT; }
+void sd_io_trace_format(const sd_io_trace_t *t, char *out, size_t cap)
+{ if (out && cap) snprintf(out, cap, "%s", t->error ? " sd=ESP_ERR_TIMEOUT(0x107) op=W lba=123 sectors=8" : ""); }
 
 static bool locked, busy, ota, fail_open, fail_verify, fail_commit, fail_install, fail_obv, fail_write;
 static bool release_busy_on_wait;
@@ -45,12 +57,14 @@ static int boot_path_index(const char *path)
     for (int i = 0; i < 3; i++) if (!strcmp(path, boot_paths[i])) return i;
     return -1;
 }
-bool boot_obv_validate_file(const char *path, const char **reason)
+static const char validation_detail[] = "Cannot read OBV2 frame from SD [frame=1/3 offset=12345 expected=4096 actual=512 bytes=99999 errno=5 eof=0 ferror=1 parser=0 jpeg=0]";
+bool boot_obv_validate_file_detailed(const char *path, const char **reason, char *detail, size_t detail_size)
 { assert(locked); assert(!strcmp(path, SD_BOOT_OBV ".part"));
   /* FatFs readers see the directory size only after writer synchronization. */
   assert(file_synced && flushes == 1 && syncs == 1);
   validations++;
-  if (reason) *reason = fail_obv ? "Invalid JPEG test frame" : NULL;
+  if (reason) *reason = fail_obv ? "Cannot read OBV2 frame from SD" : NULL;
+  snprintf(detail, detail_size, "%s", fail_obv ? validation_detail : "");
   return !fail_obv; }
 static TickType_t ticks;
 static int input_mode;
@@ -67,7 +81,9 @@ bool storage_job_lock(TickType_t wait)
 void storage_job_unlock(void) { assert(locked); locked = false; }
 bool ota_wifi_server_is_active(void) { return ota; }
 bool sd_card_is_mounted(void) { return true; }
-uint64_t sd_card_get_free_bytes(void) { return 1000000000; }
+static uint64_t card_free_bytes = 1000000000;
+static unsigned free_space_queries;
+uint64_t sd_card_get_free_bytes(void) { assert(locked); free_space_queries++; return card_free_bytes; }
 esp_err_t sd_card_remove(const char *path)
 {
     assert(locked); removes++;
@@ -125,10 +141,42 @@ int usb_serial_jtag_write_bytes(const void *src, size_t len, TickType_t timeout)
 { (void)timeout; assert(output_len + len <= sizeof(output));
   memcpy(output + output_len, src, len); output_len += len; return (int)len; }
 esp_err_t usb_serial_jtag_wait_tx_done(TickType_t timeout) { (void)timeout; return ESP_OK; }
-bool usb_serial_jtag_is_driver_installed(void) { return true; }
+static bool driver_installed = true;
+static bool fail_driver_install;
+static unsigned driver_installs, vfs_driver_uses;
+bool usb_serial_jtag_is_driver_installed(void) { return driver_installed; }
 esp_err_t usb_serial_jtag_driver_install(const usb_serial_jtag_driver_config_t *config)
-{ (void)config; return ESP_OK; }
-void *heap_caps_malloc(size_t size, uint32_t caps) { (void)caps; return malloc(size); }
+{
+    assert(config->tx_buffer_size == 4096 && config->rx_buffer_size == 8192);
+    driver_installs++;
+    if (fail_driver_install) return ESP_FAIL;
+    driver_installed = true;
+    return ESP_OK;
+}
+void usb_serial_jtag_vfs_use_driver(void)
+{ assert(driver_installed); vfs_driver_uses++; }
+static bool fail_payload, fail_psram, fail_task_create;
+static unsigned payload_allocs, payload_frees, task_creates, task_notifies;
+static uint32_t last_payload_caps;
+static jmp_buf wait_gate;
+void *heap_caps_malloc(size_t size, uint32_t caps)
+{
+    assert(size == FRAME_DATA_MAX); payload_allocs++; last_payload_caps = caps;
+    if (fail_payload || (fail_psram && (caps & MALLOC_CAP_SPIRAM))) return NULL;
+    return malloc(size);
+}
+void heap_caps_free(void *p) { if (p) payload_frees++; free(p); }
+size_t heap_caps_get_free_size(uint32_t caps) { (void)caps; return 32000; }
+size_t heap_caps_get_largest_free_block(uint32_t caps) { (void)caps; return 16000; }
+uint32_t ulTaskNotifyTake(BaseType_t clear, TickType_t timeout)
+{
+    assert(clear == pdTRUE && timeout == portMAX_DELAY);
+    /* Jump out of the real worker at its first blocking operation: no SD,
+     * driver initialization or protocol processing may precede this gate. */
+    longjmp(wait_gate, 1);
+}
+BaseType_t xTaskNotifyGive(TaskHandle_t task)
+{ assert(task == s_receiver_task && task); task_notifies++; return pdPASS; }
 void storage_test_log(const char *tag, const char *fmt, ...) { (void)tag; (void)fmt; }
 void vTaskDelete(TaskHandle_t task) { (void)task; }
 void vTaskDelay(TickType_t delay) { ticks += delay; }
@@ -144,7 +192,14 @@ uint32_t esp_rom_crc32_le(uint32_t crc, const uint8_t *data, size_t len)
 }
 BaseType_t xTaskCreate(TaskFunction_t fn, const char *name, uint32_t stack, void *arg,
                       UBaseType_t prio, TaskHandle_t *handle)
-{ (void)fn; (void)name; (void)stack; (void)arg; (void)prio; (void)handle; return pdPASS; }
+{
+    assert(fn == bootmedia_serial_task && !strcmp(name, "bootmedia_usb"));
+    assert(stack == 8192 && arg == NULL && prio == 3 && handle);
+    assert(s_frame_payload && driver_installed); task_creates++;
+    if (fail_task_create) return pdFAIL;
+    *handle = (TaskHandle_t)(uintptr_t)1;
+    return pdPASS;
+}
 
 static unsigned rpc_calls;
 char *device_serial_rpc(const char *json, bool *restart)
@@ -168,6 +223,7 @@ static void data(void)
 static void reset(void)
 {
     abort_session(); assert(!locked); assert(!s_storage_locked);
+    card_free_bytes = 1000000000; free_space_queries = 0;
     busy = ota = fail_open = fail_verify = fail_commit = fail_install = fail_obv = fail_write = false;
     release_busy_on_wait = false; last_lock_wait = 0;
     installs = removes = validations = commits = 0; ticks = 0; input_mode = 0; output_len = 0;
@@ -177,6 +233,61 @@ static void reset(void)
 }
 int main(void)
 {
+    /* Both fresh and previously installed drivers must own console TX before
+     * the receiver sends any binary ACK. Failed installation cannot bind VFS. */
+    assert(init_usb_driver() == ESP_OK);
+    assert(driver_installs == 0);
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED
+    assert(vfs_driver_uses == 1);
+#else
+    assert(vfs_driver_uses == 0);
+#endif
+    driver_installed = false;
+    fail_driver_install = true;
+    unsigned bound = vfs_driver_uses;
+    assert(init_usb_driver() == ESP_FAIL);
+    assert(driver_installs == 1 && vfs_driver_uses == bound);
+    fail_driver_install = false;
+    assert(init_usb_driver() == ESP_OK);
+    assert(driver_installs == 2);
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED
+    assert(vfs_driver_uses == bound + 1);
+#else
+    assert(vfs_driver_uses == 0);
+#endif
+
+    /* A late 8 KiB internal-stack allocation failed on the real device.
+     * Reserve early, gate all IO, and propagate/clean up every failure. */
+    driver_installed = false; fail_payload = true;
+    unsigned allocations = payload_allocs;
+    assert(bootmedia_serial_prepare() == ESP_ERR_NO_MEM);
+    assert(payload_allocs == allocations + 2 && !s_receiver_task && !s_frame_payload);
+    assert(!driver_installed && task_creates == 0 && task_notifies == 0);
+    fail_payload = false; fail_driver_install = true;
+    assert(bootmedia_serial_prepare() == ESP_FAIL);
+    assert(payload_frees == 1 && !s_receiver_task && !s_frame_payload);
+    fail_driver_install = false; fail_task_create = true;
+    assert(bootmedia_serial_prepare() == ESP_ERR_NO_MEM);
+    assert(payload_frees == 2 && !s_receiver_task && !s_frame_payload);
+    fail_task_create = false;
+    assert(bootmedia_serial_prepare() == ESP_OK);
+    assert(last_payload_caps == (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    assert(s_receiver_task && s_frame_payload && !s_receiver_started);
+    assert(task_notifies == 0 && task_creates == 2);
+    if (setjmp(wait_gate) == 0) { bootmedia_serial_task(NULL); assert(0); }
+    allocations = payload_allocs;
+    assert(bootmedia_serial_prepare() == ESP_OK && payload_allocs == allocations);
+    assert(bootmedia_serial_start() == ESP_OK && s_receiver_started && task_notifies == 1);
+    assert(bootmedia_serial_start() == ESP_OK && task_notifies == 1 && task_creates == 2);
+    heap_caps_free(s_frame_payload); s_frame_payload = NULL;
+    s_receiver_task = NULL; s_receiver_started = false;
+    /* Startup's retry also works without PSRAM; never use an external stack. */
+    fail_psram = true;
+    assert(bootmedia_serial_start() == ESP_OK && task_creates == 3 && task_notifies == 2);
+    assert(last_payload_caps == (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    heap_caps_free(s_frame_payload); s_frame_payload = NULL;
+    s_receiver_task = NULL; s_receiver_started = false; fail_psram = false;
+
     for (int theme = 0; theme < 2; theme++) {
         reset(); assert(begin(theme) == 0); assert(locked); data();
         assert(process_frame(CMD_END, NULL, 0) == 0); assert(!locked);
@@ -186,9 +297,14 @@ int main(void)
         reset(); assert(begin(theme) == 0);
         assert(process_frame(CMD_ABORT, NULL, 0) == 0); assert(!locked); assert(removes == (unsigned)theme);
         reset(); fail_open = true; assert(begin(theme) == 3); assert(!locked);
-        reset(); assert(begin(theme) == 0); fail_write = true;
+        reset(); assert(begin(theme) == 0); fail_write = true; inject_sd_trace = true;
         uint8_t failed_chunk[12] = {0};
         assert(process_frame(CMD_DATA, failed_chunk, sizeof(failed_chunk)) == 5);
+        assert(s_upload_error && strstr(s_upload_error, "command=2 status=5 sd=ESP_ERR_TIMEOUT"));
+        assert(send_reply(CMD_DATA, 17, 5, 0));
+        assert(output[16] == 5 && get_u32le(output + 8) == 5 + strlen(s_upload_error));
+        assert(!memcmp(output + 21, s_upload_error, strlen(s_upload_error)));
+        inject_sd_trace = false;
         assert(!locked && !upload_sink_is_open(&s_sink));
         assert(boot_files[0] && boot_files[1] && boot_files[2]);
         /* Theme reads / boot jobs may finish while BEGIN waits for storage. */
@@ -197,6 +313,9 @@ int main(void)
         assert(last_lock_wait == pdMS_TO_TICKS(1000));
         assert(process_frame(CMD_ABORT, NULL, 0) == 0); assert(!locked);
         reset(); busy = true; assert(begin(theme) == 9); assert(!locked);
+        assert(free_space_queries == 0); /* BUSY must not enter FatFs first. */
+        reset(); card_free_bytes = 0; assert(begin(theme) == 2);
+        assert(free_space_queries == 1 && !locked && !s_storage_locked && !upload_sink_is_open(&s_sink));
         assert(last_lock_wait == pdMS_TO_TICKS(1000));
         reset(); ota = true; assert(begin(theme) == 9); assert(!locked);
         for (int commit = 0; commit < 2; commit++) {
@@ -226,7 +345,18 @@ int main(void)
         assert(boot_files[0] && boot_files[1] == (bool)invalid && boot_files[2] == (bool)invalid);
         if (invalid) {
             send_reply(CMD_END, 12, 10, 0);
-            assert(output[16] == 10 && !memcmp(output + 21, "Invalid JPEG test frame", 23));
+            size_t reply_size = 21 + strlen(validation_detail);
+            assert(output_len == reply_size && output[16] == 10);
+            assert(get_u32le(output + 8) == 5 + strlen(validation_detail));
+            assert(!memcmp(output + 21, validation_detail, strlen(validation_detail)));
+            assert(get_u32le(output + 12) == esp_rom_crc32_le(0, output + 16, reply_size - 16));
+            /* Session abort has already run; cached END retry must keep the detail. */
+            assert(send_reply(CMD_END, 12, 10, 0));
+            assert(output_len == 2 * reply_size && !memcmp(output, output + reply_size, reply_size));
+            fail_obv = false;
+            assert(process_frame(CMD_BEGIN_OBV, obv, 40) == 0);
+            assert(!s_upload_error && !s_upload_detail[0]);
+            assert(process_frame(CMD_ABORT, NULL, 0) == 0);
         }
     }
     /* Both failures stop before validation/commit and preserve old animations. */

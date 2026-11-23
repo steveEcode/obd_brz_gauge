@@ -1292,6 +1292,11 @@ esp_err_t api_v1_register_handlers(httpd_handle_t server, api_v1_auth_fn auth)
     return first_err;
 }
 
+bool api_v1_upload_busy(void)
+{
+    return upload_sink_is_open(&s_up);
+}
+
 void api_v1_reset(void)
 {
     up_release();

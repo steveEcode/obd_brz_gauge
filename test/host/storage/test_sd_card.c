@@ -14,6 +14,9 @@
 #include "esp_memory_utils.h"
 #include "esp_vfs_fat.h"
 #include "esp_log.h"
+#include "bsp_obd_dsp/sd_io_guard.h"
+#include "ff.h"
+#include "diskio_impl.h"
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
 struct sd_test_mutex { bool held; };
@@ -24,6 +27,23 @@ static TickType_t ticks = UINT32_MAX - 100u, probe_cost_ticks;
 static esp_err_t mount_result = ESP_ERR_TIMEOUT, status_result = ESP_OK;
 static bool card_present = true;
 static sdmmc_card_t card = { .real_freq_khz = 40000, .cid = { "test" }, .csd = { 1024, 512 } };
+
+void sd_io_guard_init(void) {}
+void sd_io_trace_begin(sd_io_trace_t *t) { memset(t, 0, sizeof(*t)); }
+void sd_io_trace_end(sd_io_trace_t *t) { (void)t; }
+void sd_io_trace_format(const sd_io_trace_t *t, char *out, size_t cap)
+{ (void)t; if (out && cap) out[0] = '\0'; }
+PARTITION VolToPart[2] = {{0, 0}, {1, 0}};
+static unsigned formats, raw_registers, raw_unregisters;
+static FRESULT format_result = FR_OK;
+static MKFS_PARM format_options;
+esp_err_t ff_diskio_get_drive(BYTE *drive) { *drive = 1; return ESP_OK; }
+void ff_diskio_register_sdmmc(BYTE drive, sdmmc_card_t *c)
+{ CHECK(drive == 1 && c); raw_registers++; }
+void ff_diskio_register(BYTE drive, const void *impl)
+{ CHECK(drive == 1 && !impl); raw_unregisters++; }
+FRESULT f_mkfs(const char *path, const MKFS_PARM *opt, void *work, unsigned len)
+{ CHECK(!strcmp(path, "1:") && work && len == 4096); formats++; format_options = *opt; return format_result; }
 
 const char *esp_err_to_name(esp_err_t err) { (void)err; return "test"; }
 void storage_test_log(const char *tag, const char *fmt, ...) { (void)tag; (void)fmt; }
@@ -101,6 +121,7 @@ esp_err_t sdmmc_card_init(const sdmmc_host_t *host, sdmmc_card_t *probe)
     CHECK(mutexes[0].held && host->max_freq_khz == 20000 && probe);
     bare_probe_count++;
     ticks += probe_cost_ticks;
+    *probe = card;
     return card_present ? ESP_OK : ESP_ERR_TIMEOUT;
 }
 int sd_test_stat(const char *path, struct stat *info)
@@ -196,8 +217,38 @@ int main(void)
     advance(3000); sd_card_poll();
     CHECK(mount_count == 8);
     check_state(SD_STATE_MOUNTED, 1000);
+    /* Explicit maintenance formatting never enables format-on-mount. */
+    char detail[480];
+    card_present = true;
+    CHECK(sd_card_format(detail, sizeof(detail)) == ESP_OK);
+    CHECK(formats == 1 && raw_registers == 1 && raw_unregisters == 1);
+    CHECK(format_options.fmt == FM_FAT && format_options.n_fat == 2 && !format_options.au_size);
+    format_result = FR_DISK_ERR;
+    CHECK(sd_card_format(detail, sizeof(detail)) == ESP_FAIL);
+    CHECK(strstr(detail, "create FAT filesystem") && strstr(detail, "fatfs=1"));
+    CHECK(raw_registers == raw_unregisters && !sd_card_is_mounted());
+    format_result = FR_OK;
+    card_present = false;
+    unsigned previous_formats = formats;
+    CHECK(sd_card_format(detail, sizeof(detail)) == ESP_ERR_TIMEOUT);
+    CHECK(formats == previous_formats); /* no card: never attempt destructive IO */
+    card_present = true;
+    /* Disk init copies capacity, allowing both cluster-size paths. */
+    card.csd.capacity = 16u * 1024u * 1024u;
+    CHECK(sd_card_format(detail, sizeof(detail)) == ESP_OK);
+    CHECK(format_options.fmt == FM_FAT32 && format_options.au_size == 32768);
+    CHECK(format_options.align == 2048 && raw_registers == raw_unregisters);
+    card.csd.capacity = 512u * 1024u;
+    CHECK(sd_card_format(detail, sizeof(detail)) == ESP_OK);
+    CHECK(format_options.fmt == FM_FAT32 && !format_options.au_size);
+    VolToPart[1].pt = 1;
+    previous_formats = formats;
+    CHECK(sd_card_format(detail, sizeof(detail)) == ESP_ERR_INVALID_STATE);
+    CHECK(formats == previous_formats && raw_registers == raw_unregisters);
     puts("SD state deadlines passed (rollover, absent/error/eject/reinsert)");
 #else
+    (void)formats; (void)format_result; (void)format_options;
+    CHECK(sd_card_format(NULL, 0) == ESP_ERR_NOT_SUPPORTED);
     CHECK(sd_card_init() == ESP_ERR_NOT_SUPPORTED);
     CHECK(sd_card_get_state() == SD_STATE_DISABLED);
     CHECK(!sd_card_is_mounted() && !mutex_count && !mount_count);

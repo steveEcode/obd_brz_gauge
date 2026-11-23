@@ -8,7 +8,7 @@
 lv_obj_t *ui_ScreenPageTPMS;
 static const char *const short_names[] = {"FL", "FR", "RL", "RR"};
 static const char *const names[] = {"FRONT LEFT", "FRONT RIGHT", "REAR LEFT", "REAR RIGHT"};
-static lv_obj_t *s_body, *s_title, *s_values[4], *s_metrics[4], *s_details;
+static lv_obj_t *s_body, *s_title, *s_values[4], *s_wheel_labels[4], *s_status[4], *s_temperatures[4], *s_details;
 static lv_timer_t *s_timer;
 static int s_selected = -1;
 
@@ -47,17 +47,19 @@ static void refresh(lv_timer_t *timer)
         for (unsigned w = 0; w < NVS_TPMS_WHEELS; ++w) {
             const tpms_wheel_data_t *v = &wheels[w];
             const tpms_fbb0_data_t *d = &v->sample.data;
-            if (v->fresh)
+            if (v->bound && v->received)
                 snprintf(buf, sizeof(buf), "%.2f", d->pressure_pa / 100000.0);
             else
                 snprintf(buf, sizeof(buf), "--");
             set_text(s_values[w], buf);
-            if (v->fresh)
-                snprintf(buf, sizeof(buf), "%d C   %u%%", (int)d->temperature_c,
-                         (unsigned)tpms_battery_percent(d->voltage_mv));
+            const bool stale = v->bound && v->received && !v->fresh;
+            set_text(s_status[w], stale ? "STALE" : "");
+            lv_obj_align(s_wheel_labels[w], LV_ALIGN_TOP_MID, stale ? -40 : 0, 0);
+            if (v->bound && v->received)
+                snprintf(buf, sizeof(buf), "%d C", (int)d->temperature_c);
             else
-                snprintf(buf, sizeof(buf), "-- C   --%%");
-            set_text(s_metrics[w], buf);
+                snprintf(buf, sizeof(buf), "-- C");
+            set_text(s_temperatures[w], buf);
             lv_obj_set_style_text_color(s_values[w], lv_color_hex(v->fresh ? 0xFFFFFF : 0x888888), 0);
         }
     } else {
@@ -110,17 +112,18 @@ static void render(void)
         for (unsigned w = 0; w < NVS_TPMS_WHEELS; ++w) {
             lv_obj_t *card = lv_btn_create(s_body);
             lv_obj_remove_style_all(card);
-            lv_obj_set_pos(card, 46 + (int)(w % 2) * 136, 74 + (int)(w / 2) * 108);
-            lv_obj_set_size(card, 132, 110);
+            lv_obj_set_pos(card, 46 + (int)(w % 2) * 136, 74 + (int)(w / 2) * 112);
+            lv_obj_set_size(card, 132, 104);
             lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
             lv_obj_add_event_cb(card, select_wheel, LV_EVENT_CLICKED, (void *)(uintptr_t)w);
-            lv_obj_t *wheel = text(card, short_names[w], 0, 120, &ui_font_FontTypoderSize20);
-            lv_obj_set_style_text_color(wheel, lv_color_hex(0x44AAFF), 0);
-            s_values[w] = text(card, "", 22, 130, &ui_font_FontTypoderSize40);
-            lv_obj_t *unit = text(card, "bar", 64, 120, &ui_font_FontTypoderSize16);
-            lv_obj_set_style_text_color(unit, lv_color_hex(0x888888), 0);
-            s_metrics[w] = text(card, "", 84, 132, &ui_font_FontTypoderSize16);
-            lv_obj_set_style_text_color(s_metrics[w], lv_color_hex(0x888888), 0);
+            s_wheel_labels[w] = text(card, short_names[w], 0, 42, &ui_font_FontTypoderSize20);
+            lv_obj_set_style_text_color(s_wheel_labels[w], lv_color_hex(0x44AAFF), 0);
+            s_status[w] = text(card, "", 2, 74, &ui_font_FontTypoderSize16);
+            lv_obj_align(s_status[w], LV_ALIGN_TOP_MID, 22, 2);
+            lv_obj_set_style_text_color(s_status[w], lv_color_hex(0x888888), 0);
+            s_values[w] = text(card, "", 26, 130, &ui_font_FontTypoderSize40);
+            s_temperatures[w] = text(card, "", 74, 120, &ui_font_FontTypoderSize24);
+            lv_obj_set_style_text_color(s_temperatures[w], lv_color_hex(0x888888), 0);
         }
     } else {
         s_details = text(s_body, "", 80, 306, &ui_font_FontTypoderSize16);

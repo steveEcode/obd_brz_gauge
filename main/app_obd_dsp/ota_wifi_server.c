@@ -48,6 +48,8 @@
 #include "app_obd_dsp/theme_library.h"
 #include "app_obd_dsp/theme_bundle.h"
 #include "bsp_obd_dsp/nvs_app.h"
+#include "bsp_obd_dsp/sd_io_guard.h"
+#include "app_obd_dsp/storage_util.h"
 #include "app_obd_dsp/theme_mount.h"
 #include "app_obd_dsp/upload_sink.h"
 #include "bsp_obd_dsp/ble_hub.h"
@@ -86,6 +88,7 @@ static portMUX_TYPE s_idle_mux = portMUX_INITIALIZER_UNLOCKED;
 static volatile bool s_active = false;
 static portMUX_TYPE s_lifecycle_mux = portMUX_INITIALIZER_UNLOCKED;
 static bool s_lifecycle_busy = false;
+static volatile bool s_maintenance = false;
 
 /* Never wait for another lifecycle caller: the UI may hold lvgl_mux while
  * an HTTP handler is waiting for it during httpd_stop(). */
@@ -321,6 +324,7 @@ static void upload_release(void)
 
 static bool validate_token(httpd_req_t *req)
 {
+    if (s_maintenance) return false;
     char buf[64] = {0};
     if (httpd_req_get_hdr_value_str(req, "X-OTA-Token", buf, sizeof(buf)) != ESP_OK) {
         return false;
@@ -384,9 +388,34 @@ static esp_err_t send_json_response(httpd_req_t *req, int status, const char *js
 
 static esp_err_t send_err(httpd_req_t *req, const char *err)
 {
-    // Truncate the error message to keep the JSON response small and well-formed.
-    char json[80];
-    snprintf(json, sizeof(json), "{\"error\":\"%s\"}", err);
+    char storage_detail[BOOT_OBV_DETAIL_SIZE];
+    sd_io_trace_t trace;
+    if (sd_io_trace_current(&trace) && (!err || !strstr(err, " sd="))) {
+        snprintf(storage_detail, sizeof(storage_detail), "%s", err ? err : "SD IO failed");
+        size_t used_detail = strlen(storage_detail);
+        sd_io_trace_format(&trace, storage_detail + used_detail, sizeof(storage_detail) - used_detail);
+        err = storage_detail;
+    }
+
+    /* Preserve the complete bounded validator diagnostic. Truncate the message,
+     * never the JSON delimiters, and escape strings without a heap allocation. */
+    char json[BOOT_OBV_DETAIL_SIZE + 16] = "{\"error\":\"";
+    size_t used = strlen(json);
+    const char hex[] = "0123456789abcdef";
+    for (const unsigned char *p = (const unsigned char *)(err ? err : ""); *p; p++) {
+        size_t need = *p < 0x20 ? 6 : (*p == '"' || *p == '\\') ? 2 : 1;
+        if (used + need + 3 > sizeof(json)) break; // Reserve closing quote, brace, NUL.
+        if (*p < 0x20) {
+            memcpy(json + used, "\\u00", 4);
+            used += 4;
+            json[used++] = hex[*p >> 4];
+            json[used++] = hex[*p & 0xf];
+        } else {
+            if (need == 2) json[used++] = '\\';
+            json[used++] = (char)*p;
+        }
+    }
+    memcpy(json + used, "\"}", 3);
     return send_json_response(req, 400, json);
 }
 
@@ -554,8 +583,19 @@ static esp_err_t status_handler(httpd_req_t *req)
  * flash is written only after the last chunk verified, and the final reply is
  * sent only after the last flash write succeeded. A chunk that fails to
  * receive is rolled back so the App can retry it. */
+static esp_err_t upload_run_impl(httpd_req_t *req, const char *label, const char *done_json,
+                                 bool is_last, bool is_base64);
 static esp_err_t upload_run(httpd_req_t *req, const char *label, const char *done_json,
                             bool is_last, bool is_base64)
+{
+    sd_io_trace_t trace;
+    sd_io_trace_begin(&trace);
+    esp_err_t result = upload_run_impl(req, label, done_json, is_last, is_base64);
+    sd_io_trace_end(&trace);
+    return result;
+}
+static esp_err_t upload_run_impl(httpd_req_t *req, const char *label, const char *done_json,
+                                 bool is_last, bool is_base64)
 {
     int sock_fd = httpd_req_to_sockfd(req);
     if (sock_fd < 0) {
@@ -611,13 +651,14 @@ static esp_err_t upload_run(httpd_req_t *req, const char *label, const char *don
      * FatFs publishes the directory size on sync, before the second reader. */
     if (s_up_kind == OTA_UP_BOOTMEDIA && s_sink.manifest_size == 0) {
         const char *reason = "animation sync failed";
+        char detail[BOOT_OBV_DETAIL_SIZE] = {0};
         char part[UPLOAD_PATH_MAX + 8];
         snprintf(part, sizeof(part), "%s.part", s_sink.path);
         if (fflush(s_sink.fp) != 0 || fsync(fileno(s_sink.fp)) != 0 ||
-            !boot_obv_validate_file(part, &reason)) {
+            !boot_obv_validate_file_detailed(part, &reason, detail, sizeof(detail))) {
             upload_release();
             set_state(OTA_WIFI_STATE_ERROR);
-            return send_err(req, reason ? reason : "invalid JPEG animation");
+            return send_err(req, detail[0] ? detail : reason ? reason : "invalid JPEG animation");
         }
     }
 
@@ -1400,6 +1441,63 @@ bool ota_wifi_server_stop(void)
     bool stopped = ota_wifi_server_stop_impl();
     lifecycle_give();
     return stopped;
+}
+
+typedef struct {
+    TaskHandle_t worker;
+    bool accepted;
+} sd_format_gate_t;
+
+/* Runs on the HTTP task between handlers: no in-flight handler can pass auth
+ * before we latch maintenance and then start a new upload after the busy test. */
+static void sd_format_gate(void *arg)
+{
+    sd_format_gate_t *gate = arg;
+    ota_wifi_state_t state = get_state();
+    gate->accepted = (state == OTA_WIFI_STATE_READY || state == OTA_WIFI_STATE_ERROR) &&
+                     !upload_sink_is_open(&s_sink) && !api_v1_upload_busy() && !theme_lib_busy();
+    if (gate->accepted) s_maintenance = true;
+    xTaskNotifyGive(gate->worker);
+}
+
+esp_err_t ota_wifi_server_format_sd(char *detail, size_t capacity, bool *reboot_required)
+{
+    if (reboot_required) *reboot_required = false;
+    if (detail && capacity) detail[0] = '\0';
+    if (!reboot_required || !lifecycle_try_take()) return ESP_ERR_INVALID_STATE;
+    if (!s_active || !s_httpd || s_maintenance) {
+        lifecycle_give();
+        return ESP_ERR_INVALID_STATE;
+    }
+    sd_format_gate_t gate = {.worker = xTaskGetCurrentTaskHandle()};
+    /* This worker owns notification slot 0; never use the LVGL task here. */
+    ulTaskNotifyTake(pdTRUE, 0);
+    esp_err_t err = httpd_queue_work(s_httpd, sd_format_gate, &gate);
+    if (err != ESP_OK) { lifecycle_give(); return err; }
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    if (!gate.accepted) {
+        if (detail && capacity) snprintf(detail, capacity, "Upload/storage busy; finish or cancel the upload first");
+        lifecycle_give();
+        return ESP_ERR_INVALID_STATE;
+    }
+    /* From here, caller MUST reboot, including all failures. Keep lifecycle
+     * reserved and s_active true so USB/idle watchdog/card jobs cannot take over. */
+    *reboot_required = true;
+    err = httpd_stop(s_httpd);  /* worker owns no LVGL/storage lock */
+    if (err != ESP_OK) {
+        if (detail && capacity) snprintf(detail, capacity, "stop HTTP: %s", esp_err_to_name(err));
+        return err;
+    }
+    s_httpd = NULL;
+    if (!storage_job_lock(0)) {
+        if (detail && capacity) snprintf(detail, capacity, "Storage busy; SD was NOT formatted");
+        return ESP_ERR_INVALID_STATE;
+    }
+    api_v1_reset();
+    upload_release();
+    err = sd_card_format(detail, capacity);
+    storage_job_unlock();
+    return err;
 }
 
 bool ota_wifi_server_is_active(void)

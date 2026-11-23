@@ -11,7 +11,26 @@ static size_t s_count;
 static tpms_scan_state_t s_state;
 static bool s_registered;
 static bool s_background, s_paused;
-static int64_t s_retry_us;
+static int64_t s_retry_us; /* shared with GAP completion; guarded by s_lock */
+#define TPMS_BACKGROUND_SCAN_S 10u
+#define TPMS_SCAN_GAP_US 500000LL
+
+static void retry_after(int64_t delay_us)
+{
+    int64_t deadline = esp_timer_get_time() + delay_us;
+    portENTER_CRITICAL(&s_lock);
+    s_retry_us = deadline;
+    portEXIT_CRITICAL(&s_lock);
+}
+
+static bool retry_pending(void)
+{
+    int64_t now = esp_timer_get_time();
+    portENTER_CRITICAL(&s_lock);
+    bool pending = now < s_retry_us;
+    portEXIT_CRITICAL(&s_lock);
+    return pending;
+}
 static struct {
     char id[7];
     bool received;
@@ -112,6 +131,7 @@ static void log_advertisement(const tpms_scan_result_t *result,
 
 static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *p)
 {
+    if (!ble_hub_is_ready()) return;
     const int64_t now = esp_timer_get_time();
     bool log_device = false, log_full = false;
     const char *scan_event = NULL;
@@ -130,6 +150,19 @@ static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *p)
                                      p->scan_rst.scan_rsp_len, &decoded);
     }
     portENTER_CRITICAL(&s_lock);
+    /* An ELM scan can deliver the same FBB0 broadcasts without handing over
+     * the scanner. Keep bound-wheel reception independent of discovery state. */
+    if (valid) {
+        for (unsigned w = 0; w < NVS_TPMS_WHEELS; ++w) {
+            if (memcmp(s_wheels[w].id, decoded.sensor_id, 7)) continue;
+            s_wheels[w].received = true;
+            s_wheels[w].received_us = now;
+            s_wheels[w].sample.data = decoded;
+            memcpy(s_wheels[w].sample.mac, p->scan_rst.bda, 6);
+            s_wheels[w].sample.addr_type = p->scan_rst.ble_addr_type;
+            s_wheels[w].sample.rssi = p->scan_rst.rssi;
+        }
+    }
     if (s_state != TPMS_SCAN_RUNNING) {
         portEXIT_CRITICAL(&s_lock);
         return;
@@ -139,24 +172,16 @@ static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *p)
         (event == ESP_GAP_BLE_SCAN_PARAM_SET_COMPLETE_EVT &&
          p->scan_param_cmpl.status != ESP_BT_STATUS_SUCCESS)) {
         s_state = TPMS_SCAN_FAILED;
+        s_retry_us = now + 2000000;
         scan_event = "failed";
         status = event == ESP_GAP_BLE_SCAN_START_COMPLETE_EVT ?
                  p->scan_start_cmpl.status : p->scan_param_cmpl.status;
     } else if (event == ESP_GAP_BLE_SCAN_RESULT_EVT) {
         if (p->scan_rst.search_evt == ESP_GAP_SEARCH_INQ_CMPL_EVT) {
             s_state = TPMS_SCAN_DONE;
+            s_retry_us = now + TPMS_SCAN_GAP_US;
             scan_event = "done";
         } else if (p->scan_rst.search_evt == ESP_GAP_SEARCH_INQ_RES_EVT && valid) {
-            /* Bound-wheel reception is independent of the discovery list cap. */
-            for (unsigned w = 0; w < NVS_TPMS_WHEELS; ++w) {
-                if (memcmp(s_wheels[w].id, decoded.sensor_id, 7)) continue;
-                s_wheels[w].received = true;
-                s_wheels[w].received_us = now;
-                s_wheels[w].sample.data = decoded;
-                memcpy(s_wheels[w].sample.mac, p->scan_rst.bda, 6);
-                s_wheels[w].sample.addr_type = p->scan_rst.ble_addr_type;
-                s_wheels[w].sample.rssi = p->scan_rst.rssi;
-            }
             size_t i;
             for (i = 0; i < s_count; ++i) {
                 if (!strcmp(s_results[i].data.sensor_id, decoded.sensor_id)) break;
@@ -205,15 +230,22 @@ static void shutdown_cb(void)
     if (running) ESP_LOGW(TAG, "scan interrupted: BLE shutdown");
 }
 
+static esp_err_t ensure_registered(void)
+{
+    if (s_registered) return ESP_OK;
+    const ble_hub_client_t client = {
+        .gap_cb = gap_cb, .shutdown_cb = shutdown_cb, .observe_scan_results = true,
+    };
+    esp_err_t err = ble_hub_register(BLE_HUB_APP_TPMS, &client);
+    if (err == ESP_OK) s_registered = true;
+    return err;
+}
+
 static esp_err_t scan_start(bool background)
 {
     sync_bindings();
-    if (!s_registered) {
-        const ble_hub_client_t client = {.gap_cb = gap_cb, .shutdown_cb = shutdown_cb};
-        esp_err_t err = ble_hub_register(BLE_HUB_APP_TPMS, &client);
-        if (err != ESP_OK) return err;
-        s_registered = true;
-    }
+    esp_err_t registered = ensure_registered();
+    if (registered != ESP_OK) return registered;
     ble_hub_app_t owner;
     if (ble_hub_scan_active(&owner)) {
         if (owner != BLE_HUB_APP_TPMS) return ESP_ERR_INVALID_STATE;
@@ -221,7 +253,7 @@ static esp_err_t scan_start(bool background)
         tpms_ble_scan_stop();
         return ESP_ERR_INVALID_STATE; /* caller retries after controller stop */
     }
-    if (esp_timer_get_time() < s_retry_us) return ESP_ERR_INVALID_STATE;
+    if (retry_pending()) return ESP_ERR_INVALID_STATE;
     s_background = background;
     portENTER_CRITICAL(&s_lock);
     s_count = 0;
@@ -230,8 +262,8 @@ static esp_err_t scan_start(bool background)
     s_state = TPMS_SCAN_RUNNING;
     portEXIT_CRITICAL(&s_lock);
     ESP_LOGI(TAG, "scan requested duration=%us limit=%u; FBB0 + CRC only; identity=sensor ID",
-             background ? 0u : 20u, (unsigned)TPMS_SCAN_MAX);
-    esp_err_t err = ble_hub_scan_start(BLE_HUB_APP_TPMS, &k_scan, background ? 0 : 20);
+             background ? TPMS_BACKGROUND_SCAN_S : 20u, (unsigned)TPMS_SCAN_MAX);
+    esp_err_t err = ble_hub_scan_start(BLE_HUB_APP_TPMS, &k_scan, background ? TPMS_BACKGROUND_SCAN_S : 20);
     if (err != ESP_OK) {
         portENTER_CRITICAL(&s_lock);
         s_state = TPMS_SCAN_FAILED;
@@ -250,7 +282,7 @@ void tpms_ble_scan_stop(void)
     if (running) ESP_LOGI(TAG, "scan stopped");
     ble_hub_scan_stop(BLE_HUB_APP_TPMS);
     s_background = false;
-    s_retry_us = esp_timer_get_time() + 500000;
+    retry_after(TPMS_SCAN_GAP_US);
 }
 
 esp_err_t tpms_ble_scan_start(void) { return scan_start(false); }
@@ -260,7 +292,7 @@ void tpms_ble_background_pause(bool pause)
     s_paused = pause;
     if (pause && s_background) tpms_ble_scan_stop();
     /* Also wait for an external owner's asynchronous stop when returning. */
-    s_retry_us = esp_timer_get_time() + 500000;
+    retry_after(TPMS_SCAN_GAP_US);
 }
 
 void tpms_ble_service_step(bool allow_background)
@@ -270,9 +302,12 @@ void tpms_ble_service_step(bool allow_background)
      * keep moving its shared retry deadline: this service runs every 250 ms,
      * so extending the 500 ms cooldown here would starve every manual scan. */
     if (s_paused) return;
+    /* Register before checking eligibility/ownership: bound sensors can be
+     * received during an ELM scan even when our own scan is not permitted. */
+    if (ble_hub_is_ready() && ensure_registered() != ESP_OK) return;
     if (!allow_background || !ble_hub_is_ready()) {
         if (s_background) tpms_ble_scan_stop();
-        s_retry_us = esp_timer_get_time() + 500000;
+        retry_after(TPMS_SCAN_GAP_US);
         return;
     }
     nvs_user_cfg_t cfg = nvs_cfg_read();
@@ -285,12 +320,14 @@ void tpms_ble_service_step(bool allow_background)
     }
     ble_hub_app_t owner;
     if (ble_hub_scan_active(&owner)) {
-        if (owner != BLE_HUB_APP_TPMS) s_retry_us = esp_timer_get_time() + 500000;
+        if (owner != BLE_HUB_APP_TPMS) retry_after(TPMS_SCAN_GAP_US);
         return;
     }
-    if (esp_timer_get_time() < s_retry_us) return;
+    if (retry_pending()) return;
     esp_err_t err = scan_start(true);
-    s_retry_us = esp_timer_get_time() + (err == ESP_OK ? 500000 : 2000000);
+    /* A GAP failure may arrive before scan_start returns. Do not overwrite
+     * its retry deadline on success; completion/stop schedule the next gap. */
+    if (err != ESP_OK) retry_after(2000000);
 }
 
 tpms_scan_state_t tpms_ble_scan_snapshot(tpms_scan_result_t *out, size_t cap, size_t *count)

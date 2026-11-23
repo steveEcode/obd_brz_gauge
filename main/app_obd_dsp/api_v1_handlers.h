@@ -28,6 +28,8 @@ esp_err_t api_v1_register_handlers(httpd_handle_t server, api_v1_auth_fn auth);
 /* Drop any half-finished /api/v1 upload (buffers, .part files). Called when an
  * /ota upload starts and when the server stops. */
 void api_v1_reset(void);
+/* HTTP task only: maintenance must not erase a partially uploaded resource. */
+bool api_v1_upload_busy(void);
 
 #ifdef __cplusplus
 }

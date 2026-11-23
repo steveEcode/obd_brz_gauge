@@ -8,7 +8,7 @@
 #include "freertos/FreeRTOS.h"
 
 static ble_hub_client_t client;
-static bool scanning, ready = true;
+static bool scanning, ready = true, immediate_start_failure;
 static uint32_t last_duration;
 static ble_hub_app_t owner;
 static esp_err_t register_error, scan_error, save_error;
@@ -44,6 +44,7 @@ static esp_err_t start_scan_test(void) { now_us += 1000000; return tpms_ble_scan
 esp_err_t ble_hub_register(ble_hub_app_t app, const ble_hub_client_t *c)
 {
     assert(app == BLE_HUB_APP_TPMS && !c->gattc_cb && !c->gatts_cb);
+    assert(c->observe_scan_results);
     if (register_error) return register_error;
     client = *c;
     return ESP_OK;
@@ -55,12 +56,19 @@ bool ble_hub_scan_active(ble_hub_app_t *app)
 }
 esp_err_t ble_hub_scan_start(ble_hub_app_t app, const esp_ble_scan_params_t *p, uint32_t duration)
 {
-    assert(app == BLE_HUB_APP_TPMS && (duration == 20 || duration == 0));
+    assert(app == BLE_HUB_APP_TPMS && (duration == 20 || duration == 10));
     last_duration = duration;
     assert(p->scan_type == BLE_SCAN_TYPE_ACTIVE && p->scan_window <= p->scan_interval);
     if (scan_error) return scan_error;
     assert(!scanning);
     scanning = true; owner = app;
+    if (immediate_start_failure) {
+        immediate_start_failure = false;
+        scanning = false;
+        esp_ble_gap_cb_param_t event = {0};
+        event.scan_start_cmpl.status = 1;
+        client.gap_cb(ESP_GAP_BLE_SCAN_START_COMPLETE_EVT, &event);
+    }
     return ESP_OK;
 }
 esp_err_t ble_hub_scan_stop(ble_hub_app_t app)
@@ -219,6 +227,7 @@ static void test_scanning(void)
     client.gap_cb(ESP_GAP_BLE_SCAN_START_COMPLETE_EVT, &p);
     assert(tpms_ble_scan_snapshot(NULL, 0, NULL) == TPMS_SCAN_FAILED);
     scanning = false;
+    assert(start_scan_test() == ESP_ERR_INVALID_STATE);
     assert(start_scan_test() == ESP_OK); client.shutdown_cb();
     assert(tpms_ble_scan_snapshot(NULL, 0, NULL) == TPMS_SCAN_FAILED);
     scanning = false;
@@ -292,7 +301,7 @@ static void test_manual_scan_while_background_paused(void)
             now_us += 600000;
             tpms_ble_service_step(allow != 0);
             assert(scanning == (allow && bound));
-            if (scanning) assert(last_duration == 0);
+            if (scanning) assert(last_duration == 10);
 
             /* SCREEN_LOADED pauses background; scan_begin stops any old scan. */
             tpms_ble_background_pause(true);
@@ -341,7 +350,7 @@ static void test_manual_scan_while_background_paused(void)
             now_us += 500000;
             tpms_ble_service_step(allow != 0);
             assert(scanning == (allow && bound));
-            if (scanning) assert(last_duration == 0);
+            if (scanning) assert(last_duration == 10);
             tpms_ble_scan_stop();
         }
     }
@@ -359,7 +368,7 @@ static void test_live_monitor(void)
     assert(wheels[0].bound && !wheels[0].received && !wheels[0].fresh);
     tpms_ble_service_step(false); assert(!scanning);
     now_us += 600000; tpms_ble_service_step(true);
-    assert(scanning && last_duration == 0);
+    assert(scanning && last_duration == 10);
     /* A full discovery list must not block reception of a bound wheel. */
     for (unsigned i = 0; i < 30; ++i) { esp_ble_gap_cb_param_t p = packet(i); emit(&p); }
     esp_ble_gap_cb_param_t p = packet(0x18010F); emit(&p);
@@ -388,9 +397,44 @@ static void test_live_monitor(void)
     now_us += 600000;
     scanning = true; owner = BLE_HUB_APP_ELM327;
     tpms_ble_service_step(true); assert(scanning && owner == BLE_HUB_APP_ELM327);
-    scanning = false; tpms_ble_service_step(true); assert(!scanning);
-    now_us += 600000; tpms_ble_service_step(true); assert(scanning && last_duration == 0);
-    tpms_ble_service_step(false); assert(!scanning); /* reconnect priority */
+    /* Observe ELM advertisements while our own scan is idle and disabled. */
+    now_us += TPMS_FRESH_MS * 1000LL;
+    tpms_ble_service_step(false);
+    tpms_ble_snapshot(wheels); assert(!wheels[0].fresh);
+    p = packet(0xABCDEF); emit(&p);
+    tpms_ble_snapshot(wheels);
+    assert(wheels[0].fresh && wheels[0].received && wheels[0].age_ms == 0);
+    assert(scanning && owner == BLE_HUB_APP_ELM327);
+    now_us += 1000000;
+    p = packet(0x123456); emit(&p); /* unrelated ID cannot refresh */
+    tpms_ble_snapshot(wheels); assert(wheels[0].age_ms == 1000);
+    p = packet(0xABCDEF); p.scan_rst.ble_adv[12] ^= 1; emit(&p);
+    tpms_ble_snapshot(wheels); assert(wheels[0].age_ms == 1000);
+    scanning = false; tpms_ble_service_step(true);
+    assert(scanning && last_duration == 10);
+    /* Three natural 10-second windows with an exact 500ms cooldown.
+     * Repeated 250ms service ticks must not push the deadline forward. */
+    for (unsigned cycle = 0; cycle < 3; ++cycle) {
+        now_us += 10000000;
+        scanning = false;
+        p = (esp_ble_gap_cb_param_t){0};
+        p.scan_rst.search_evt = ESP_GAP_SEARCH_INQ_CMPL_EVT;
+        emit(&p);
+        assert(tpms_ble_scan_snapshot(NULL, 0, NULL) == TPMS_SCAN_DONE);
+        tpms_ble_service_step(true); assert(!scanning);
+        now_us += 250000; tpms_ble_service_step(true); assert(!scanning);
+        now_us += 249999; tpms_ble_service_step(true); assert(!scanning);
+        ++now_us; tpms_ble_service_step(true);
+        assert(scanning && last_duration == 10);
+    }
+    tpms_ble_scan_stop(); now_us += 500000;
+    immediate_start_failure = true;
+    tpms_ble_service_step(true); assert(!scanning);
+    assert(tpms_ble_scan_snapshot(NULL, 0, NULL) == TPMS_SCAN_FAILED);
+    now_us += 500000; tpms_ble_service_step(true); assert(!scanning);
+    now_us += 1499999; tpms_ble_service_step(true); assert(!scanning);
+    ++now_us; tpms_ble_service_step(true); assert(scanning);
+    tpms_ble_service_step(false); assert(!scanning); /* disabling our own scan */
     now_us += 600000; tpms_ble_service_step(true); assert(scanning);
     assert(tpms_ble_unbind(0) == ESP_OK);
     tpms_ble_snapshot(wheels); assert(!wheels[0].bound && !wheels[0].received);
@@ -399,5 +443,8 @@ static void test_live_monitor(void)
     now_us += 600000; tpms_ble_service_step(true); assert(scanning);
     ready = false; client.shutdown_cb(); scanning = false;
     now_us += 600000; tpms_ble_service_step(true); assert(!scanning);
+    /* Late GAP advertisements after shutdown cannot refresh cached data. */
+    p = packet(0x000000); emit(&p);
+    tpms_ble_snapshot(wheels); assert(wheels[3].bound && !wheels[3].received);
 }
 int main(void) { test_protocol(); test_scanning(); test_diagnostic_logs(); test_binding(); test_manual_scan_while_background_paused(); test_live_monitor(); return 0; }

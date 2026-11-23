@@ -265,6 +265,12 @@ void app_main(void)
     coredump_store_boot_check();    /* after the migration, which erases the coredump */
     vp_manager_init();              /* active profile; falls back to obd2.generic */
 
+    /* Reserve the USB receiver's internal stack/driver before display and radio
+     * allocations fragment that heap. No requests run until start() below. */
+    if (bootmedia_serial_prepare() != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to reserve USB boot-media receiver; retrying after startup");
+    }
+
     /* 1.2 Task watchdog: 10s timeout, idle task not subscribed (avoids false triggers when BLE blocks) */
     esp_task_wdt_config_t wdt_cfg = {
         .timeout_ms = 10000,
@@ -300,20 +306,12 @@ void app_main(void)
     /* 5. LVGL init */
     lv_init();
 
-    /* Allocate double buffers (DMA memory). Fall back to the smaller band when
-       internal DMA RAM is fragmented by board-specific peripherals. */
-    /* ESP-NOW starts after LCD allocation. Leave internal RAM for its radio
-     * buffers and the on-demand video workers, even when 40-line buffers fit. */
-    size_t buf_px = user_cfg.device_role == ESPNOW_ROLE_STANDALONE
-        ? LCD_H_RES * 40 : LVGL_BUFF_SIZE;
+    /* Standalone also starts Wi-Fi/ESP-NOW. Keep the same 20-line DMA
+     * budget as linked gauges: 40-line buffers consume another 28,800 bytes
+     * and starve USB/storage/OTA tasks after radio initialization. */
+    size_t buf_px = LVGL_BUFF_SIZE;
     lv_color_t *buf1 = heap_caps_malloc(buf_px * sizeof(lv_color_t), MALLOC_CAP_DMA);
     lv_color_t *buf2 = heap_caps_malloc(buf_px * sizeof(lv_color_t), MALLOC_CAP_DMA);
-    if (!buf1 || !buf2) {
-        heap_caps_free(buf1); heap_caps_free(buf2);
-        buf_px = LVGL_BUFF_SIZE;
-        buf1 = heap_caps_malloc(buf_px * sizeof(lv_color_t), MALLOC_CAP_DMA);
-        buf2 = heap_caps_malloc(buf_px * sizeof(lv_color_t), MALLOC_CAP_DMA);
-    }
     assert(buf1 && buf2);
     ESP_LOGI(TAG, "LCD DMA: two %u-line buffers (%u bytes total)",
              (unsigned)(buf_px / LCD_H_RES), (unsigned)(buf_px * sizeof(lv_color_t) * 2));
