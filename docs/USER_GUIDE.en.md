@@ -89,6 +89,8 @@ The Bluetooth-connect self-test sweep follows elapsed time, targeting a 16 ms re
 
 RPM, speed, boost and throttle receive priority polling when demanded by the current page. Built-in numeric, speed and needle pages display these inputs and load from the latest sample without an extra display ramp. Slower inputs such as temperature retain smoothing. Actual update speed remains limited by the adapter, ECU and profile minimum sampling periods.
 
+RPM values on the INFO five-cell and TEMP three-row pages stay on one line: four-digit readings use a wider value area and a stable font size; longer readings shrink to preserve the full integer rather than converting to `kRPM`. TEMP parameter names and units occupy separate lines to avoid overlap. The dedicated RPM page and custom themes are unchanged.
+
 **Deleting a saved device on the BLE SCAN page**: tapping the ✕ next to the
 saved device in the list immediately disconnects the current ELM327 link and
 clears the saved name / MAC — **it does not auto-reconnect**; you must scan

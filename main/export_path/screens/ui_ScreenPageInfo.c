@@ -18,9 +18,9 @@ lv_obj_t *ui_LabelInfoUnit[5]  = {NULL, NULL, NULL, NULL, NULL};
 
 // Helper: create one data tile (name + value + unit) at a given offset from center
 // Tile internal layout (relative to cy):
-//   name  center: cy - 28  (font Size16, ~16px tall)
-//   value center: cy + 2   (font Size36, ~36px tall)  gap between name bottom and value top ≈ 6px
-//   unit  center: cy + 34  (font Size16, ~16px tall)  gap between value bottom and unit top ≈ 8px
+//   name  center: cy - 28  (font Size20)
+//   value center: cy + 2   (font Size40; compact RPM/pressure use Size36)
+//   unit  center: cy + 34  (font Size20)
 // Total tile height ≈ 80px
 static lv_obj_t *create_info_tile(lv_obj_t *parent,
                                    lv_obj_t **name_out,
@@ -39,6 +39,7 @@ static lv_obj_t *create_info_tile(lv_obj_t *parent,
 
     // Value label (returned so caller can update it)
     lv_obj_t *lbl_val = lv_label_create(parent);
+    lv_label_set_long_mode(lbl_val, LV_LABEL_LONG_CLIP);  // never wrap into the name/unit
     lv_label_set_text(lbl_val, "--");
     lv_obj_set_style_text_font(lbl_val, &ui_font_FontTypoderSize40, LV_PART_MAIN);
     lv_obj_set_style_text_color(lbl_val, lv_color_hex(0xFFFFFF), LV_PART_MAIN);

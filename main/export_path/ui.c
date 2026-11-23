@@ -10,6 +10,7 @@
 #include "ui_bluetooth.h"
 #include "ui_tpms.h"
 #include "ui_disp_item.h"
+#include "ui_metric_layout.h"
 #include "ui_theme.h"
 #include "ui_theme_navigation.h"
 #include "theme_engine/theme_interface.h"
@@ -378,20 +379,6 @@ static void ui_update_metric_header(lv_obj_t *name_label,
     }
 }
 
-/* Two-decimal pressure needs more room than the old one-decimal value.
- * Keep the existing font family and restore the original layout on source changes. */
-static void ui_update_metric_value_layout(lv_obj_t *label, disp_item_t item,
-                                         bool temp_row)
-{
-    if (!label) return;
-    bool oil_pressure = item == DISP_ITEM_OILP;
-    lv_obj_set_style_text_font(label, oil_pressure ? &ui_font_FontTypoderSize36
-                                                  : &ui_font_FontTypoderSize40, LV_PART_MAIN);
-    lv_obj_set_width(label, oil_pressure ? 140 : (temp_row ? 110 : 120));
-    if (temp_row) lv_obj_align(label, LV_ALIGN_LEFT_MID, oil_pressure ? 40 : 70,
-                              lv_obj_get_style_y(label, LV_PART_MAIN));
-}
-
 static uint32_t ui_refresh_period_ms_for_screen(lv_obj_t *scr,
                                                 bool in_sweep,
                                                 bool rpm_flashing,
@@ -701,11 +688,12 @@ void my_timerMain(lv_timer_t * timer)
                     s_last_temp_map[i] = map_idx;
                     s_disp_temp[i] = 0;  // reset on source switch, avoiding a ramp from the old source's value
                     ui_update_metric_header(ui_LabelTempName[i], ui_LabelTempUnit[i], ui_LabelTempDot[i], item);
-                    ui_update_metric_value_layout(ui_LabelTempValue[i], item, true);
+                    ui_metric_value_layout(ui_LabelTempValue[i], item, true);
                 }
 
                 int32_t sw = disp_item_sweep_value(item, r);
                 disp_item_set_text(ui_LabelTempValue[i], item, sw, true);
+                ui_metric_value_fit(ui_LabelTempValue[i], item);
                 disp_item_set_value_color(ui_LabelTempValue[i], item, sw, true);
             }
         } else {
@@ -717,12 +705,13 @@ void my_timerMain(lv_timer_t * timer)
                     s_last_temp_map[i] = map_idx;
                     s_disp_temp[i] = 0;  // reset on source switch, avoiding a ramp from the old source's value
                     ui_update_metric_header(ui_LabelTempName[i], ui_LabelTempUnit[i], ui_LabelTempDot[i], item);
-                    ui_update_metric_value_layout(ui_LabelTempValue[i], item, true);
+                    ui_metric_value_layout(ui_LabelTempValue[i], item, true);
                 }
 
                 int32_t value = 0;
                 bool valid = disp_item_read_value(item, clt, iat, oil, load_pct, tps, bat_mv, oilp_x100, usRpm, ucSpeed, boost_x10, afr_x100, &value);
                 disp_item_update(&s_disp_temp[i], ui_LabelTempValue[i], item, value, valid, ANIM_THRESH_TEMP);
+                ui_metric_value_fit(ui_LabelTempValue[i], item);
             }
         }
     }
@@ -785,11 +774,12 @@ void my_timerMain(lv_timer_t * timer)
                     s_last_info_map[i] = map_idx;
                     s_disp_info[i] = 0;  // reset on source switch, avoiding a ramp from the old source's value
                     ui_update_metric_header(ui_LabelInfoName[i], ui_LabelInfoUnit[i], NULL, item);
-                    ui_update_metric_value_layout(ui_LabelInfoValue[i], item, false);
+                    ui_metric_value_layout(ui_LabelInfoValue[i], item, false);
                 }
 
                 int32_t sw = disp_item_sweep_value(item, r);
                 disp_item_set_text(ui_LabelInfoValue[i], item, sw, true);
+                ui_metric_value_fit(ui_LabelInfoValue[i], item);
                 disp_item_set_value_color(ui_LabelInfoValue[i], item, sw, true);
             }
         } else {
@@ -801,12 +791,13 @@ void my_timerMain(lv_timer_t * timer)
                     s_last_info_map[i] = map_idx;
                     s_disp_info[i] = 0;  // reset on source switch, avoiding a ramp from the old source's value
                     ui_update_metric_header(ui_LabelInfoName[i], ui_LabelInfoUnit[i], NULL, item);
-                    ui_update_metric_value_layout(ui_LabelInfoValue[i], item, false);
+                    ui_metric_value_layout(ui_LabelInfoValue[i], item, false);
                 }
 
                 int32_t value = 0;
                 bool valid = disp_item_read_value(item, clt, iat, oil, load_pct, tps, bat_mv, oilp_x100, usRpm, ucSpeed, boost_x10, afr_x100, &value);
                 disp_item_update(&s_disp_info[i], ui_LabelInfoValue[i], item, value, valid, ANIM_THRESH_TEMP);
+                ui_metric_value_fit(ui_LabelInfoValue[i], item);
             }
         }
     }

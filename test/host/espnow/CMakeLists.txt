@@ -209,6 +209,18 @@ if(EH_TPMS_LVGL)
     target_link_libraries(test_tpms_ui PRIVATE tpms_lvgl)
     target_compile_options(test_tpms_ui PRIVATE ${EH_WARN} -UNDEBUG)
     add_test(NAME tpms_ui COMMAND test_tpms_ui)
+    add_executable(test_metric_layout test_metric_layout.c
+        "${REPO_ROOT}/main/export_path/ui_metric_layout.c"
+        "${REPO_ROOT}/main/export_path/screens/ui_ScreenPageInfo.c"
+        "${REPO_ROOT}/main/export_path/screens/ui_ScreenPageTemp.c"
+        "${REPO_ROOT}/main/export_path/fonts/ui_font_FontTypoderSize20.c"
+        "${REPO_ROOT}/main/export_path/fonts/ui_font_FontTypoderSize24.c"
+        "${REPO_ROOT}/main/export_path/fonts/ui_font_FontTypoderSize36.c"
+        "${REPO_ROOT}/main/export_path/fonts/ui_font_FontTypoderSize40.c")
+    target_include_directories(test_metric_layout PRIVATE stubs "${REPO_ROOT}/main")
+    target_link_libraries(test_metric_layout PRIVATE tpms_lvgl)
+    target_compile_options(test_metric_layout PRIVATE ${EH_WARN} -UNDEBUG)
+    add_test(NAME metric_layout COMMAND test_metric_layout)
 endif()
 
 add_executable(test_espnow_sources test_espnow_sources.c)

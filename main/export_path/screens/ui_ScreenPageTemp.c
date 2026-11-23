@@ -42,9 +42,8 @@ static void make_row(lv_obj_t *parent, lv_obj_t **name_out, lv_obj_t **val_out, 
     lv_obj_set_style_text_align(*val_out, LV_TEXT_ALIGN_LEFT, LV_PART_MAIN);
     lv_obj_align(*val_out, LV_ALIGN_LEFT_MID, 70, cy);
 
-    // Right column: dot + name + unit
-    // Right boundary = 290px (x=360-70, matches divider line edge)
-    // dot left=185, name left=200..244, unit right=290
+    // Right column: dot + stacked name/unit, avoiding RPM/rpm overlap.
+    // Both text lines start at x=200, clear of the 140px value at x=40.
     *dot_out = create_color_dot(parent, color, 185, cy);
 
     *name_out = lv_label_create(parent);
@@ -54,7 +53,7 @@ static void make_row(lv_obj_t *parent, lv_obj_t **name_out, lv_obj_t **val_out, 
     lv_obj_set_style_text_color(*name_out, color, LV_PART_MAIN);
     lv_obj_set_width(*name_out, LV_SIZE_CONTENT);            // width follows the text, long names (BOOST/SPEED) don't wrap
     lv_obj_set_style_text_align(*name_out, LV_TEXT_ALIGN_LEFT, LV_PART_MAIN);
-    lv_obj_align(*name_out, LV_ALIGN_LEFT_MID, 200, cy);
+    lv_obj_align(*name_out, LV_ALIGN_LEFT_MID, 200, cy - 13);
 
     *unit_out = lv_label_create(parent);
     lv_label_set_long_mode(*unit_out, LV_LABEL_LONG_CLIP);   // no wrap
@@ -62,8 +61,8 @@ static void make_row(lv_obj_t *parent, lv_obj_t **name_out, lv_obj_t **val_out, 
     lv_obj_set_style_text_font(*unit_out, &ui_font_FontTypoderSize20, LV_PART_MAIN);
     lv_obj_set_style_text_color(*unit_out, lv_color_hex(0x666666), LV_PART_MAIN);
     lv_obj_set_width(*unit_out, LV_SIZE_CONTENT);            // width follows the text (km/h etc.)
-    lv_obj_set_style_text_align(*unit_out, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN);
-    lv_obj_align(*unit_out, LV_ALIGN_RIGHT_MID, -70, cy);
+    lv_obj_set_style_text_align(*unit_out, LV_TEXT_ALIGN_LEFT, LV_PART_MAIN);
+    lv_obj_align(*unit_out, LV_ALIGN_LEFT_MID, 200, cy + 13);
 }
 
 // Helper: horizontal divider line
