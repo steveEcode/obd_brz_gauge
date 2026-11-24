@@ -27,6 +27,31 @@ On every later power-up the gauge reconnects to the last adapter
 automatically (remembers BLE name + MAC) and self-heals when data stalls —
 normally **you just power on and drive**, no manual steps.
 
+The BLE SCAN list distinguishes devices by MAC and shows the full address below
+each name. Legacy configurations with a saved name but no MAC also start
+automatic scanning. Auto-reconnect prefers an exact saved-address match. If an
+adapter rotates its random address, firmware completes a scan and tries a
+same-name device only when exactly one distinct address was found. It refuses
+to guess when multiple same-name addresses are present; select the adapter from
+the scan page in that case. After connection and ELM notification setup
+succeed, firmware updates the saved address.
+
+When an adapter is selected manually, firmware confirms that its name and MAC
+were written to settings before showing it as saved or starting the connection.
+If persistence fails, the page reports the save failure instead of presenting
+an unsaved binding as saved.
+
+If ELM MTU or notification setup does not finish within 15 seconds after
+connecting, the gauge closes the GATT link and retries automatically. It
+releases this client's state on the GATT close event even if a shared BLE
+stack keeps the physical link open, instead of staying connected while
+displaying `--`.
+
+Boot video is prefetched from the SD card. The BLE stack runs on Core 0 while
+the single-threaded OBD poll runs at high priority on Core 1, preventing BLE
+connection events or video reads from starving data polling; boot video can
+continue playing during adapter connection.
+
 The web vehicle community supports downloading, favoriting and editing profiles. Web device operations use ESP32-S3 native USB: install a profile, review warnings, then separately activate it for next boot and request a reboot. Install themes over web USB or App WiFi OTA, then select a registered theme under Settings → THEME. Verify vehicle compatibility and perform these operations while parked. Firmware manages the SD card in the background; users do not need to remove it or organize its files.
 
 **Delete current theme** on the web flasher removes the current theme package and its dedicated resources under SD `/OBD/THEMES/<key>/`, then restores the built-in default after restart. The SD card must be mounted. Other themes and the shared boot animation are not deleted. This operation cannot be undone from the gauge.
@@ -116,6 +141,8 @@ Swipe up from the version page, select **TPMS PAIRING**, then assign a sensor to
 Swipe left/right to return one level (scan → wheel details → wheel list → connection menu). The scan-results list retains scrolling; swipe horizontally in the blank area outside the list to return. **SCAN AGAIN** restarts discovery. Entering TPMS pairing yields ELM327 automatic reconnect scanning, which resumes on exit; an established OBD connection and serial polling continue running.
 
 Entering pairing pauses TPMS-initiated background scans (valid advertisements from an existing scan can still update bound-wheel caches) without repeatedly extending the manual scan retry deadline; both master and slave gauges can scan manually. The 500ms controller handover delay after stopping a scan remains, and leaving pairing restores background scanning (slaves also receive locally bound sensors; no background scan starts without local bindings). `Scanning... 0 found` means scanning is active with no valid sensors yet; an empty completed scan displays `No sensors. Wake sensor and retry.`. `Scan unavailable. Tap SCAN AGAIN.` means scanning could not start, not that no sensors exist.
+
+Stopping a scan is asynchronous. Firmware waits for outstanding scan callbacks before handing over the scanner and processes restart requests in order, so ELM327, TPMS and gauge pairing do not change scan parameters concurrently. Scan failures are delivered only to the requesting module.
 
 Legacy MAC-only records remain compatible but cannot reliably be converted to sensor IDs: the wheel shows **RE-PAIR**, with **LEGACY RECORD** in details. Rescan and save, or delete; IDs are never guessed. With ID-based binding, a changed MAC does not change the identity of a sensor broadcasting the same ID.
 

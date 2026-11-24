@@ -8,6 +8,7 @@
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include "bsp_obd_dsp/espnow_link.h"
 #include VP_TEST_SOURCE
 #include VP_RUNTIME_SOURCE
 
@@ -164,7 +165,7 @@ BaseType_t xTaskCreatePinnedToCore(TaskFunction_t fn, const char *name, uint32_t
     vp_session_t *s = arg;
     UBaseType_t expected_prio = s->mode == VIDEO_MODE_COMPOSITE ? 3 : 5;
     CHECK((!strcmp(name, "vid_dec") && stack == 6144 && prio == expected_prio && core == 1) ||
-          (!strcmp(name, "vid_read") && stack == 4096 && prio == expected_prio && core == 0));
+          (!strcmp(name, "vid_read") && stack == 4096 && prio == 3 && core == 0));
     if (++create_attempts == fail_task_attempt) return pdFAIL;
     CHECK(task_count < COUNT_OF(tasks));
     tasks[task_count++] = (fake_task_t){ fn, arg, false };
@@ -217,7 +218,8 @@ void tpms_ble_service_step(bool allow_background)
 {
     CHECK(mux_held);
     if (check_tpms_schedule) {
-        const bool expected[] = {true, false, true, true, true, false, true, false, true};
+        /* All roles permit TPMS service; the BLE hub arbitrates ELM scans. */
+        const bool expected[] = {true, true, true, true, true, true, true, true, true};
         CHECK(tpms_service_calls < COUNT_OF(expected));
         CHECK(allow_background == expected[tpms_service_calls]);
     }
@@ -561,10 +563,9 @@ static void test_header_real_reader(void)
     on_block = read_header; auto_ui = allow_timed = true;
     run_task(0);
     CHECK(s->hdr_ready && s->eof && s->state == VIDEO_STATE_STOPPED && decoded == 3);
-    CHECK(dma_alloc_attempts == 6);
-    CHECK(dma_alloc_sizes[0] == 16384 && dma_alloc_sizes[1] == 8192 &&
-          dma_alloc_sizes[2] == 4096 && dma_alloc_sizes[3] == 2048 &&
-          dma_alloc_sizes[4] == 1024 && dma_alloc_sizes[5] == 512);
+    CHECK(dma_alloc_attempts == 4);
+    CHECK(dma_alloc_sizes[0] == 4096 && dma_alloc_sizes[1] == 2048 &&
+          dma_alloc_sizes[2] == 1024 && dma_alloc_sizes[3] == 512);
     CHECK(signal_waits >= 1 && timed_waits == 2 && actions == 1);
     service_ui(s);
     for (unsigned i = 0; i < 3; i++) CHECK(decoded_marker[i] == i + 1 && shown_marker[i] == i + 1);

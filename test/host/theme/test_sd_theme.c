@@ -9,7 +9,34 @@ static size_t test_strlcpy(char *dst,const char *src,size_t n)
 { size_t len=strlen(src); if(n) { size_t m=len<n-1 ? len : n-1; memcpy(dst,src,m); dst[m]=0; } return len; }
 #define strlcpy test_strlcpy
 #include "../../../main/theme_engine/theme_loader.c"
+#include <dirent.h>
+#include <errno.h>
+#include <stdlib.h>
+static unsigned open_dirs, peak_dirs;
+static bool fail_directory_read;
+static DIR *tracked_opendir(const char *path)
+{
+    DIR *dir = opendir(path);
+    if (dir) { ++open_dirs; if (open_dirs > peak_dirs) peak_dirs = open_dirs; }
+    return dir;
+}
+static int tracked_closedir(DIR *dir)
+{
+    TH_CHECK(open_dirs > 0); --open_dirs;
+    return closedir(dir);
+}
+static struct dirent *tracked_readdir(DIR *dir)
+{
+    if (fail_directory_read) { errno = EIO; return NULL; }
+    return readdir(dir);
+}
+#define opendir tracked_opendir
+#define closedir tracked_closedir
+#define readdir tracked_readdir
 #include "../../../main/app_obd_dsp/theme_library.c"
+#undef opendir
+#undef closedir
+#undef readdir
 
 static FILE *package;
 static char selection[65], pending[65];
@@ -98,8 +125,34 @@ static void make_package(void)
     const uint8_t assets[]={0xf8,0,1,2,3,4,'{','}'};
     TH_CHECK(fwrite(assets,1,sizeof(assets),package)==sizeof(assets)); fflush(package);
 }
+static void test_deep_theme_delete(void)
+{
+    char root[] = "/tmp/obd-theme-delete-XXXXXX";
+    TH_CHECK(mkdtemp(root) != NULL);
+    char path[384]; snprintf(path, sizeof(path), "%s", root);
+    /* Real FAT-compatible short names, with a depth that cannot fit in an
+     * embedded task stack if one 384-byte path and DIR stay live per level. */
+    for (unsigned i = 0; i < 120; ++i) {
+        strcat(path, "/d"); TH_CHECK(mkdir(path, 0700) == 0);
+    }
+    strcat(path, "/asset.bin");
+    FILE *asset = fopen(path, "wb"); TH_CHECK(asset != NULL); TH_CHECK(fclose(asset) == 0);
+    peak_dirs = 0;
+    TH_CHECK(remove_tree(root));
+    TH_CHECK(peak_dirs == 1 && open_dirs == 0);
+    TH_CHECK(access(root, F_OK) != 0 && errno == ENOENT);
+    TH_CHECK(remove_tree(root)); /* already absent */
+
+    char broken[] = "/tmp/obd-theme-read-error-XXXXXX";
+    TH_CHECK(mkdtemp(broken) != NULL);
+    fail_directory_read = true;
+    TH_CHECK(!remove_tree(broken) && open_dirs == 0);
+    fail_directory_read = false;
+    TH_CHECK(access(broken, F_OK) == 0 && remove_tree(broken));
+}
 int main(void)
 {
+    test_deep_theme_delete();
     lv_init(); make_package();
     TH_CHECK(theme_engine_init()==ESP_ERR_NOT_FOUND && !g_te->custom);
     TH_CHECK(theme_library_select("demo")==ESP_OK);

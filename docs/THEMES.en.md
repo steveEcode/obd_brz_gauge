@@ -29,6 +29,8 @@ In runtime themes, ordinary left-aligned text bindings without zoom or rotation 
 
 Web theme installation and “Delete current theme” both use ESP32-S3 native USB, requiring no device address, token or WiFi OTA. Deletion releases theme pages and resources, removes the current `/OBD/THEMES/<key>/` directory (including `theme.bin`, rules, images, fonts and video) and saved selection, then the web client separately requests reboot when “Delete current theme” is clicked. Installing a new theme instead automatically clears the current theme, skips deletion when none exists, and reboots only after uploading and enabling the replacement. Other themes and the shared boot animation remain. Update to USB-management firmware first; missing SD and deletion failures report errors, while temporary contention can be retried automatically.
 
+Theme directory deletion uses a fixed-size path buffer and opens only one directory at a time, preventing deeply nested SD directories from exhausting the task stack or file handles. Overlong paths and directory read/delete failures return an error. The saved selection is cleared only when the whole deletion succeeds; files already deleted are not rolled back.
+
 ---
 
 ## 1. Compiled-in themes (TOML)

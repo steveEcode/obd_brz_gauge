@@ -17,6 +17,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <inttypes.h>
 
 #include "esp_gap_ble_api.h"
 #include "esp_gattc_api.h"
@@ -54,10 +55,13 @@ static const char *TAG = "elm327_ble";
 #define SCAN_CONNECT_S       15
 #define RESCAN_GAP_US        (2LL * 1000 * 1000)
 #define OPEN_GUARD_US        (35LL * 1000 * 1000)   /* direct connect gives up after ~30 s */
+#define GATT_SETUP_GUARD_US  (15LL * 1000 * 1000)
+#define GATT_CLOSE_RETRY_US  (3LL * 1000 * 1000)
 #define NOTIFY_SETTLE_US     (300LL * 1000)         /* subscription settle before ATZ */
 #define RECONNECT_GRACE_US   (5LL * 1000 * 1000)
 #define STATS_EVERY_US       (60LL * 1000 * 1000)
 #define TX_WRITE_TIMEOUT_MS  1000
+#define TX_WDT_SLICE_MS      100
 #define IDLE_WAIT_MS         300
 #define OTA_WAIT_MS          200
 #define SHOWROOM_WAIT_MS     500
@@ -92,6 +96,17 @@ static volatile bool     s_notify_ready;
 static volatile bool     s_mtu_ready;
 static volatile bool     s_notify_configured;
 static volatile bool     s_opening;
+static bool              s_acl_connected;
+static uint16_t          s_acl_conn_id = 0xFFFF;
+static bool              s_disconnect_requested;
+static volatile bool     s_setup_close_requested;
+static volatile bool     s_setup_disconnect_requested;
+static int64_t            s_setup_close_us;
+static bool              s_auto_reconnect_enabled;
+static bool              s_connect_pending;
+static esp_ble_addr_type_t s_pending_addr_type;
+static bool              s_peer_name_fallback;
+static bool              s_binding_update_pending;
 static int64_t           s_open_us;
 static int64_t           s_ready_us;
 static volatile uint16_t s_att_mtu = 23;
@@ -119,6 +134,12 @@ static int64_t           s_last_scan_us;
 static ble_scan_found_cb_t s_scan_cb;
 static ble_scan_result_t s_scan_list[BLE_SCAN_MAX_DEVICES];
 static int               s_scan_count;
+static uint32_t          s_diag_scan_seen;
+static uint32_t          s_diag_scan_target_name;
+static bool              s_diag_other_target_logged;
+static esp_bd_addr_t     s_name_candidate_bda;
+static esp_ble_addr_type_t s_name_candidate_addr_type;
+static uint8_t           s_name_candidate_count;
 
 /* ---- poll task ---- */
 /* Static wake object outlives the worker and BLE callbacks during shutdown. */
@@ -164,6 +185,28 @@ static bool mac_nonzero(const uint8_t *m)
     return m && (m[0] | m[1] | m[2] | m[3] | m[4] | m[5]) != 0;
 }
 
+static bool reconnect_target_configured(const uint8_t *mac, const char *name)
+{
+    return mac_nonzero(mac) || (name && name[0]);
+}
+
+static void normalize_target_name(char *out, size_t capacity, const char *name)
+{
+    if (!out || capacity == 0) return;
+    size_t n = 0;
+    if (name) {
+        while (name[n] && name[n] != '\r' && name[n] != '\n' && n + 1 < capacity) n++;
+        memcpy(out, name, n);
+    }
+    out[n] = '\0';
+}
+
+static bool gatt_close_matches(uint16_t conn_id, const uint8_t remote_bda[6])
+{
+    return s_connected && conn_id == s_conn_id &&
+           memcmp(remote_bda, s_peer_bda, sizeof(s_peer_bda)) == 0;
+}
+
 static uint16_t obd_demand_mask_get(void)
 {
     uint16_t mask;
@@ -171,6 +214,19 @@ static uint16_t obd_demand_mask_get(void)
     mask = s_obd_demand_mask;
     portEXIT_CRITICAL(&s_lock);
     return mask;
+}
+
+static void log_heap_snapshot(const char *stage)
+{
+    multi_heap_info_t internal = {0};
+    multi_heap_info_t psram = {0};
+    heap_caps_get_info(&internal, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    heap_caps_get_info(&psram, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    ESP_LOGI(TAG, "heap t=%" PRIu64 "us stage=%s int_free=%u int_largest=%u int_min=%u int_alloc=%u psram_free=%u psram_largest=%u",
+             (uint64_t)esp_timer_get_time(), stage,
+             (unsigned)internal.total_free_bytes, (unsigned)internal.largest_free_block,
+             (unsigned)internal.minimum_free_bytes, (unsigned)internal.total_allocated_bytes,
+             (unsigned)psram.total_free_bytes, (unsigned)psram.largest_free_block);
 }
 
 static bool is_target(const uint8_t *bda)
@@ -184,8 +240,11 @@ static bool is_target(const uint8_t *bda)
 static void set_name(const char *name)
 {
     if (!name || !name[0]) return;
+    char normalized[sizeof(s_target_name)];
+    normalize_target_name(normalized, sizeof(normalized), name);
+    if (!normalized[0]) return;
     portENTER_CRITICAL(&s_lock);
-    strlcpy(s_target_name, name, sizeof(s_target_name));
+    strlcpy(s_target_name, normalized, sizeof(s_target_name));
     portEXIT_CRITICAL(&s_lock);
 }
 
@@ -204,9 +263,22 @@ static void bind_target(const uint8_t *mac)
 static esp_err_t scan_start(uint32_t duration_s)
 {
     if (!ble_hub_is_ready() || s_scan_yielded) return ESP_ERR_INVALID_STATE;
+    log_heap_snapshot("elm_scan_start");
     link_time_set(&s_last_scan_us, esp_timer_get_time());
+    s_diag_scan_seen = 0;
+    s_diag_scan_target_name = 0;
+    s_diag_other_target_logged = false;
+    s_name_candidate_count = 0;
+    memset(s_name_candidate_bda, 0, sizeof(s_name_candidate_bda));
     esp_err_t err = ble_hub_scan_start(BLE_HUB_APP_ELM327, &k_scan_params, duration_s);
-    if (err != ESP_OK) ESP_LOGD(TAG, "scan start: %s", esp_err_to_name(err));
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "scan requested duration=%lu s target=%s mac=%02X:%02X:%02X:%02X:%02X:%02X",
+                 (unsigned long)duration_s, s_target_name,
+                 s_target_bda[0], s_target_bda[1], s_target_bda[2],
+                 s_target_bda[3], s_target_bda[4], s_target_bda[5]);
+    } else {
+        ESP_LOGW(TAG, "scan start: %s", esp_err_to_name(err));
+    }
     return err;
 }
 
@@ -230,6 +302,15 @@ static void reset_link_state(void)
     s_mtu_ready = false;
     s_notify_configured = false;
     s_opening = false;
+    s_acl_connected = false;
+    s_acl_conn_id = 0xFFFF;
+    s_disconnect_requested = false;
+    s_setup_close_requested = false;
+    s_setup_disconnect_requested = false;
+    s_setup_close_us = 0;
+    s_connect_pending = false;
+    s_peer_name_fallback = false;
+    s_binding_update_pending = false;
     s_conn_id = 0xFFFF;
     s_att_mtu = 23;
     memset(s_svc, 0, sizeof(s_svc));
@@ -249,7 +330,10 @@ static void scan_collect(const esp_ble_gap_cb_param_t *p, const char *name)
 {
     if (!name[0] || s_scan_count >= BLE_SCAN_MAX_DEVICES) return;
     for (int i = 0; i < s_scan_count; i++) {
-        if (strcmp(s_scan_list[i].name, name) == 0) return;
+        if (memcmp(s_scan_list[i].addr, p->scan_rst.bda, sizeof(esp_bd_addr_t)) == 0) {
+            s_scan_list[i].rssi = p->scan_rst.rssi;
+            return;
+        }
     }
     ble_scan_result_t *r = &s_scan_list[s_scan_count];
     strlcpy(r->name, name, sizeof(r->name));
@@ -261,16 +345,82 @@ static void scan_collect(const esp_ble_gap_cb_param_t *p, const char *name)
     if (cb) cb(r, s_scan_count);
 }
 
+static void open_pending_peer(void)
+{
+    if (!s_connect_pending) return;
+    s_connect_pending = false;
+    if (s_paused || !s_opening || s_connected) {
+        s_opening = false;
+        wake_task();
+        return;
+    }
+
+    log_heap_snapshot("gatt_open_after_scan_stop");
+    ESP_LOGI(TAG, "GATT open peer=%02X:%02X:%02X:%02X:%02X:%02X addr_type=%d name_fallback=%u",
+             s_peer_bda[0], s_peer_bda[1], s_peer_bda[2], s_peer_bda[3],
+             s_peer_bda[4], s_peer_bda[5], (int)s_pending_addr_type,
+             (unsigned)s_peer_name_fallback);
+    esp_err_t err = esp_ble_gattc_open(s_gattc_if, s_peer_bda, s_pending_addr_type, true);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "open: %s", esp_err_to_name(err));
+        s_opening = false;
+    }
+    wake_task();
+}
+
 static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
 {
+    if (event == ESP_GAP_BLE_SCAN_PARAM_SET_COMPLETE_EVT) {
+        ESP_LOGI(TAG, "scan parameters status=%d", (int)param->scan_param_cmpl.status);
+        return;
+    }
+    if (event == ESP_GAP_BLE_SCAN_START_COMPLETE_EVT) {
+        ESP_LOGI(TAG, "scan start complete status=%d", (int)param->scan_start_cmpl.status);
+        return;
+    }
+    if (event == ESP_GAP_BLE_SCAN_STOP_COMPLETE_EVT && s_connect_pending) {
+        if (param->scan_stop_cmpl.status == ESP_BT_STATUS_SUCCESS) {
+            open_pending_peer();
+        } else {
+            ESP_LOGW(TAG, "scan stop failed status=%d; cancel pending connect",
+                     (int)param->scan_stop_cmpl.status);
+            s_connect_pending = false;
+            s_opening = false;
+            wake_task();
+        }
+        return;
+    }
     /* ble_hub delivers scan results only while this module owns the scanner */
     if (event != ESP_GAP_BLE_SCAN_RESULT_EVT) return;
 
     if (param->scan_rst.search_evt == ESP_GAP_SEARCH_INQ_CMPL_EVT) {
+        ESP_LOGI(TAG, "scan complete seen=%lu target_name=%lu unique_name_candidates=%u",
+                 (unsigned long)s_diag_scan_seen,
+                 (unsigned long)s_diag_scan_target_name,
+                 (unsigned)s_name_candidate_count);
+        log_heap_snapshot("elm_scan_complete");
+        if (!s_scan_only && s_auto_reconnect_enabled && !s_connected && !s_opening &&
+            !s_paused && !s_scan_yielded && s_name_candidate_count == 1) {
+            memcpy(s_peer_bda, s_name_candidate_bda, sizeof(s_peer_bda));
+            s_pending_addr_type = s_name_candidate_addr_type;
+            s_peer_name_fallback = true;
+            link_time_set(&s_open_us, esp_timer_get_time());
+            s_opening = true;
+            s_connect_pending = true;
+            ESP_LOGW(TAG, "unique exact-name fallback after full scan %s at %02X:%02X:%02X:%02X:%02X:%02X type=%d",
+                     s_target_name, s_peer_bda[0], s_peer_bda[1], s_peer_bda[2],
+                     s_peer_bda[3], s_peer_bda[4], s_peer_bda[5], (int)s_pending_addr_type);
+            /* The hub releases scan ownership before delivering INQ_CMPL. */
+            open_pending_peer();
+        } else if (!s_scan_only && s_name_candidate_count > 1) {
+            ESP_LOGW(TAG, "ambiguous exact-name fallback (%u distinct addresses); refusing automatic connect",
+                     (unsigned)s_name_candidate_count);
+        }
         wake_task();   /* obd_poll rescans for a bound adapter */
         return;
     }
     if (param->scan_rst.search_evt != ESP_GAP_SEARCH_INQ_RES_EVT) return;
+    s_diag_scan_seen++;
 
     if (s_scan_only) {
         char name[32] = {0};
@@ -279,35 +429,80 @@ static void gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
         scan_collect(param, name);
         return;
     }
-    /* exact MAC only: a same-name adapter nearby must never be picked */
+    /* Prefer the saved address. A name fallback is only safe after the full
+     * scan proves that exactly one distinct address advertises that name. */
     esp_gatt_if_t gif = s_gattc_if;
     if (s_connected || s_opening || s_paused || s_scan_yielded || gif == ESP_GATT_IF_NONE) return;
-    if (!is_target(param->scan_rst.bda)) return;
+    if (!is_target(param->scan_rst.bda)) {
+        char adv_name[sizeof(s_target_name)] = {0};
+        ble_adv_extract_name(param->scan_rst.ble_adv, param->scan_rst.adv_data_len,
+                             param->scan_rst.scan_rsp_len, adv_name, sizeof(adv_name));
+        if (adv_name[0] && strcmp(adv_name, s_target_name) == 0) {
+            s_diag_scan_target_name++;
+            if (!s_diag_other_target_logged) {
+                s_diag_other_target_logged = true;
+                ESP_LOGW(TAG, "same-name adapter has different MAC: %s %02X:%02X:%02X:%02X:%02X:%02X type=%d RSSI=%d",
+                         adv_name, param->scan_rst.bda[0], param->scan_rst.bda[1],
+                         param->scan_rst.bda[2], param->scan_rst.bda[3],
+                         param->scan_rst.bda[4], param->scan_rst.bda[5],
+                         (int)param->scan_rst.ble_addr_type, (int)param->scan_rst.rssi);
+            }
+            bool seen = false;
+            if (s_name_candidate_count > 0 &&
+                memcmp(s_name_candidate_bda, param->scan_rst.bda, sizeof(s_name_candidate_bda)) == 0) {
+                seen = true;
+            }
+            if (!seen && s_name_candidate_count < 2) {
+                if (s_name_candidate_count == 0) {
+                    memcpy(s_name_candidate_bda, param->scan_rst.bda, sizeof(s_name_candidate_bda));
+                    s_name_candidate_addr_type = param->scan_rst.ble_addr_type;
+                }
+                s_name_candidate_count++;
+                ESP_LOGI(TAG, "exact-name candidate %u %02X:%02X:%02X:%02X:%02X:%02X type=%d RSSI=%d",
+                         (unsigned)s_name_candidate_count,
+                         param->scan_rst.bda[0], param->scan_rst.bda[1], param->scan_rst.bda[2],
+                         param->scan_rst.bda[3], param->scan_rst.bda[4], param->scan_rst.bda[5],
+                         (int)param->scan_rst.ble_addr_type, (int)param->scan_rst.rssi);
+            }
+        }
+        return;
+    }
+    s_diag_scan_target_name++;
 
-    ble_hub_scan_stop(BLE_HUB_APP_ELM327);
     memcpy(s_peer_bda, param->scan_rst.bda, sizeof(esp_bd_addr_t));
+    s_pending_addr_type = param->scan_rst.ble_addr_type;
+    s_peer_name_fallback = false;
     link_time_set(&s_open_us, esp_timer_get_time());
     s_opening = true;
+    s_connect_pending = true;
     char name[sizeof(s_target_name)];
     elm327_ble_copy_connected_name(name, sizeof(name));
-    ESP_LOGI(TAG, "found %s (RSSI %d), connecting", name, param->scan_rst.rssi);
-    esp_err_t err = esp_ble_gattc_open(gif, s_peer_bda, param->scan_rst.ble_addr_type, true);
+    ESP_LOGI(TAG, "found %s (RSSI %d), stopping scan before connect", name, param->scan_rst.rssi);
+    esp_err_t err = ble_hub_scan_stop(BLE_HUB_APP_ELM327);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "open: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "scan stop request: %s; cancel pending connect", esp_err_to_name(err));
+        s_connect_pending = false;
         s_opening = false;
+        wake_task();
+        return;
     }
-    wake_task();
 }
 
 static void link_open(esp_gatt_if_t gattc_if, uint16_t conn_id)
 {
     s_conn_id = conn_id;
+    s_acl_connected = true;
+    s_acl_conn_id = conn_id;
     s_connected = true;
     s_opening = false;
+    s_setup_close_requested = false;
+    s_setup_disconnect_requested = false;
+    s_setup_close_us = 0;
+    link_time_set(&s_open_us, esp_timer_get_time());
     s_notify_ready = false;
     s_mtu_ready = false;
     s_notify_configured = false;
-    if (s_paused || !is_target(s_peer_bda)) {
+    if (s_paused || (!is_target(s_peer_bda) && !s_peer_name_fallback)) {
         /* unbound / OTA while the connect was pending */
         ESP_LOGI(TAG, "dropping a link that is no longer wanted");
         esp_ble_gattc_close(gattc_if, conn_id);
@@ -335,6 +530,7 @@ static void notify_ready(void)
     if (!s_mtu_ready || !s_notify_configured) return;
     link_time_set(&s_ready_us, esp_timer_get_time());
     s_notify_ready = true;
+    if (s_peer_name_fallback) s_binding_update_pending = true;
     wake_task();
 }
 
@@ -495,22 +691,65 @@ static void gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp_ble
         break;
 
     case ESP_GATTC_CONNECT_EVT:
-        /* fires for every LE link (phones, gauge pairing): only ours counts */
-        if (s_opening && !s_connected &&
+        /* This is only the physical ACL link. Do not expose the adapter as
+         * connected until the matching GATT OPEN_EVT succeeds. */
+        if (s_opening &&
             memcmp(param->connect.remote_bda, s_peer_bda, sizeof(esp_bd_addr_t)) == 0) {
-            link_open(gattc_if, param->connect.conn_id);
+            s_acl_connected = true;
+            s_acl_conn_id = param->connect.conn_id;
+            ESP_LOGI(TAG, "GATTC ACL peer matched %02X:%02X:%02X:%02X:%02X:%02X conn_id=%u",
+                     param->connect.remote_bda[0], param->connect.remote_bda[1],
+                     param->connect.remote_bda[2], param->connect.remote_bda[3],
+                     param->connect.remote_bda[4], param->connect.remote_bda[5],
+                     (unsigned)param->connect.conn_id);
+        } else if (s_opening) {
+            ESP_LOGW(TAG, "GATTC ACL peer mismatch expected=%02X:%02X:%02X:%02X:%02X:%02X actual=%02X:%02X:%02X:%02X:%02X:%02X",
+                     s_peer_bda[0], s_peer_bda[1], s_peer_bda[2], s_peer_bda[3],
+                     s_peer_bda[4], s_peer_bda[5], param->connect.remote_bda[0],
+                     param->connect.remote_bda[1], param->connect.remote_bda[2],
+                     param->connect.remote_bda[3], param->connect.remote_bda[4],
+                     param->connect.remote_bda[5]);
         }
         break;
 
     case ESP_GATTC_OPEN_EVT:
-        if (memcmp(param->open.remote_bda, s_peer_bda, sizeof(esp_bd_addr_t)) != 0) break;
+        if (memcmp(param->open.remote_bda, s_peer_bda, sizeof(esp_bd_addr_t)) != 0) {
+            ESP_LOGW(TAG, "GATTC OPEN peer mismatch expected=%02X:%02X:%02X:%02X:%02X:%02X actual=%02X:%02X:%02X:%02X:%02X:%02X status=%d",
+                     s_peer_bda[0], s_peer_bda[1], s_peer_bda[2], s_peer_bda[3],
+                     s_peer_bda[4], s_peer_bda[5], param->open.remote_bda[0],
+                     param->open.remote_bda[1], param->open.remote_bda[2],
+                     param->open.remote_bda[3], param->open.remote_bda[4],
+                     param->open.remote_bda[5], (int)param->open.status);
+            break;
+        }
+        if (!s_opening && !s_connected) break; /* ignore a late callback from an expired attempt */
         if (param->open.status != ESP_GATT_OK) {
             ESP_LOGW(TAG, "connect failed, status %d", param->open.status);
-            if (!s_connected) s_opening = false;   /* obd_poll rescans */
+            if (s_acl_connected) {
+                esp_err_t err = esp_ble_gap_disconnect(param->open.remote_bda);
+                if (err == ESP_OK) {
+                    s_disconnect_requested = true;
+                } else {
+                    ESP_LOGW(TAG, "failed-open link cleanup: %s", esp_err_to_name(err));
+                    s_acl_connected = false;
+                    s_acl_conn_id = 0xFFFF;
+                    s_opening = false;
+                }
+            } else {
+                s_opening = false;   /* obd_poll rescans */
+            }
             wake_task();
         } else if (!s_connected) {
             link_open(gattc_if, param->open.conn_id);
         }
+        break;
+
+    case ESP_GATTC_CLOSE_EVT:
+        if (!gatt_close_matches(param->close.conn_id, param->close.remote_bda)) break;
+        ESP_LOGW(TAG, "GATT link closed status=%d reason=%d; releasing client state",
+                 (int)param->close.status, (int)param->close.reason);
+        reset_link_state();
+        wake_task();   /* a virtual GATT close may not terminate the physical ACL */
         break;
 
     case ESP_GATTC_SEARCH_RES_EVT: {
@@ -600,11 +839,12 @@ static void gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp_ble
         break;
 
     case ESP_GATTC_DISCONNECT_EVT:
-        if (!(s_connected || s_opening) ||
+        if (!(s_connected || s_opening || s_acl_connected) ||
             memcmp(param->disconnect.remote_bda, s_peer_bda, sizeof(esp_bd_addr_t)) != 0) {
             break;
         }
         if (s_connected && param->disconnect.conn_id != s_conn_id) break;
+        if (!s_connected && s_acl_connected && param->disconnect.conn_id != s_acl_conn_id) break;
         ESP_LOGI(TAG, "disconnected (reason 0x%02X)", param->disconnect.reason);
         reset_link_state();
         wake_task();   /* engine down; obd_poll rescans for a bound adapter */
@@ -674,12 +914,30 @@ static bool sink_send(void *ctx, const char *cmd)
             ESP_LOGW(TAG, "write: %s", esp_err_to_name(err));
             return false;
         }
-        if (write_type == ESP_GATT_WRITE_TYPE_RSP &&
-            xSemaphoreTake(s_tx_done, pdMS_TO_TICKS(TX_WRITE_TIMEOUT_MS)) != pdTRUE) {
-            s_tx_waiting = false;
-            ESP_LOGW(TAG, "write response timeout (offset %u length %u mtu %u)",
-                     (unsigned)off, (unsigned)len, (unsigned)s_att_mtu);
-            return false;
+        if (write_type == ESP_GATT_WRITE_TYPE_RSP) {
+            TickType_t timeout_ticks = pdMS_TO_TICKS(TX_WRITE_TIMEOUT_MS);
+            TickType_t slice_ticks = pdMS_TO_TICKS(TX_WDT_SLICE_MS);
+            TickType_t start_ticks = xTaskGetTickCount();
+            if (timeout_ticks == 0) timeout_ticks = 1;
+            if (slice_ticks == 0) slice_ticks = 1;
+            bool completed = false;
+            while (!completed) {
+                TickType_t elapsed = xTaskGetTickCount() - start_ticks;
+                if (elapsed >= timeout_ticks) break;
+                TickType_t remaining = timeout_ticks - elapsed;
+                TickType_t wait_ticks = remaining < slice_ticks ? remaining : slice_ticks;
+                completed = xSemaphoreTake(s_tx_done, wait_ticks) == pdTRUE;
+                if (!completed) {
+                    esp_task_wdt_reset();
+                    if (!s_connected || s_conn_id != conn_id || !s_notify_ready) break;
+                }
+            }
+            if (!completed) {
+                s_tx_waiting = false;
+                ESP_LOGW(TAG, "write response timeout (offset %u length %u mtu %u)",
+                         (unsigned)off, (unsigned)len, (unsigned)s_att_mtu);
+                return false;
+            }
         }
         if (write_type == ESP_GATT_WRITE_TYPE_RSP && s_tx_status != ESP_GATT_OK) {
             ESP_LOGW(TAG, "write response failed (offset %u length %u status %d)",
@@ -855,10 +1113,47 @@ static void rx_drain(void)
 static void reconnect_watchdog(int64_t now)
 {
     if (s_opening && now - link_time_get(&s_open_us) > OPEN_GUARD_US) {
-        ESP_LOGW(TAG, "connect attempt timed out");
-        s_opening = false;
+        if (s_acl_connected && !s_disconnect_requested) {
+            esp_err_t err = esp_ble_gap_disconnect(s_peer_bda);
+            ESP_LOGW(TAG, "connect attempt timed out; clearing physical link (%s)",
+                     esp_err_to_name(err));
+            s_disconnect_requested = (err == ESP_OK);
+            if (err != ESP_OK) {
+                s_acl_connected = false;
+                s_acl_conn_id = 0xFFFF;
+                s_opening = false;
+            }
+        } else if (!s_acl_connected) {
+            ESP_LOGW(TAG, "connect attempt timed out");
+            s_opening = false;
+        }
     }
-    if (!s_target_valid || s_scan_only || s_scan_yielded || s_connected || s_opening) return;
+    if (s_connected && !s_notify_ready) {
+        if (!s_setup_close_requested && now - link_time_get(&s_open_us) > GATT_SETUP_GUARD_US) {
+            ESP_LOGW(TAG, "GATT setup timed out (mtu=%u notify=%u write=0x%04X rx=0x%04X); closing link",
+                     (unsigned)s_mtu_ready, (unsigned)s_notify_configured,
+                     (unsigned)s_write_handle, (unsigned)s_notify_handle);
+            esp_err_t err = esp_ble_gattc_close(s_gattc_if, s_conn_id);
+            if (err == ESP_OK) {
+                s_setup_close_requested = true;
+                link_time_set(&s_setup_close_us, now);
+            } else {
+                ESP_LOGW(TAG, "GATT setup close failed: %s", esp_err_to_name(err));
+                link_time_set(&s_open_us, now);
+            }
+        } else if (s_setup_close_requested && !s_setup_disconnect_requested &&
+                   now - link_time_get(&s_setup_close_us) > GATT_CLOSE_RETRY_US) {
+            esp_err_t err = esp_ble_gap_disconnect(s_peer_bda);
+            if (err == ESP_OK) {
+                s_setup_disconnect_requested = true;
+                ESP_LOGW(TAG, "GATT close did not finish; GAP disconnect requested");
+            } else {
+                ESP_LOGW(TAG, "GATT setup disconnect retry: %s", esp_err_to_name(err));
+                link_time_set(&s_setup_close_us, now);
+            }
+        }
+    }
+    if (!s_auto_reconnect_enabled || s_scan_only || s_scan_yielded || s_connected || s_opening) return;
     if (s_gattc_if == ESP_GATT_IF_NONE || ble_hub_scan_active(NULL)) return;
     if (now - link_time_get(&s_last_scan_us) < RESCAN_GAP_US) return;
     scan_start(SCAN_RECONNECT_S);
@@ -868,18 +1163,46 @@ static void log_stats(void)
 {
     vp_engine_stats_t st = { 0 };
     if (s_engine) vp_engine_get_stats(s_engine, &st);
-    ESP_LOGD(TAG, "stack free %u B, phase %u link %u proto %u, tx %lu req %lu ok %lu fail %lu "
-                  "timeout %lu heal %lu, rx dropped %lu",
-             (unsigned)uxTaskGetStackHighWaterMark(NULL), st.phase, st.link, st.proto,
+    const uint32_t caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    ESP_LOGI(TAG, "stack free %u B internal free %u largest %u, phase %u link %u proto %u, "
+                  "tx %lu req %lu ok %lu fail %lu timeout %lu heal %lu, rx dropped %lu",
+             (unsigned)uxTaskGetStackHighWaterMark(NULL),
+             (unsigned)heap_caps_get_free_size(caps),
+             (unsigned)heap_caps_get_largest_free_block(caps),
+             st.phase, st.link, st.proto,
              (unsigned long)st.tx_cmds, (unsigned long)st.tx_req, (unsigned long)st.rx_ok,
              (unsigned long)st.rx_fail, (unsigned long)st.timeouts, (unsigned long)st.heals,
              (unsigned long)s_rx_dropped);
+}
+
+static void persist_reconnected_adapter(void)
+{
+    if (!s_binding_update_pending || !s_connected || !s_notify_ready) return;
+
+    nvs_user_cfg_t base;
+    if (nvs_cfg_snapshot(&base) != ESP_OK) return;
+    nvs_user_cfg_t updated = base;
+    memcpy(updated.ble_obd_mac, s_peer_bda, sizeof(updated.ble_obd_mac));
+    elm327_ble_copy_connected_name(updated.ble_device_name, sizeof(updated.ble_device_name));
+    esp_err_t err = nvs_cfg_update(&base, &updated);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "reconnected adapter binding persistence failed: %s", esp_err_to_name(err));
+        return;
+    }
+
+    bind_target(s_peer_bda);
+    s_peer_name_fallback = false;
+    s_binding_update_pending = false;
+    ESP_LOGI(TAG, "updated saved adapter name and MAC after ELM notification setup");
 }
 
 static void obd_task(void *arg)
 {
     (void)arg;
     esp_task_wdt_add(NULL);
+    ESP_LOGI(TAG, "obd_poll started core=%d priority=%u stack_free=%u",
+             (int)xPortGetCoreID(), (unsigned)uxTaskPriorityGet(NULL),
+             (unsigned)uxTaskGetStackHighWaterMark(NULL));
     engine_create();
     int64_t last_stats = esp_timer_get_time();
     uint32_t wait_ms = IDLE_WAIT_MS;
@@ -900,6 +1223,8 @@ static void obd_task(void *arg)
             continue;
         }
         reconnect_watchdog(now);
+
+        persist_reconnected_adapter();
 
         if (ui_showroom_is_active()) {
             /* showroom feeds fake values: keep the engine off the store */
@@ -995,6 +1320,11 @@ void elm327_ble_start_default(const char *target_name, const uint8_t mac[6])
     s_paused = false;
     set_name(target_name);
     bind_target(mac);
+    s_auto_reconnect_enabled = reconnect_target_configured(mac, target_name);
+    ESP_LOGI(TAG, "saved adapter target %s at %02X:%02X:%02X:%02X:%02X:%02X",
+             target_name ? target_name : "",
+             mac ? mac[0] : 0, mac ? mac[1] : 0, mac ? mac[2] : 0,
+             mac ? mac[3] : 0, mac ? mac[4] : 0, mac ? mac[5] : 0);
     s_scan_only = false;
     start_task();
     wake_task();
@@ -1036,6 +1366,7 @@ void elm327_ble_connect_by_addr(const uint8_t mac[6], const char *name)
     s_scan_only = false;
     set_name(name);
     bind_target(mac);
+    s_auto_reconnect_enabled = true;
     if (s_connected && !is_target(s_peer_bda)) close_link();   /* switch adapters */
     start_task();
     if (!s_connected && !s_opening) scan_start(SCAN_CONNECT_S);
@@ -1059,6 +1390,7 @@ void elm327_ble_set_obd_demand_mask(uint16_t mask)
 
 void elm327_ble_disconnect(void)
 {
+    s_auto_reconnect_enabled = false;
     bind_target(NULL);   /* no auto-reconnect */
     if (!s_scan_only) ble_hub_scan_stop(BLE_HUB_APP_ELM327);
     close_link();

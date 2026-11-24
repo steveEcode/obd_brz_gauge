@@ -97,33 +97,41 @@ static void theme_path(const char *key, char *out, size_t len)
 
 static bool remove_tree(const char *path)
 {
-    DIR *dir = opendir(path);
-    if (!dir) return errno == ENOENT;
-
-    bool ok = true;
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL) {
-        if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
-        char child[384];
-        int n = snprintf(child, sizeof(child), "%s/%s", path, entry->d_name);
-        if (n < 0 || (size_t)n >= sizeof(child)) {
-            ok = false;
-            break;
+    /* One path buffer and one DIR regardless of SD directory depth. Reopen
+     * the parent after removing a child instead of retaining recursive frames
+     * and FAT handles on the HTTP/USB caller's small internal task stack. */
+    char current[384];
+    int n = snprintf(current, sizeof(current), "%s", path);
+    if (n < 0 || (size_t)n >= sizeof(current)) return false;
+    const size_t root_len = (size_t)n;
+    for (;;) {
+        DIR *dir = opendir(current);
+        if (!dir) return strlen(current) == root_len && errno == ENOENT;
+        size_t parent_len = strlen(current);
+        bool descend = false, ok = true;
+        for (;;) {
+            errno = 0;
+            struct dirent *entry = readdir(dir);
+            if (!entry) { ok = errno == 0; break; }
+            if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) continue;
+            n = snprintf(current + parent_len, sizeof(current) - parent_len,
+                         "/%s", entry->d_name);
+            if (n < 0 || (size_t)n >= sizeof(current) - parent_len) { ok = false; break; }
+            struct stat st;
+            if (stat(current, &st) != 0) { ok = false; break; }
+            if (S_ISDIR(st.st_mode)) { descend = true; break; }
+            if (unlink(current) != 0) { ok = false; break; }
+            current[parent_len] = '\0';
         }
-        struct stat st;
-        if (stat(child, &st) != 0) {
-            ok = false;
-            break;
-        }
-        if (S_ISDIR(st.st_mode)) {
-            if (!remove_tree(child)) ok = false;
-        } else if (unlink(child) != 0) {
-            ok = false;
-        }
-        if (!ok) break;
+        if (closedir(dir) != 0) ok = false;
+        if (!ok) return false;
+        if (descend) continue;
+        if (rmdir(current) != 0) return false;
+        if (parent_len == root_len) return true;
+        char *slash = strrchr(current, '/');
+        if (!slash || (size_t)(slash - current) < root_len) return false;
+        *slash = '\0';
     }
-    closedir(dir);
-    return ok && rmdir(path) == 0;
 }
 
 esp_err_t theme_library_delete_current(bool *deleted)

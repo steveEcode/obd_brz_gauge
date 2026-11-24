@@ -33,13 +33,20 @@ typedef struct { void (*gap_cb)(void); void (*gattc_cb)(void); void (*gatts_cb)(
 #define portENTER_CRITICAL(lock) do { assert(*(lock) == 0); (*(lock))++; lock_entries++; } while (0)
 #define portEXIT_CRITICAL(lock) do { assert(*(lock) == 1); (*(lock))--; } while (0)
 #define ESP_LOGE(tag, ...) ((void)(tag))
-#define ESP_LOGI(tag, ...) ((void)(tag))
+#define ESP_LOGI(tag, ...) test_log((tag), __VA_ARGS__)
 #define ESP_LOGW(tag, ...) ((void)(tag))
+static void test_log(const char *tag, const char *format, ...)
+{ (void)tag; (void)format; }
 
 static const char *TAG = "test";
+static bool mac_nonzero(const uint8_t *m);
+static bool reconnect_target_configured(const uint8_t *mac, const char *name);
+static void normalize_target_name(char *out, size_t capacity, const char *name);
 static StaticSemaphore_t s_poll_wake_storage, s_tx_done_storage;
 static SemaphoreHandle_t s_poll_wake, s_tx_done;
 static char s_target_name[32] = "OBDII";
+static uint8_t s_peer_bda[6];
+static uint16_t s_conn_id = 0xFFFF;
 static int s_lock;
 static unsigned lock_entries;
 static bool s_registered, s_task_started, s_paused, s_connected, s_notify_ready, s_engine_up, s_quiet;
@@ -78,10 +85,14 @@ static void esp_task_wdt_add(void *t) { (void)t; }
 static void esp_task_wdt_reset(void) {}
 static void esp_task_wdt_delete(void *t) { (void)t; }
 static int64_t esp_timer_get_time(void) { return 0; }
+static int xPortGetCoreID(void) { return 1; }
+static unsigned uxTaskPriorityGet(void *task) { (void)task; return 6; }
+static unsigned uxTaskGetStackHighWaterMark(void *task) { (void)task; return 4096; }
 static bool engine_create(void) { return true; }
 static void engine_down(void) { downs++; s_engine_up=false; }
 static void rx_discard(void) {}
 static void reconnect_watchdog(int64_t now) { (void)now; }
+static void persist_reconnected_adapter(void) {}
 static bool ui_showroom_is_active(void) { return false; }
 static void vp_engine_link_up(void *e) { (void)e; }
 static void vp_engine_link_down(void *e) { (void)e; }
@@ -95,6 +106,29 @@ static void log_stats(void) {}
 
 int main(void)
 {
+    const uint8_t bound_mac[6] = {1, 2, 3, 4, 5, 6};
+    const uint8_t empty_mac[6] = {0};
+    assert(reconnect_target_configured(bound_mac, NULL));
+    assert(reconnect_target_configured(empty_mac, "Redmi"));
+    assert(!reconnect_target_configured(empty_mac, ""));
+    assert(!reconnect_target_configured(NULL, NULL));
+    const uint8_t peer[6] = {1, 2, 3, 4, 5, 6};
+    memcpy(s_peer_bda, peer, sizeof(peer));
+    s_conn_id = 9;
+    s_connected = true;
+    assert(gatt_close_matches(9, peer));
+    assert(!gatt_close_matches(8, peer));
+    const uint8_t other_peer[6] = {6, 5, 4, 3, 2, 1};
+    assert(!gatt_close_matches(9, other_peer));
+    s_connected = false;
+    assert(!gatt_close_matches(9, peer));
+    char normalized[32];
+    normalize_target_name(normalized, sizeof(normalized), "Redmi\n12:34:56:78:9A:BC");
+    assert(!strcmp(normalized, "Redmi"));
+    normalize_target_name(normalized, sizeof(normalized), "Redmi\r\n12:34:56:78:9A:BC");
+    assert(!strcmp(normalized, "Redmi"));
+    normalize_target_name(normalized, 4, "Redmi");
+    assert(!strcmp(normalized, "Red"));
     link_time_set(&s_ready_us, INT64_C(0x123456789abcdef));
     assert(link_time_get(&s_ready_us) == INT64_C(0x123456789abcdef));
     assert(lock_entries == 2 && s_lock == 0);

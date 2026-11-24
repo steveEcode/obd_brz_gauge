@@ -132,6 +132,12 @@ static size_t snapshot(tpms_scan_result_t *results)
     tpms_ble_scan_snapshot(results, TPMS_SCAN_MAX, &n);
     return n;
 }
+static void test_unbound_does_not_register_observer(void)
+{
+    memset(&config, 0, sizeof(config));
+    tpms_ble_service_step(true);
+    assert(!scanning && !client.gap_cb);
+}
 static void test_protocol(void)
 {
     assert(reference_crc((const uint8_t *)"123456789", 9) == 0x31C3);
@@ -361,12 +367,13 @@ static void test_live_monitor(void)
     memset(&config, 0, sizeof(config));
     tpms_ble_background_pause(false);
     now_us += 1000000;
-    tpms_ble_service_step(true); assert(!scanning); /* no saved ID */
+    tpms_ble_service_step(true); assert(!scanning);
     assert(tpms_ble_bind(0, "18010F") == ESP_OK);
     tpms_wheel_data_t wheels[4];
     tpms_ble_snapshot(wheels);
     assert(wheels[0].bound && !wheels[0].received && !wheels[0].fresh);
     tpms_ble_service_step(false); assert(!scanning);
+    assert(client.gap_cb); /* bound sensor observes advertisements during ELM scans */
     now_us += 600000; tpms_ble_service_step(true);
     assert(scanning && last_duration == 10);
     /* A full discovery list must not block reception of a bound wheel. */
@@ -447,4 +454,4 @@ static void test_live_monitor(void)
     p = packet(0x000000); emit(&p);
     tpms_ble_snapshot(wheels); assert(wheels[3].bound && !wheels[3].received);
 }
-int main(void) { test_protocol(); test_scanning(); test_diagnostic_logs(); test_binding(); test_manual_scan_while_background_paused(); test_live_monitor(); return 0; }
+int main(void) { test_unbound_does_not_register_observer(); test_protocol(); test_scanning(); test_diagnostic_logs(); test_binding(); test_manual_scan_while_background_paused(); test_live_monitor(); return 0; }

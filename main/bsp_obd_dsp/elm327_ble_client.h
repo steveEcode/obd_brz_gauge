@@ -8,9 +8,10 @@
  * (vp_manager_active()). Adapter service preference: 0xFFF0 > 0x18F0 >
  * 0xFF12 > any characteristic with WRITE / NOTIFY.
  *
- * Auto-connect is by exact MAC only (no name matching): a bound adapter is
- * rescanned for and reconnected after every drop. Scan callbacks run on the
- * Bluedroid task; UI code must take the LVGL lock itself.
+ * Auto-connect prefers the exact bound MAC. If it is absent, the first exact
+ * saved-name match is tried immediately and its address is saved only after
+ * ELM notify setup succeeds. Scan callbacks run on the Bluedroid task; UI
+ * code must take the LVGL lock itself.
  */
 
 #include <stdbool.h>
@@ -25,9 +26,9 @@ extern "C" {
 // Idempotent. Lets the scan page work before any adapter is bound.
 void elm327_ble_ensure_stack_init(void);
 
-// Start the OBD client: bind the adapter MAC (all-zero / NULL = none bound,
-// no auto-connect), start the poll task and auto-connect.
-// target_name is for display only (NULL or "" keeps "OBDII").
+// Start the OBD client and poll task. A bound MAC is preferred; if no MAC is
+// available, a non-empty saved name enables exact-name fallback reconnect.
+// NULL/empty name and an unbound MAC leave auto-connect disabled.
 void elm327_ble_start_default(const char *target_name, const uint8_t mac[6]);
 
 // ---- BLE scan-mode API ----
@@ -52,8 +53,8 @@ void elm327_ble_yield_scanner(bool yield);
 // Stop the device-list scan.
 void elm327_ble_scan_only_stop(void);
 
-// Bind mac as the adapter and connect to it (exact MAC match, so a same-name
-// device cannot hijack the connection). name is for display only.
+// Bind mac as the adapter and connect. Exact MAC is preferred; if it is not
+// seen, the first exact-name match may be tried. name is also used for fallback.
 void elm327_ble_connect_by_addr(const uint8_t mac[6], const char *name);
 
 // Adapter link state.

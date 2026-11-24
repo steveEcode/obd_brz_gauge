@@ -94,13 +94,17 @@ main/
 
 `ui_bluetooth.c` 提供版本页上滑后的双入口及四轮配对界面；扫描行只有六位 ID，点击即保存到当前轮位。`tpms_ble_client` 通过 `BLE_HUB_APP_TPMS` 注册 GAP / shutdown 回调，以广播 ID 去重（MAC 仅诊断），稳定追加候选，不按 RSSI 重排。锁保护的快照传给 LVGL 定时器，BLE 回调不操作 UI。进入页面 `elm327_ble_yield_scanner(true)` 让出重连扫描，离开时恢复；已连接的 ELM327 继续单线程轮询。停止后延迟启动下一轮扫描，避开控制器异步停止。
 
+BLE hub 用参数设置、启动、运行和停止阶段串行管理扫描器。停止期间保留原所有者；同模块重扫复制参数并排队，等旧回调排空后再配置。参数/启动阶段取消也等待对应完成事件，不提前让另一模块接管。扫描参数、启动及停止完成只通知请求所有者；广播仍可由胎压模块旁听。同步提交失败会转换成相应失败回调，避免界面永久停在扫描状态；自然结束与停止回调交错时，以自然结束确认控制器已空闲。
+
 `tpms_fbb0.c` 是无平台依赖解析器，依据 TireKing Android `com.zl.dev.tire.king` 1.1.8 / 3538 的静态分析：独立完整 raw 记录至少 26 字节，前缀 `02 01 06 03 03 B0 FB`；CRC16-XMODEM 覆盖 `raw[9:16] + raw[17:18] + raw[19:26]`，对比 `(raw[16] << 8) | raw[18]`。ID 为 `raw[25:22:-1]` 的六位大写 HEX；压力用整数 Pa 保存 `(raw[12] + (raw[17] == 1 ? 256 : 0)) * 3144`，温度 `(unsigned)raw[13] - 55`，电压 mV 为 `raw[11] * 10 + 1220`；保留未知状态原值。不假定 manufacturer ID 为 `AC00`。扫描桥先验证 ADV / RSP 各自长度不超过 31，分别解析，禁止将片段拼接或对 manufacturer 子串套 raw 偏移。仅校验成功的 ID 占候选槽；普通 BLE 不再挤满 20 项列表。
 
 NVS 保留 `nvs_user_cfg_t.tpms[4]`（offset 96，单项 39 字节）的旧 MAC 布局；在旧完整 `sizeof(cfg)=252` 后追加 `tpms_sensor_id[4][7]`，空串未绑定，`000000` 是有效 ID，逐轮合并保存。grow 加载旧配置时新字段为零；旧 MAC 记录仅提示重配，不推算 ID。成功保存/删除才清除当前轮旧 MAC，失败回滚。保存 ID 不等于在线；后台接收、默认总览和主题绑定共用四轮缓存，不提供内置胎压报警。
 
 INFO 级 `tpms_ble` 日志记录有效 ID、MAC、类型、RSSI、解码值及独立 ADV / RSP 原始 HEX；每个 ID 首次、首次非空响应、其后每 5 秒采样，重扫重置，列表满警告一次。解码、格式化和日志 I/O 在自旋锁外；不创建任务。`test/host/espnow/test_tpms_pairing.c` 覆盖构造报文 CRC/字段、短包/非法长度、分片拒绝、普通设备过滤、ID 去重/MAC 变化、满表更新、生命周期、日志限频与锁约束、NVS 边界及保存失败回滚。`-DEH_TPMS_LVGL=ON` 的真实 LVGL `tpms_ui` 测试覆盖四轮编号保存、精确 ID 行文本、取消/失败保留、旧记录重配、删除、重扫与退出清理；`TPMS_UI_CAPTURE_DIR` 可输出页面 PPM。测试不是实物传感器兼容性验证。
 
-`lvgl_runtime.c` 每 250 ms 在 LVGL 控制上下文调用 `tpms_ble_service_step(true)`；所有角色在 BLE 可用且有本地有效 ID 绑定时允许后台扫描，不依赖 ELM 连接。后台每轮 10 秒、结束后至少 500 ms 冷却；ELM 扫描占用期间，TPMS 作为 BLE hub 的 advertisement-only observer 接收广播，不接收其他所有者的扫描完成事件或改变所有权。手动配对暂停自身后台扫描，仍可更新绑定缓存，退出后恢复；手动窗口 20 秒，启动失败后 2 秒重试。广播回调按已绑定 ID 更新缓存，不依赖自身扫描状态或候选列表容量；仅 CRC 通过的样本更新时间。120 秒后 `fresh=false` 但保留最后测量，默认页标灰并注明 `STALE`，主题数值保留而 `online=0`。成功换绑清除该轮缓存，保存失败保持原数据；实时值不写 NVS，重启后等待首包。主表按从表订阅通过 ESP-NOW 转发快照，从表本地绑定/测量不向主表回传。`espnow_link_tpms_snapshot()` 按轮位优先选择本地有效 ID 绑定对应的完整快照（含等待/过期状态），无本地绑定才取主表缓存；主表缓存失效不影响本地轮位，默认页面和主题共用此入口。
+`lvgl_runtime.c` 每 250 ms 在 LVGL 控制上下文调用 `tpms_ble_service_step(true)`；所有角色仅在有本地有效 ID 绑定时注册 GAP observer，并允许后台扫描，不依赖 ELM 连接。未绑定时不注册 TPMS observer；手动进入胎压配对仍会按需注册。后台每轮 10 秒、结束后至少 500 ms 冷却；ELM 扫描占用期间，TPMS 作为 BLE hub 的 advertisement-only observer 接收广播，不接收其他所有者的扫描完成事件或改变所有权。手动配对暂停自身后台扫描，仍可更新绑定缓存，退出后恢复；手动窗口 20 秒，启动失败后 2 秒重试。广播回调按已绑定 ID 更新缓存，不依赖自身扫描状态或候选列表容量；仅 CRC 通过的样本更新时间。120 秒后 `fresh=false` 但保留最后测量，默认页标灰并注明 `STALE`，主题数值保留而 `online=0`。成功换绑清除该轮缓存，保存失败保持原数据；实时值不写 NVS，重启后等待首包。主表按从表订阅通过 ESP-NOW 转发快照，从表本地绑定/测量不向主表回传。`espnow_link_tpms_snapshot()` 按轮位优先选择本地有效 ID 绑定对应的完整快照（含等待/过期状态），无本地绑定才取主表缓存；主表缓存失效不影响本地轮位，默认页面和主题共用此入口。
+
+ELM 自动重连在 NVS 有 MAC 或设备名称时启动；优先精确匹配 MAC，整轮扫描未发现时仅允许唯一的精确同名 BLE 地址回退，名称-only 旧配置也适用。扫描期间按不同地址去重，候选超过一个就拒绝自动猜测；回退连接须等 ELM 通知初始化成功才更新 NVS MAC。精确 MAC 命中时停止扫描，并等 GAP `SCAN_STOP_COMPLETE` 成功再调用 GATTC open；唯一名称回退则在完整扫描结束后打开连接。两条路径均避免扫描与主动建连重叠。记录被选地址及 GAP ACL / GATT OPEN 回调地址以诊断地址变化。连接前记录 internal heap 空闲总量及最大连续块，并由 GATT API 的实际返回码处理资源不足，不能设置固定 heap 门槛跳过连接。GATT 连接建立后若 15 秒内 MTU 和通知通道仍未就绪，必须关闭该链接并回到自动重连；若 GATT close 未触发断开，再请求 GAP disconnect，防止永久停留在“已连接但无数据”。ELM 请求与 OBD 轮询仍由单一任务串行驱动。
 
 `ui_tpms.c` 实现默认四轮简洁总览（bar 两位小数 / C / 估算电量，无编号）及点击详情。`tpms_theme_source.c` 提供每轮 16 个固件局部数据源：`tpms.fl.*` / `tpms.fr.*` / `tpms.rl.*` / `tpms.rr.*`，不追加 `contracts/signals.json`、OBD PID、NVS 槽位或线协议。主题按帧取一次快照，独立扩展数组与双 64 位使用/变化掩码（总源数不超过 128），条件与 change 规则可用；旧 `tr_inputs_t` / `tr_eval()` 不变，高位变化走 `tr_eval_extended()`。胎压不参与 OBD 扫表，不受 OBD link 缺失影响。电量函数复现 TireKing float32 电压分档，仅用于显示估算；字段/单位与 NaN 语义见 [THEMES.md](THEMES.md)。前端未改。
 
@@ -109,7 +113,8 @@ INFO 级 `tpms_ble` 日志记录有效 ID、MAC、类型、RSSI、解码值及�
 ### 启动顺序（`main/app_main.c`）
 
 ```
-cJSON hooks（PSRAM；内部 RAM 仅在 PSRAM 耗尽时兜底）
+普通 malloc：所有非零大小优先 PSRAM（启动时覆盖旧 sdkconfig 的 16 KiB 阈值）
+→ cJSON hooks（PSRAM；内部 RAM 仅在 PSRAM 耗尽时兜底）
 → nvs_app_init → nvs_storage_init → signal_store_init → sd_card_init（失败只警告）
 → storage_service_boot（首启迁移 or 常规挂载 config；恢复 SD 主题选择；处理开机时落在
   /OBD/IMPORT 的 RESET.TXT / ACTIVATE.TXT / 车型 JSON）
@@ -125,6 +130,8 @@ cJSON hooks（PSRAM；内部 RAM 仅在 PSRAM 耗尽时兜底）
 → bootmedia_serial_start（常驻 USB 接收任务，优先级 3）
 → ota_valid task（15s 自检标记槽位有效）
 ```
+
+普通堆分配阈值在 `sdkconfig.defaults` 和 `app_main()` 中统一为 0 字节（所有非零大小优先 PSRAM）；运行时设置保证保留旧 EIM 配置的本地构建也生效。512 字节阈值仍会让大量 LVGL/libc 小对象占用内部内存，实测连接期间最低仅约 2 KiB，因此不能保留小对象优先内部的策略。内部 RAM 保留给 FreeRTOS 队列/信号量、内部任务栈与 DMA，不能因为 PSRAM 仍有空闲就认为蓝牙连接有足够内存。视频 SD 预读使用 4 KiB 内部 DMA 窗口，压缩帧和预读 ring 放 PSRAM；避免 16 KiB 窗口与启动视频任务栈同时挤占蓝牙队列。启动阶段和 ELM 扫描/连接前记录内部总空闲、最大连续块和最低水位，便于识别队列分配失败。
 
 ### 数据流
 
@@ -151,9 +158,11 @@ ELM327 BLE 适配器 ──BLE──→ elm327_ble_client（单线程状态机�
 BLE 回调通过常驻静态信号量唤醒轮询任务；BLE 关闭时的回调也会唤醒任务退出，信号量不会随任务删除，避免迟到回调访问已释放的任务句柄。
 BLE 连接和扫描的 64 位时间戳使用临界区同步，避免双核并发读写时读取不完整。
 
-LVGL 常驻任务固定在 Core 1，ELM327 BLE 轮询状态机固定在 Core 0；任务参数统一由
-`app_main.c` 中的策略表管理，并通过 `app_tasks.h` 接口创建。这样表盘/LVGL 绘制不会与 OBD 轮询任务在同一核心互相抢占，
-BLE 协议栈仍按 ESP-IDF 配置运行。不要因此拆分或并行化 ELM 请求。
+ELM327 BLE 轮询状态机固定在 Core 1、优先级高于 LVGL 和视频解码；启动日志必须打印实际
+运行核心、优先级和剩余栈，便于确认设备运行的固件确实采用该策略。LVGL 常驻任务也在
+Core 1，BLE 协议栈和视频 SD reader 在 Core 0。任务参数统一由 `app_main.c` 中的策略表
+管理，并通过 `app_tasks.h` 接口创建。OBD 状态机只做短时单线程工作，BLE 回调通过线程安全
+信号量唤醒；不要因此拆分或并行化 ELM 请求。
 
 LCD 的 LVGL `wait_cb` 通过常驻静态二值信号量等待 DMA 完成，避免双缓冲刷屏期间在
 `draw_buf->flushing` 上忙等。完成中断先调用 `lv_disp_flush_ready()` 释放缓冲，再发出唤醒；

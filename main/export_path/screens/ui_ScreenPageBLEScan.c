@@ -57,14 +57,10 @@ static void scan_result_cb(const ble_scan_result_t *dev, int total_count) {
     if (!s_list) return;
 
     if (lvgl_lock_ui(100)) {
-        // Check whether a device with the same name is already in the list
-        uint32_t child_cnt = lv_obj_get_child_cnt(s_list);
-        for (uint32_t i = 0; i < child_cnt; i++) {
-            lv_obj_t *btn = lv_obj_get_child(s_list, i);
-            lv_obj_t *lbl = lv_obj_get_child(btn, 0);
-            if (lbl && strcmp(lv_label_get_text(lbl), dev->name) == 0) {
+        for (int i = 0; i < s_obd_mac_count; i++) {
+            if (memcmp(s_obd_macs[i], dev->addr, 6) == 0) {
                 lvgl_unlock_ui();
-                return; // already exists
+                return;
             }
         }
         if (s_obd_mac_count >= BLE_SCAN_MAX_DEVICES) {
@@ -72,12 +68,17 @@ static void scan_result_cb(const ble_scan_result_t *dev, int total_count) {
             return;
         }
 
-        // Add new device button
-        lv_obj_t *btn = lv_list_add_btn(s_list, NULL, dev->name);
+        lv_obj_t *btn = lv_list_add_btn(s_list, NULL, "");
+        lv_obj_set_height(btn, 42);
         lv_obj_set_style_bg_color(btn, lv_color_hex(0x222222), LV_PART_MAIN);
         lv_obj_set_style_bg_opa(btn, 255, LV_PART_MAIN);
         lv_obj_set_style_text_color(btn, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
-        lv_obj_set_style_text_font(btn, &ui_font_FontTypoderSize20, LV_PART_MAIN);
+        lv_obj_t *label = lv_obj_get_child(btn, 0);
+        lv_label_set_text_fmt(label, "%s\n%02X:%02X:%02X:%02X:%02X:%02X",
+                              dev->name, dev->addr[0], dev->addr[1], dev->addr[2],
+                              dev->addr[3], dev->addr[4], dev->addr[5]);
+        lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_font(label, &lv_font_montserrat_12, LV_PART_MAIN);
         lv_obj_add_event_cb(btn, on_device_selected, LV_EVENT_CLICKED, NULL);
 
         memcpy(s_obd_macs[s_obd_mac_count], dev->addr, 6);
@@ -128,7 +129,12 @@ static void on_device_selected(lv_event_t *e) {
     lv_obj_t *lbl = lv_obj_get_child(btn, 0);
     if (!lbl) return;
 
-    const char *name = lv_label_get_text(lbl);
+    const char *label_text = lv_label_get_text(lbl);
+    char selected_name[sizeof(((nvs_user_cfg_t *)0)->ble_device_name)] = {0};
+    size_t name_len = strcspn(label_text, "\r\n");
+    if (name_len >= sizeof(selected_name)) name_len = sizeof(selected_name) - 1;
+    memcpy(selected_name, label_text, name_len);
+    const char *name = selected_name;
 
     if (s_slave_mode) {
         uint32_t idx = lv_obj_get_index(btn);
@@ -157,14 +163,28 @@ static void on_device_selected(lv_event_t *e) {
     s_scanning = false;
 
     nvs_user_cfg_t base;
-    nvs_cfg_snapshot(&base);
+    esp_err_t save_err = nvs_cfg_snapshot(&base);
+    if (save_err != ESP_OK) {
+        ESP_LOGE(TAG_BLE_UI, "Failed to read config before saving adapter: %s",
+                 esp_err_to_name(save_err));
+        lv_label_set_text(s_label_status, "Could not save adapter");
+        if (s_spinner) lv_obj_add_flag(s_spinner, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
     nvs_user_cfg_t cfg = base;
     strncpy(cfg.ble_device_name, name, sizeof(cfg.ble_device_name) - 1);
     cfg.ble_device_name[sizeof(cfg.ble_device_name) - 1] = '\0';
     memcpy(cfg.ble_obd_mac, mac, 6);
-    nvs_cfg_update(&base, &cfg);
+    save_err = nvs_cfg_update(&base, &cfg);
+    if (save_err != ESP_OK) {
+        ESP_LOGE(TAG_BLE_UI, "Failed to persist selected adapter %s: %s",
+                 name, esp_err_to_name(save_err));
+        lv_label_set_text(s_label_status, "Could not save adapter");
+        if (s_spinner) lv_obj_add_flag(s_spinner, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
 
-    // Refresh the saved device panel immediately
+    // Show the binding as saved only after NVS confirms the write.
     if (s_saved_name_lbl) lv_label_set_text(s_saved_name_lbl, name);
     if (s_saved_panel)    lv_obj_clear_flag(s_saved_panel,    LV_OBJ_FLAG_HIDDEN);
     if (s_label_saved_hdr) lv_obj_clear_flag(s_label_saved_hdr, LV_OBJ_FLAG_HIDDEN);

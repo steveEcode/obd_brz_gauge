@@ -3,7 +3,8 @@
  * and of the controller / Bluedroid lifecycle. Contract: ble_hub.h.
  *
  * Routing (callbacks run on the Bluedroid BTC task):
- *   - GAP: fanned out to every registered module, except SCAN_RESULT_EVT,
+ *   - GAP: scan control completions go only to the owner; other events are
+ *     fanned out to every registered module, except SCAN_RESULT_EVT,
  *     which the owner and opt-in advertisement observers receive (ownership is released
  *     before the owner sees INQ_CMPL, so it may restart scanning from there);
  *   - GATTC / GATTS: REG_EVT by app_id (the hub learns gattc_if / gatts_if),
@@ -12,8 +13,8 @@
  * no hub lock held, so a module may call back into the hub from a callback.
  *
  * Scanning: ble_hub_scan_start() sets the parameters, SCAN_PARAM_SET_COMPLETE
- * starts the scan for the owner; INQ_CMPL, a failed start or
- * ble_hub_scan_stop() release the scanner.
+ * starts the scan for the owner. Stop/restart drains the outstanding parameters,
+ * start and stop callbacks before releasing or reconfiguring the scanner.
  *
  * Shutdown (WiFi OTA): ble_hub_is_ready() turns false first, so the module
  * tasks stop touching BT, then advertising / scanning stop, Bluedroid and the
@@ -55,8 +56,12 @@ static bool          s_cbs_registered;
 
 /* Scanner arbitration (under s_lock). */
 static int      s_scan_owner = HUB_NO_OWNER;
-static bool     s_scan_pending;         /* params written, waiting for SCAN_PARAM_SET_COMPLETE */
+typedef enum { SCAN_IDLE, SCAN_PARAMS, SCAN_STARTING, SCAN_ACTIVE, SCAN_STOPPING } scan_phase_t;
+static scan_phase_t s_scan_phase;
 static uint32_t s_scan_duration;
+static bool s_scan_cancel, s_scan_restart, s_scan_ended;
+static esp_ble_scan_params_t s_scan_next_params;
+static uint32_t s_scan_next_duration;
 
 /* ------------------------------------------------------------------ */
 
@@ -95,7 +100,48 @@ static hub_slot_t *slot_find(ble_hub_app_t app)
 static void scan_release_locked(void)
 {
     s_scan_owner = HUB_NO_OWNER;
-    s_scan_pending = false;
+    s_scan_phase = SCAN_IDLE;
+    s_scan_cancel = false;
+    s_scan_restart = false;
+    s_scan_ended = false;
+}
+
+/* Keep a queued restart reserved across the old owner's completion callback. */
+static bool scan_finish_locked(esp_ble_scan_params_t *next)
+{
+    if (s_scan_restart && !s_shutdown) {
+        *next = s_scan_next_params;
+        s_scan_duration = s_scan_next_duration;
+        s_scan_phase = SCAN_PARAMS;
+        s_scan_cancel = s_scan_restart = s_scan_ended = false;
+        return true;
+    }
+    scan_release_locked();
+    return false;
+}
+
+static void hub_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param);
+
+static esp_err_t scan_set_params(const esp_ble_scan_params_t *params)
+{
+    esp_err_t err = esp_ble_gap_set_scan_params((esp_ble_scan_params_t *)params);
+    if (err != ESP_OK) {
+        esp_ble_gap_cb_param_t failed = {0};
+        failed.scan_param_cmpl.status = ESP_BT_STATUS_FAIL;
+        hub_gap_cb(ESP_GAP_BLE_SCAN_PARAM_SET_COMPLETE_EVT, &failed);
+    }
+    return err;
+}
+
+static esp_err_t scan_stop_controller(void)
+{
+    esp_err_t err = esp_ble_gap_stop_scanning();
+    if (err != ESP_OK) {
+        esp_ble_gap_cb_param_t failed = {0};
+        failed.scan_stop_cmpl.status = ESP_BT_STATUS_FAIL;
+        hub_gap_cb(ESP_GAP_BLE_SCAN_STOP_COMPLETE_EVT, &failed);
+    }
+    return err;
 }
 
 /* ------------------------------------------------------------------ */
@@ -105,59 +151,100 @@ static void scan_release_locked(void)
 static void hub_gap_cb(esp_gap_ble_cb_event_t event, esp_ble_gap_cb_param_t *param)
 {
     esp_gap_ble_cb_t cbs[HUB_MAX_APPS];
-    int n = 0;
-    int only = HUB_NO_OWNER;
-    bool start = false;
+    int n = 0, only = HUB_NO_OWNER;
+    bool control = false, start = false, stop = false, restart = false, cancelled = false;
     uint32_t duration = 0;
+    esp_ble_scan_params_t next = {0};
 
     portENTER_CRITICAL(&s_lock);
     switch (event) {
     case ESP_GAP_BLE_SCAN_PARAM_SET_COMPLETE_EVT:
-        if (s_scan_pending) {
-            s_scan_pending = false;
-            if (param->scan_param_cmpl.status == ESP_BT_STATUS_SUCCESS && s_scan_owner != HUB_NO_OWNER) {
-                start = true;
-                duration = s_scan_duration;
-            } else {
-                s_scan_owner = HUB_NO_OWNER;
-            }
+        control = true;
+        if (s_scan_phase != SCAN_PARAMS) break;
+        only = s_scan_owner;
+        if (s_scan_cancel) {
+            cancelled = true;
+            restart = scan_finish_locked(&next);
+        } else if (param->scan_param_cmpl.status != ESP_BT_STATUS_SUCCESS) {
+            restart = scan_finish_locked(&next);
+        } else {
+            s_scan_phase = SCAN_STARTING;
+            start = true;
+            duration = s_scan_duration;
         }
         break;
     case ESP_GAP_BLE_SCAN_START_COMPLETE_EVT:
-        if (param->scan_start_cmpl.status != ESP_BT_STATUS_SUCCESS && !s_scan_pending) {
-            s_scan_owner = HUB_NO_OWNER;
+        control = true;
+        if (s_scan_phase != SCAN_STARTING) break;
+        only = s_scan_owner;
+        if (param->scan_start_cmpl.status != ESP_BT_STATUS_SUCCESS) {
+            cancelled = s_scan_cancel;
+            restart = scan_finish_locked(&next);
+        } else if (s_scan_cancel) {
+            s_scan_phase = SCAN_STOPPING;
+            stop = true;
+        } else {
+            s_scan_phase = SCAN_ACTIVE;
+        }
+        break;
+    case ESP_GAP_BLE_SCAN_STOP_COMPLETE_EVT:
+        control = true;
+        if (s_scan_phase != SCAN_STOPPING) break;
+        only = s_scan_owner;
+        if (param->scan_stop_cmpl.status == ESP_BT_STATUS_SUCCESS || s_scan_ended) {
+            /* A scan can expire between issuing stop and its completion. Its
+             * INQ_CMPL proves idle even if the redundant stop reports failure. */
+            param->scan_stop_cmpl.status = ESP_BT_STATUS_SUCCESS;
+            restart = scan_finish_locked(&next);
+        } else {
+            /* A failed stop does not prove that the controller is idle. */
+            s_scan_phase = SCAN_ACTIVE;
+            s_scan_cancel = s_scan_restart = s_scan_ended = false;
         }
         break;
     case ESP_GAP_BLE_SCAN_RESULT_EVT:
+        if (s_scan_phase == SCAN_STOPPING && param->scan_rst.search_evt == ESP_GAP_SEARCH_INQ_CMPL_EVT)
+            s_scan_ended = true;
+        if (s_scan_phase != SCAN_ACTIVE || s_scan_cancel) break;
         only = s_scan_owner;
-        if (param->scan_rst.search_evt == ESP_GAP_SEARCH_INQ_CMPL_EVT && !s_scan_pending) {
-            s_scan_owner = HUB_NO_OWNER;   /* released before the owner sees it */
+        if (param->scan_rst.search_evt == ESP_GAP_SEARCH_INQ_CMPL_EVT) {
+            restart = scan_finish_locked(&next);
         }
         break;
     default:
         break;
     }
-    bool deliver = (event != ESP_GAP_BLE_SCAN_RESULT_EVT) || only != HUB_NO_OWNER;
-    for (int i = 0; deliver && i < HUB_MAX_APPS; i++) {
-        const hub_slot_t *s = &s_slots[i];
-        if (!s->used || !s->cb.gap_cb) continue;
-        if (event == ESP_GAP_BLE_SCAN_RESULT_EVT && (int)s->app != only &&
-            !(s->cb.observe_scan_results && param->scan_rst.search_evt == ESP_GAP_SEARCH_INQ_RES_EVT))
+    for (int i = 0; i < HUB_MAX_APPS; i++) {
+        const hub_slot_t *slot = &s_slots[i];
+        if (!slot->used || !slot->cb.gap_cb) continue;
+        if (control && (int)slot->app != only) continue;
+        if (event == ESP_GAP_BLE_SCAN_RESULT_EVT &&
+            (only == HUB_NO_OWNER || ((int)slot->app != only &&
+             !(slot->cb.observe_scan_results && param->scan_rst.search_evt == ESP_GAP_SEARCH_INQ_RES_EVT))))
             continue;
-        cbs[n++] = s->cb.gap_cb;
+        cbs[n++] = slot->cb.gap_cb;
     }
     portEXIT_CRITICAL(&s_lock);
 
-    if (start && !s_shutdown) {
+    for (int i = 0; i < n; i++) cbs[i](event, param);
+    if (cancelled) {
+        /* No scan was started, so there will be no controller stop callback. */
+        esp_ble_gap_cb_param_t done = {0};
+        done.scan_stop_cmpl.status = ESP_BT_STATUS_SUCCESS;
+        for (int i = 0; i < n; i++) cbs[i](ESP_GAP_BLE_SCAN_STOP_COMPLETE_EVT, &done);
+    }
+    if (s_shutdown) return;
+    if (restart) scan_set_params(&next);
+    if (stop) scan_stop_controller();
+    if (start) {
         esp_err_t err = esp_ble_gap_start_scanning(duration);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "start scanning failed: %s", esp_err_to_name(err));
-            portENTER_CRITICAL(&s_lock);
-            if (!s_scan_pending) s_scan_owner = HUB_NO_OWNER;
-            portEXIT_CRITICAL(&s_lock);
+            esp_ble_gap_cb_param_t failed = {0};
+            failed.scan_start_cmpl.status = ESP_BT_STATUS_FAIL;
+            hub_gap_cb(ESP_GAP_BLE_SCAN_START_COMPLETE_EVT, &failed);
         }
     }
-    for (int i = 0; i < n; i++) cbs[i](event, param);
 }
 
 static void hub_gattc_cb(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if, esp_ble_gattc_cb_param_t *param)
@@ -347,43 +434,49 @@ esp_err_t ble_hub_scan_start(ble_hub_app_t app, const esp_ble_scan_params_t *par
                              uint32_t duration_s)
 {
     if (!params) return ESP_ERR_INVALID_ARG;
-    if (!ble_hub_is_ready()) return ESP_ERR_INVALID_STATE;
-
-    bool restart = false;
+    bool stop = false;
     portENTER_CRITICAL(&s_lock);
-    if (!slot_find(app) || (s_scan_owner != HUB_NO_OWNER && s_scan_owner != (int)app)) {
+    if (!s_ready || s_shutdown || !slot_find(app) ||
+        (s_scan_owner != HUB_NO_OWNER && s_scan_owner != (int)app)) {
         portEXIT_CRITICAL(&s_lock);
         return ESP_ERR_INVALID_STATE;
     }
-    restart = (s_scan_owner == (int)app);
+    if (s_scan_owner == (int)app) {
+        /* Copy caller-owned parameters; the old scan must drain first. */
+        s_scan_next_params = *params;
+        s_scan_next_duration = duration_s;
+        s_scan_restart = s_scan_cancel = true;
+        if (s_scan_phase == SCAN_ACTIVE) {
+            s_scan_phase = SCAN_STOPPING;
+            stop = true;
+        }
+        portEXIT_CRITICAL(&s_lock);
+        return stop ? scan_stop_controller() : ESP_OK;
+    }
     s_scan_owner = (int)app;
-    s_scan_pending = true;
+    s_scan_phase = SCAN_PARAMS;
+    s_scan_cancel = s_scan_restart = s_scan_ended = false;
     s_scan_duration = duration_s;
     portEXIT_CRITICAL(&s_lock);
-
-    /* scan parameters cannot change while the controller scans */
-    if (restart) esp_ble_gap_stop_scanning();
-    esp_err_t err = esp_ble_gap_set_scan_params((esp_ble_scan_params_t *)params);
-    if (err != ESP_OK) {
-        portENTER_CRITICAL(&s_lock);
-        if (s_scan_owner == (int)app) scan_release_locked();
-        portEXIT_CRITICAL(&s_lock);
-        ESP_LOGW(TAG, "set scan params (app 0x%02X): %s", (unsigned)app, esp_err_to_name(err));
-    }
-    return err;
+    return scan_set_params(params);
 }
 
 esp_err_t ble_hub_scan_stop(ble_hub_app_t app)
 {
+    bool stop = false;
     portENTER_CRITICAL(&s_lock);
     if (s_scan_owner != (int)app) {
         portEXIT_CRITICAL(&s_lock);
         return ESP_ERR_INVALID_STATE;
     }
-    scan_release_locked();
+    s_scan_cancel = true;
+    s_scan_restart = false;
+    if (s_scan_phase == SCAN_ACTIVE) {
+        s_scan_phase = SCAN_STOPPING;
+        stop = true;
+    }
     portEXIT_CRITICAL(&s_lock);
-    if (!ble_hub_is_ready()) return ESP_OK;
-    return esp_ble_gap_stop_scanning();
+    return stop ? scan_stop_controller() : ESP_OK;
 }
 
 bool ble_hub_scan_active(ble_hub_app_t *owner)

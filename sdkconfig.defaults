@@ -26,11 +26,19 @@ CONFIG_BT_ALLOCATION_FROM_SPIRAM_FIRST=y
 CONFIG_BT_BLE_DYNAMIC_ENV_MEMORY=y
 CONFIG_BT_BLE_42_FEATURES_SUPPORTED=y
 
+# Avoid newlib time() mutex initialization when LittleFS files are closed under
+# low internal-heap conditions; nonce mtime still detects file modifications.
+# CONFIG_LITTLEFS_MTIME_USE_SECONDS is not set
+CONFIG_LITTLEFS_MTIME_USE_NONCE=y
+
 # ---- PSRAM (8MB octal @ 80MHz) ----
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+# Keep ordinary buffers in PSRAM; internal RAM is needed by BLE/ESP-NOW,
+# FreeRTOS queues, DMA and internal-only task stacks.
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=0
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
 
 # ---- WiFi (SoftAP OTA + ESP-NOW) ----

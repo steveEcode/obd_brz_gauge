@@ -17,8 +17,8 @@ extern "C" {
  * Bluedroid keeps exactly one callback per layer; modules that call
  * esp_ble_gap_register_callback() themselves silently replace each other.
  * Every BLE module instead registers with the hub under a fixed app id:
- *   - GAP control events are fanned out (each module filters); scan results go
- *     to the owner, plus advertisement-only opt-in observers;
+ *   - GAP scan control completions go only to their owner; other control events
+ *     are fanned out. Scan results go to the owner and advertisement-only observers;
  *   - GATTC/GATTS events are routed by gattc_if/gatts_if, which the hub learns
  *     from the REG_EVT whose app_id matches the module;
  *   - scanning is arbitrated: one owner at a time.
@@ -53,7 +53,9 @@ bool      ble_hub_is_ready(void);
 esp_err_t ble_hub_register(ble_hub_app_t app, const ble_hub_client_t *client);
 
 /* Scan arbitration. start fails with ESP_ERR_INVALID_STATE while another app
- * owns the scanner. duration_s 0 = until stopped. */
+ * owns or is stopping the scanner. A same-owner restart is queued until all
+ * outstanding scan callbacks drain. stop retains ownership until completion,
+ * including cancellation during parameter/start setup. duration_s 0 = until stopped. */
 esp_err_t ble_hub_scan_start(ble_hub_app_t app, const esp_ble_scan_params_t *params,
                              uint32_t duration_s);
 esp_err_t ble_hub_scan_stop(ble_hub_app_t app);

@@ -10,6 +10,7 @@ sections = [
     ('static void obd_task(void *arg)', '/* ------------------------------------------------------------------ */\n/* public API'),
 ]
 parts = []
+parts.append(source[source.index('static bool mac_nonzero('):source.index('static uint16_t obd_demand_mask_get(')])
 for start, end in sections:
     i = source.index(start)
     parts.append(source[i:source.index(end, i)])

@@ -2,7 +2,7 @@
  * video_player.c — OBV1 MJPEG playback engine (see video_player.h).
  *
  * One session at a time. Two tasks share a PSRAM ring:
- *   reader  (core 0, mode-dependent priority): header + index, then frame records from SD
+ *   reader  (core 0, priority 3): header + index, then frame records from SD
  *   decoder (core 1, mode-dependent priority): paces, decodes and presents
  *
  * FULLSCREEN: LVGL's refresh timer is paused and the decoder writes the
@@ -79,7 +79,9 @@ extern SemaphoreHandle_t lvgl_mux;   /* app_main.c */
 #define VP_RING_MAX          (1280u * 1024u)
 #define VP_THEME_RING_MAX    (2u * 1024u * 1024u)
 #define VP_THEME_RESERVE     (512u * 1024u)
-#define VP_SD_BUFFER_BYTES   (16u * 1024u)
+/* A sector-aligned 4 KiB DMA window leaves internal RAM for BLE queues while
+ * compressed frames and read-ahead remain in the PSRAM ring. */
+#define VP_SD_BUFFER_BYTES   (4u * 1024u)
 #define VP_SD_BUFFER_MIN     512u
 #define VP_REC_HDR           8u
 #define VP_REC_WRAP          0xFFFFFFFFu
@@ -96,6 +98,7 @@ extern SemaphoreHandle_t lvgl_mux;   /* app_main.c */
 #define VP_DECODER_STACK     6144
 #define VP_BOOT_WORKER_PRIO  5u
 #define VP_THEME_WORKER_PRIO 3u
+#define VP_SD_READER_PRIO    3u
 
 #define EV_WAKE_READER       BIT0
 #define EV_WAKE_DECODER      BIT1
@@ -1389,18 +1392,15 @@ esp_err_t video_player_start(const video_config_t *config)
         s->refr_paused = true;
     }
 
-    /* Composite playback shares both cores with LVGL and the OBD poller.
-     * Keep its workers below those tasks: the ring already provides read-ahead,
-     * while priority 5 on both workers can starve LVGL/OBD long enough for the
-     * signal store to become stale (the UI then renders a default zero). Fullscreen
-     * boot playback owns the panel and keeps its original high-priority path. */
+    /* Keep the decoder responsive, but make SD prefetch cooperative with the
+     * BLE host on core 0. Large boot videos can otherwise monopolize that
+     * core while the reader fills the ring. */
     const UBaseType_t worker_prio = s->mode == VIDEO_MODE_COMPOSITE
         ? VP_THEME_WORKER_PRIO : VP_BOOT_WORKER_PRIO;
+    const UBaseType_t reader_prio = VP_SD_READER_PRIO;
     bool ok = spawn(s, decoder_task, "vid_dec", VP_DECODER_STACK, worker_prio, 1);
     if (!ok) xEventGroupSetBits(s->ev, EV_DECODER_DONE);
-    /* Composite SD reads are deliberately cooperative with the OBD task. Ring
-     * space waits still block this task whenever prefetch is full. */
-    ok = ok && spawn(s, reader_task, "vid_read", VP_READER_STACK, worker_prio, 0);
+    ok = ok && spawn(s, reader_task, "vid_read", VP_READER_STACK, reader_prio, 0);
     if (!ok) {
         session_halt(s);
         session_unref(s);

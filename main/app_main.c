@@ -8,6 +8,7 @@
 // Adapted for Waveshare ESP32-S3-Touch-LCD-1.85 by adaptation
 
 #include <stdio.h>
+#include <inttypes.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -57,6 +58,23 @@
 // Normally select master/slave via "Settings page -> swipe down to the MULTI-GAUGE page" (stored in NVS device_role, effective after reboot); one firmware is enough.
 
 static const char *TAG = "obd_dsp";
+static int64_t s_app_start_us;
+
+static void log_internal_heap(const char *stage)
+{
+    multi_heap_info_t internal = {0};
+    multi_heap_info_t psram = {0};
+    const uint32_t internal_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    const uint32_t psram_caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    heap_caps_get_info(&internal, internal_caps);
+    heap_caps_get_info(&psram, psram_caps);
+
+    ESP_LOGI(TAG, "heap t=%" PRIu64 "us stage=%s int_free=%u int_largest=%u int_min=%u int_alloc=%u psram_free=%u psram_largest=%u",
+             (uint64_t)(esp_timer_get_time() - s_app_start_us), stage,
+             (unsigned)internal.total_free_bytes, (unsigned)internal.largest_free_block,
+             (unsigned)internal.minimum_free_bytes, (unsigned)internal.total_allocated_bytes,
+             (unsigned)psram.total_free_bytes, (unsigned)psram.largest_free_block);
+}
 
 static void mark_app_valid_task(void *arg)
 {
@@ -64,6 +82,7 @@ static void mark_app_valid_task(void *arg)
 
     vTaskDelay(pdMS_TO_TICKS(15000));
 
+    log_internal_heap("startup_settled");
     esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "Current firmware marked valid");
@@ -103,17 +122,18 @@ SemaphoreHandle_t lvgl_mux = NULL; // non-static: used by BLE scan page
 /* ------------------------------------------------------------------ */
 
 /* Priority bands:
+ *   6 - OBD poll state machine (short work; isolated from Core 0 BLE stack);
  *   5 - startup-critical paths (boot video workers, USB boot media);
- *   4 - interaction + comms trunk (LVGL, OBD poll, links, ESP-NOW, RC);
+ *   4 - interaction + comms trunk (LVGL, links, ESP-NOW, RC);
  *   3 - theme video workers and file jobs;
  *   1-2 - background maintenance (storage, theme library, perf, OTA helpers).
- * Core map: the OBD poll and video reader stay on core 0 with the BT stack;
- * Place LVGL and the video decoder on core 1, OBD polling on core 0.
- * They still share buses and locks; device latency needs measurement. */
+ * Core map: BLE controller/host and video reader stay on core 0. Run the
+ * OBD state machine on core 1 above LVGL/video decode so BLE event processing
+ * cannot starve polling; ELM requests remain single-threaded in obd_poll. */
 static const app_task_policy_t s_task_policy[APP_TASK_COUNT] = {
     [APP_TASK_LVGL]                = { "LVGL",           LVGL_TASK_STACK_SIZE, LVGL_TASK_PRIORITY,        1 },
-    [APP_TASK_OBD_POLL_BLE]        = { "obd_poll",       5120,                 4,                        0 },
-    [APP_TASK_VIDEO_READER_BOOT]   = { "vid_read",       4096,                 5,                        0 },
+    [APP_TASK_OBD_POLL_BLE]        = { "obd_poll",       5120,                 6,                        1 },
+    [APP_TASK_VIDEO_READER_BOOT]   = { "vid_read",       4096,                 3,                        0 },
     [APP_TASK_VIDEO_DECODER_BOOT]  = { "vid_dec",        6144,                 5,                        1 },
     [APP_TASK_VIDEO_READER_THEME]  = { "vid_read",       4096,                 3,                        0 },
     [APP_TASK_VIDEO_DECODER_THEME] = { "vid_dec",        6144,                 3,                        1 },
@@ -237,6 +257,16 @@ static void lvgl_unlock(void)
 
 void app_main(void)
 {
+    s_app_start_us = esp_timer_get_time();
+    /* UI/file buffers must not exhaust the internal heap needed by FreeRTOS
+     * queues, BLE connections, DMA and task stacks. Keep this runtime policy
+     * explicit: existing EIM/sdkconfig files may retain IDF's 16 KiB default. */
+    /* Even sub-512-byte LVGL/libc objects accumulate during boot + GATT.
+     * FreeRTOS queues/stacks and DMA use explicit internal-capability allocators;
+     * ordinary malloc must prefer PSRAM at every nonzero size. */
+    heap_caps_malloc_extmem_enable(0);
+    log_internal_heap("app_entry");
+
     /* ESP32-S3 ROM mirrors UART console output to USB Serial/JTAG channel 2. */
     esp_rom_install_channel_putc(2, NULL);
 
@@ -270,6 +300,7 @@ void app_main(void)
     if (bootmedia_serial_prepare() != ESP_OK) {
         ESP_LOGW(TAG, "Failed to reserve USB boot-media receiver; retrying after startup");
     }
+    log_internal_heap("storage_and_usb_reserved");
 
     /* 1.2 Task watchdog: 10s timeout, idle task not subscribed (avoids false triggers when BLE blocks) */
     esp_task_wdt_config_t wdt_cfg = {
@@ -327,6 +358,7 @@ void app_main(void)
     disp_drv.draw_buf = &disp_buf;
     disp_drv.user_data = panel_handle;      // from ST77916.h extern
     lv_disp_t *disp = lv_disp_drv_register(&disp_drv);
+    log_internal_heap("lvgl_and_lcd_buffers");
 
     /* LVGL tick timer (2ms period) */
     const esp_timer_create_args_t lvgl_tick_timer_args = {
@@ -357,6 +389,7 @@ void app_main(void)
     if (ble_err != ESP_OK) {
         ESP_LOGE(TAG, "BLE stack init failed (%s)", esp_err_to_name(ble_err));
     }
+    log_internal_heap("ble_stack_initialized");
 
     /* 7. Start UI - Logo displayed first, then theme loading */
     ESP_LOGI(TAG, "Creating and displaying logo page");
@@ -390,6 +423,7 @@ void app_main(void)
         ui_ext_init();          /* SD-only boot video starts from ui_ext_boot_video_tick */
         lvgl_unlock();
     }
+    log_internal_heap("ui_and_theme_initialized");
     app_event_init();
 
     /* 8. Branch by role: master (connects to ELM327 for readings + ESP-NOW broadcast) / slave (only receives and displays the master's data) */
@@ -416,17 +450,17 @@ void app_main(void)
                  espnow_on ? "MASTER" : "STANDALONE",
                  espnow_on ? " + ESP-NOW broadcast" : ", standalone");
 
-        /* 8.1 Start BLE OBD - auto-connect only when a MAC is already bound in NVS
-               (exact MAC match; legacy name-only configs must reselect the adapter). */
+        /* 8.1 Start BLE OBD when either a MAC or a saved name is available.
+               MAC is preferred; a unique exact-name match can recover legacy
+               name-only configs and adapters whose random address changed. */
         bool has_obd_mac = (user_cfg.ble_obd_mac[0] | user_cfg.ble_obd_mac[1] |
                             user_cfg.ble_obd_mac[2] | user_cfg.ble_obd_mac[3] |
                             user_cfg.ble_obd_mac[4] | user_cfg.ble_obd_mac[5]) != 0;
-        if (has_obd_mac) {
-            ESP_LOGD(TAG, "BLE target device: %s (MAC-bound)", user_cfg.ble_device_name);
+        if (has_obd_mac || user_cfg.ble_device_name[0] != '\0') {
+            ESP_LOGI(TAG, "BLE target device: %s (%s)", user_cfg.ble_device_name,
+                     has_obd_mac ? "MAC-bound" : "name-only fallback");
             elm327_ble_start_default(user_cfg.ble_device_name, user_cfg.ble_obd_mac);
-        } else if (user_cfg.ble_device_name[0] != '\0') {
-            ESP_LOGD(TAG, "Saved BLE device has no bound MAC; select it again on the scan page");
-            elm327_ble_ensure_stack_init();
+            log_internal_heap("elm327_client_started");
         } else if (espnow_on) {
             elm327_ble_ensure_stack_init();
         } else {

@@ -96,13 +96,17 @@ The main-bus register wrapper caches up to eight devices and serializes registra
 
 `ui_bluetooth.c` provides two entries above the version page and per-wheel pairing views; scan rows contain only six-digit IDs, saved to the current wheel on tap. `tpms_ble_client` registers GAP / shutdown callbacks through `BLE_HUB_APP_TPMS` and deduplicates by broadcast ID (MAC is diagnostic only), appending stable candidates without RSSI sorting. Lock-protected snapshots feed an LVGL timer; BLE callbacks never touch UI objects. Entering calls `elm327_ble_yield_scanner(true)` to yield reconnect scanning, and leaving restores it; an established ELM327 connection continues serial polling. Restart is delayed after stopping to avoid the controller's asynchronous stop.
 
+BLE hub serializes scanner parameter setup, start, active and stop phases. The old owner retains its lease while stopping; a same-owner restart copies parameters and waits for outstanding callbacks to drain. Cancellation during parameter/start setup also drains the corresponding completion before another module can acquire the scanner. Parameter/start/stop completions go only to the requesting owner; TPMS can still observe advertisements. Synchronous submission errors generate matching failure callbacks so clients do not remain in a running state. When natural completion overlaps stop, natural completion confirms that the controller is idle.
+
 `tpms_fbb0.c` is a platform-independent parser based on static analysis of TireKing Android `com.zl.dev.tire.king` 1.1.8 / 3538. Independent complete raw records require at least 26 bytes and prefix `02 01 06 03 03 B0 FB`; CRC16-XMODEM covers `raw[9:16] + raw[17:18] + raw[19:26]`, compared against `(raw[16] << 8) | raw[18]`. ID is `raw[25:22:-1]` formatted as six uppercase HEX digits. Pressure is integer Pa: `(raw[12] + (raw[17] == 1 ? 256 : 0)) * 3144`; temperature is `(unsigned)raw[13] - 55`; voltage mV is `raw[11] * 10 + 1220`. Unknown states retain their raw values. Manufacturer ID `AC00` is not assumed. The scan bridge first checks both ADV / RSP lengths are at most 31, then parses each independently; never concatenate fragments or apply raw offsets to manufacturer substrings. Only verified IDs consume candidate slots, so ordinary BLE devices cannot fill the 20-item table.
 
 NVS retains the old `nvs_user_cfg_t.tpms[4]` MAC layout (offset 96, 39 bytes per record), appending `tpms_sensor_id[4][7]` after the full old `sizeof(cfg)=252`. Empty means unbound; `000000` is valid. Saves merge per wheel. Grow-loading old configurations leaves new fields zero; legacy MAC records prompt re-pairing without ID inference. Only a successful save/delete clears that wheel's old MAC; failures roll back. Saving an ID does not imply online status. Background reception, the default overview and theme bindings share a four-wheel cache; built-in tire-pressure alarms are not provided.
 
 INFO-level `tpms_ble` logs contain valid IDs, MAC, type, RSSI, decoded fields and independent raw ADV / RSP HEX. Each ID is logged on first sight, first nonempty response, then every 5 seconds, reset on rescan, with one full-list warning. Decoding, formatting and log I/O are outside the spinlock; no tasks are created. `test/host/espnow/test_tpms_pairing.c` covers synthetic CRC/fields, short packets/invalid lengths, rejection of fragments, ordinary-device filtering, ID deduplication/MAC rotation, full-table updates, lifecycle, log throttling/lock constraints, NVS boundaries and save rollback. The real LVGL `tpms_ui` test enabled by `-DEH_TPMS_LVGL=ON` covers four-wheel ID saving, exact ID-only row text, preservation on cancellation/failure, legacy re-pairing, deletion, rescan and cleanup; `TPMS_UI_CAPTURE_DIR` outputs page PPM files. These tests do not validate physical sensor compatibility.
 
-`lvgl_runtime.c` calls `tpms_ble_service_step(true)` every 250 ms in the LVGL control context. All roles allow background scanning when BLE is available and a valid local ID is bound, independently of ELM connectivity. Each background window lasts 10 seconds with at least a 500 ms cooldown. During ELM scans, TPMS is an advertisement-only BLE hub observer: it neither receives another owner's completion nor changes ownership. Manual pairing pauses its own background scans but can still update bound caches, and restores background scans on exit; manual windows last 20 seconds, with a 2-second retry after startup failures. Bound IDs update independently of discovery state or capacity; only valid CRC packets refresh age. After 120 seconds, `fresh=false` but last measurements remain: the built-in page uses gray values and `STALE`, while theme values remain numeric with `online=0`. Successful rebinding clears that wheel cache; failed persistence retains data. Measurements are not written to NVS and rebooting requires a first packet. The master forwards snapshots through ESP-NOW according to slave subscriptions; slave-local bindings and measurements are not sent back to the master. Per wheel, `espnow_link_tpms_snapshot()` prefers the complete snapshot for a valid local ID binding, including waiting/stale states, and uses the master cache only when locally unbound. Expiring the master cache does not affect local wheels; built-in pages and themes share this entry point.
+`lvgl_runtime.c` calls `tpms_ble_service_step(true)` every 250 ms in the LVGL control context. Roles register the GAP observer only when a valid local ID is bound, and allow background scanning independently of ELM connectivity. With no binding, the TPMS observer is not registered; entering manual TPMS pairing still registers it on demand. Each background window lasts 10 seconds with at least a 500 ms cooldown. During ELM scans, TPMS is an advertisement-only BLE hub observer: it neither receives another owner's completion nor changes ownership. Manual pairing pauses its own background scans but can still update bound caches, and restores background scans on exit; manual windows last 20 seconds, with a 2-second retry after startup failures. Bound IDs update independently of discovery state or capacity; only valid CRC packets refresh age. After 120 seconds, `fresh=false` but last measurements remain: the built-in page uses gray values and `STALE`, while theme values remain numeric with `online=0`. Successful rebinding clears that wheel cache; failed persistence retains data. Measurements are not written to NVS and rebooting requires a first packet. The master forwards snapshots through ESP-NOW according to slave subscriptions; slave-local bindings and measurements are not sent back to the master. Per wheel, `espnow_link_tpms_snapshot()` prefers the complete snapshot for a valid local ID binding, including waiting/stale states, and uses the master cache only when locally unbound. Expiring the master cache does not affect local wheels; built-in pages and themes share this entry point.
+
+An ELM auto-reconnect with a saved MAC or name prefers the exact MAC. If it is absent, collect distinct addresses advertising the exact saved name through the full scan and only connect when exactly one candidate exists; reject ambiguous candidates. Persist the fallback address only after ELM notification setup succeeds. Exact-MAC matches stop scanning and wait for successful GAP `SCAN_STOP_COMPLETE` before GATTC open; unique-name fallbacks open only after the full scan completes, so scanning and direct connection do not overlap. Log the selected address and GAP ACL / GATT OPEN callback addresses to diagnose address changes. Log total free internal heap and its largest contiguous block before connecting, and let the GATT API's actual return code handle resource exhaustion; do not use a fixed heap threshold to skip connection attempts. If MTU and notification setup are not ready within 15 seconds after GATT opens, close the link and return to automatic reconnect; if GATT close does not produce a disconnect, request GAP disconnect so the client cannot remain connected without data. ELM requests and OBD polling remain serialized by one task.
 
 `ui_tpms.c` implements a minimal default overview (two-decimal bar / C / estimated battery, no IDs) and tap-through details. `tpms_theme_source.c` supplies 16 firmware-local sources per wheel: `tpms.fl.*` / `tpms.fr.*` / `tpms.rl.*` / `tpms.rr.*`, without appending to `contracts/signals.json`, OBD PIDs, NVS slots or wire protocols. Themes take one snapshot per frame, using separate extended arrays and paired 64-bit used/change masks (at most 128 sources), supporting conditions and change rules. Legacy `tr_inputs_t` / `tr_eval()` are unchanged; high change bits use `tr_eval_extended()`. TPMS does not follow OBD sweep animation or become invalid merely because the OBD link is absent. The battery helper reproduces TireKing float32 voltage bins as a display estimate only; see [THEMES.en.md](THEMES.en.md) for fields, units and NaN semantics. The frontend is unchanged.
 
@@ -111,7 +115,8 @@ Additional host coverage exercises background priority/cache expiry/full candida
 ### Boot order (`main/app_main.c`)
 
 ```
-cJSON hooks (PSRAM; internal RAM only as a fallback once PSRAM is exhausted)
+Ordinary malloc: prefer PSRAM for every nonzero size (override the old sdkconfig 16 KiB threshold at startup)
+→ cJSON hooks (PSRAM; internal RAM only as a fallback once PSRAM is exhausted)
 → nvs_app_init → nvs_storage_init → signal_store_init → sd_card_init (warn only on failure)
 → storage_service_boot (first-boot migration or regular config mount; resumes SD theme selection;
   handles boot-time /OBD/IMPORT RESET.TXT / ACTIVATE.TXT / vehicle JSON)
@@ -122,13 +127,15 @@ cJSON hooks (PSRAM; internal RAM only as a fallback once PSRAM is exhausted)
 → task WDT 10 s → I2C/EXIO/LCD/LVGL init → ble_hub_init (before the UI) → boot animation
 → ui_init (incl. theme_engine_init) → ui_ext_init → app_event_init
 → role branch: slave = ESP-NOW slave + RaceChrono; master/standalone = ELM327 BLE
-  (auto-connect only with a bound MAC) + ADS1115 oil pressure (V1 board only, and only
+  (auto-connect with a saved MAC or name; exact MAC first, unique exact-name fallback) + ADS1115 oil pressure (V1 board only, and only
   when the active vehicle profile does NOT read oil pressure over OBD)
   + ESP-NOW master (MASTER only) + RaceChrono
 → storage_service_start (state-based 1/3/10 s SD poll; card jobs fire 5 s after start / on card insert / after OTA ends)
 → bootmedia_serial_start (persistent USB receiver, priority 3)
 → ota_valid task (15 s self-check marks the slot valid)
 ```
+
+The ordinary allocation threshold is 0 bytes (prefer PSRAM for every nonzero size) in both `sdkconfig.defaults` and `app_main()`; the runtime setting also applies to local builds retaining an older EIM configuration. A 512-byte threshold still sends many small LVGL/libc objects to internal RAM, with a measured connection-time minimum of only about 2 KiB, so small ordinary allocations must prefer PSRAM too. Reserve internal RAM for FreeRTOS queues/semaphores, internal task stacks and DMA; free PSRAM alone does not mean a BLE connection has enough memory. Video SD read-ahead uses a 4 KiB internal DMA window, while compressed frames and the read-ahead ring use PSRAM, avoiding competition between a 16 KiB window, boot-video task stacks and BLE queues. Startup stages and ELM scan/connect attempts log internal free bytes, largest block and low-water mark to identify queue-allocation failures.
 
 ### Data flow
 
@@ -159,11 +166,15 @@ requests when touching it — one adapter serves one request stream at a time
 BLE callbacks wake the polling task with a persistent static semaphore. The BLE shutdown callback also wakes the task to exit; the semaphore survives task deletion so late callbacks do not access a freed task handle.
 BLE connection and scan timestamps use a critical section to prevent torn 64-bit reads across tasks on the 32-bit target.
 
-The boot-lifetime LVGL task is pinned to core 1, while the ELM327 BLE polling
-state machine is pinned to core 0; task parameters are centralized in the
-policy table in `app_main.c` and created through `app_tasks.h`. This keeps gauge/LVGL rendering and OBD polling from preempting
-one another on the same core, while the BLE stack continues to follow ESP-IDF
-configuration. Do not split or parallelize ELM requests as a consequence.
+The ELM327 BLE polling state machine is pinned to core 1 at a priority above
+LVGL and video decoding; its startup log must report the actual core, priority,
+and remaining stack so the running firmware's task policy can be verified. The
+boot-lifetime LVGL task also runs on core 1, while
+the BLE stack and video SD reader run on core 0. Task parameters are centralized
+in the policy table in `app_main.c` and tasks are created through `app_tasks.h`.
+The OBD state machine performs only short, single-threaded work, and BLE
+callbacks wake it through a thread-safe semaphore. Do not split or parallelize
+ELM requests.
 
 The LCD LVGL `wait_cb` waits for DMA completion through a boot-lifetime static
 binary semaphore instead of spinning on `draw_buf->flushing` during double-buffered

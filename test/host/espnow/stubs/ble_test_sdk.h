@@ -11,6 +11,7 @@ typedef int esp_err_t;
 #define ESP_ERR_INVALID_STATE 2
 #define ESP_ERR_NO_MEM 3
 #define ESP_BT_STATUS_SUCCESS 0
+#define ESP_BT_STATUS_FAIL 1
 #define ESP_GATT_OK 0
 #define ESP_GATT_IF_NONE 0xFF
 #define ESP_MAC_WIFI_STA 0
@@ -45,7 +46,7 @@ typedef enum {
 #define ESP_BLE_AD_TYPE_NAME_CMPL 9
 #define ESP_BLE_AD_TYPE_NAME_SHORT 8
 typedef union {
-    struct { int status; } scan_param_cmpl, scan_start_cmpl, adv_start_cmpl;
+    struct { int status; } scan_param_cmpl, scan_start_cmpl, scan_stop_cmpl, adv_start_cmpl;
     struct {
         int search_evt;
         esp_bd_addr_t bda;

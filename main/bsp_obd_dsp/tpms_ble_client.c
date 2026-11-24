@@ -302,18 +302,17 @@ void tpms_ble_service_step(bool allow_background)
      * keep moving its shared retry deadline: this service runs every 250 ms,
      * so extending the 500 ms cooldown here would starve every manual scan. */
     if (s_paused) return;
-    /* Register before checking eligibility/ownership: bound sensors can be
-     * received during an ELM scan even when our own scan is not permitted. */
-    if (ble_hub_is_ready() && ensure_registered() != ESP_OK) return;
+    nvs_user_cfg_t cfg = nvs_cfg_read();
+    bool any = false;
+    for (unsigned w = 0; w < NVS_TPMS_WHEELS; ++w)
+        any |= tpms_fbb0_id_valid(cfg.tpms_sensor_id[w]);
+    /* Only bound sensors need the advertisement observer during ELM scans. */
+    if (any && ble_hub_is_ready() && ensure_registered() != ESP_OK) return;
     if (!allow_background || !ble_hub_is_ready()) {
         if (s_background) tpms_ble_scan_stop();
         retry_after(TPMS_SCAN_GAP_US);
         return;
     }
-    nvs_user_cfg_t cfg = nvs_cfg_read();
-    bool any = false;
-    for (unsigned w = 0; w < NVS_TPMS_WHEELS; ++w)
-        any |= tpms_fbb0_id_valid(cfg.tpms_sensor_id[w]);
     if (!any) {
         if (s_background) tpms_ble_scan_stop();
         return;

@@ -46,6 +46,10 @@ static esp_bluedroid_status_t bluedroid_status;
 static int64_t storm_at = 1000;
 static int64_t first_packet_us;
 static SemaphoreHandle_t wake_sem;
+static unsigned scan_params_calls, scan_start_calls, scan_stop_calls;
+static unsigned owner_failures, owner_stops, observer_failures, other_controls;
+static esp_err_t scan_start_error, scan_params_error, scan_stop_error;
+static uint32_t last_scan_duration;
 
 void ble_test_enter(portMUX_TYPE *mux) { CHECK(!mux->locked); mux->locked = true; lock_depth++; }
 void ble_test_exit(portMUX_TYPE *mux) { CHECK(mux->locked && lock_depth); lock_depth--; mux->locked = false; }
@@ -197,9 +201,9 @@ esp_err_t esp_ble_gap_register_callback(esp_gap_ble_cb_t cb) { hub_gap = cb; SDK
 esp_err_t esp_ble_gattc_register_callback(esp_gattc_cb_t cb) { (void)cb; SDK_OK(); }
 esp_err_t esp_ble_gatts_register_callback(esp_gatts_cb_t cb) { hub_gatts = cb; SDK_OK(); }
 esp_err_t esp_ble_gatt_set_local_mtu(uint16_t mtu) { (void)mtu; SDK_OK(); }
-esp_err_t esp_ble_gap_set_scan_params(esp_ble_scan_params_t *p) { (void)p; SDK_OK(); }
-esp_err_t esp_ble_gap_start_scanning(uint32_t duration) { (void)duration; SDK_OK(); }
-esp_err_t esp_ble_gap_stop_scanning(void) { SDK_OK(); }
+esp_err_t esp_ble_gap_set_scan_params(esp_ble_scan_params_t *p) { (void)p; CHECK(!lock_depth); ++scan_params_calls; return scan_params_error; }
+esp_err_t esp_ble_gap_start_scanning(uint32_t duration) { CHECK(!lock_depth); last_scan_duration = duration; ++scan_start_calls; return scan_start_error; }
+esp_err_t esp_ble_gap_stop_scanning(void) { CHECK(!lock_depth); ++scan_stop_calls; return scan_stop_error; }
 esp_err_t esp_ble_gap_stop_advertising(void) { SDK_OK(); }
 esp_err_t esp_ble_gap_set_device_name(const char *name) { (void)name; SDK_OK(); }
 esp_err_t esp_ble_gap_config_adv_data_raw(uint8_t *data, uint32_t len) { (void)data; (void)len; SDK_OK(); }
@@ -312,6 +316,107 @@ static void other_gap(esp_gap_ble_cb_event_t e, esp_ble_gap_cb_param_t *p)
     (void)p; CHECK(!lock_depth);
     if (e == ESP_GAP_BLE_SCAN_RESULT_EVT) ++other_results;
 }
+static void control_owner_gap(esp_gap_ble_cb_event_t e, esp_ble_gap_cb_param_t *p)
+{
+    CHECK(!lock_depth);
+    if (e == ESP_GAP_BLE_SCAN_START_COMPLETE_EVT && p->scan_start_cmpl.status) ++owner_failures;
+    if (e == ESP_GAP_BLE_SCAN_STOP_COMPLETE_EVT) ++owner_stops;
+    owner_gap(e, p);
+}
+static void control_observer_gap(esp_gap_ble_cb_event_t e, esp_ble_gap_cb_param_t *p)
+{
+    CHECK(!lock_depth);
+    if (e == ESP_GAP_BLE_SCAN_START_COMPLETE_EVT && p->scan_start_cmpl.status) ++observer_failures;
+    observer_gap(e, p);
+}
+static void control_other_gap(esp_gap_ble_cb_event_t e, esp_ble_gap_cb_param_t *p)
+{
+    (void)p; CHECK(!lock_depth);
+    if (e != ESP_GAP_BLE_SCAN_RESULT_EVT) ++other_controls;
+}
+static void scan_control_lifecycle(void)
+{
+    CHECK(ble_hub_init() == ESP_OK && hub_gap);
+    ble_hub_client_t elm = {.gap_cb=control_owner_gap};
+    ble_hub_client_t tpms = {.gap_cb=control_observer_gap, .observe_scan_results=true};
+    ble_hub_client_t other = {.gap_cb=control_other_gap};
+    CHECK(ble_hub_register(BLE_HUB_APP_ELM327, &elm) == ESP_OK);
+    CHECK(ble_hub_register(BLE_HUB_APP_TPMS, &tpms) == ESP_OK);
+    CHECK(ble_hub_register(BLE_HUB_APP_GAUGE_PAIR, &other) == ESP_OK);
+    const esp_ble_scan_params_t params = {0};
+    esp_ble_gap_cb_param_t p = {0};
+    CHECK(ble_hub_scan_start(BLE_HUB_APP_ELM327, &params, 10) == ESP_OK);
+    hub_gap(ESP_GAP_BLE_SCAN_PARAM_SET_COMPLETE_EVT, &p);
+    hub_gap(ESP_GAP_BLE_SCAN_START_COMPLETE_EVT, &p);
+    CHECK(ble_hub_scan_start(BLE_HUB_APP_ELM327, &params, 20) == ESP_OK);
+    CHECK(scan_params_calls == 1 && scan_stop_calls == 1); /* wait for stop before reconfiguring */
+    CHECK(ble_hub_scan_start(BLE_HUB_APP_TPMS, &params, 10) == ESP_ERR_INVALID_STATE);
+    CHECK(ble_hub_scan_start(BLE_HUB_APP_ELM327, &params, 30) == ESP_OK);
+    CHECK(scan_stop_calls == 1); /* coalesce same-owner restarts */
+    p.scan_rst.search_evt = ESP_GAP_SEARCH_INQ_CMPL_EVT;
+    hub_gap(ESP_GAP_BLE_SCAN_RESULT_EVT, &p); /* late natural completion cannot release the lease */
+    CHECK(ble_hub_scan_active(NULL) && !owner_done);
+    p = (esp_ble_gap_cb_param_t){0};
+    hub_gap(ESP_GAP_BLE_SCAN_STOP_COMPLETE_EVT, &p);
+    CHECK(scan_params_calls == 2 && owner_stops == 1);
+    hub_gap(ESP_GAP_BLE_SCAN_PARAM_SET_COMPLETE_EVT, &p);
+    hub_gap(ESP_GAP_BLE_SCAN_START_COMPLETE_EVT, &p);
+    CHECK(last_scan_duration == 30);
+    CHECK(ble_hub_scan_stop(BLE_HUB_APP_ELM327) == ESP_OK);
+    CHECK(ble_hub_scan_active(NULL));
+    CHECK(ble_hub_scan_start(BLE_HUB_APP_TPMS, &params, 10) == ESP_ERR_INVALID_STATE);
+    hub_gap(ESP_GAP_BLE_SCAN_STOP_COMPLETE_EVT, &p);
+    CHECK(!ble_hub_scan_active(NULL));
+    scan_start_error = ESP_ERR_INVALID_STATE;
+    CHECK(ble_hub_scan_start(BLE_HUB_APP_TPMS, &params, 10) == ESP_OK);
+    hub_gap(ESP_GAP_BLE_SCAN_PARAM_SET_COMPLETE_EVT, &p);
+    CHECK(!ble_hub_scan_active(NULL) && observer_failures == 1 && !owner_failures && !other_controls);
+    scan_start_error = ESP_OK;
+    /* Cancellation while parameters or scan start are outstanding must drain that event first. */
+    CHECK(ble_hub_scan_start(BLE_HUB_APP_ELM327, &params, 10) == ESP_OK);
+    CHECK(ble_hub_scan_stop(BLE_HUB_APP_ELM327) == ESP_OK);
+    CHECK(scan_stop_calls == 2 && ble_hub_scan_active(NULL));
+    unsigned starts = scan_start_calls;
+    hub_gap(ESP_GAP_BLE_SCAN_PARAM_SET_COMPLETE_EVT, &p);
+    CHECK(!ble_hub_scan_active(NULL) && scan_start_calls == starts && owner_stops == 3);
+    CHECK(ble_hub_scan_start(BLE_HUB_APP_ELM327, &params, 10) == ESP_OK);
+    hub_gap(ESP_GAP_BLE_SCAN_PARAM_SET_COMPLETE_EVT, &p);
+    CHECK(ble_hub_scan_stop(BLE_HUB_APP_ELM327) == ESP_OK);
+    CHECK(scan_stop_calls == 2);
+    hub_gap(ESP_GAP_BLE_SCAN_START_COMPLETE_EVT, &p);
+    CHECK(scan_stop_calls == 3 && ble_hub_scan_active(NULL));
+    hub_gap(ESP_GAP_BLE_SCAN_STOP_COMPLETE_EVT, &p);
+    CHECK(!ble_hub_scan_active(NULL));
+    /* Parameter failure must also release the reservation. */
+    scan_params_error = ESP_ERR_INVALID_STATE;
+    CHECK(ble_hub_scan_start(BLE_HUB_APP_ELM327, &params, 10) == ESP_ERR_INVALID_STATE);
+    CHECK(!ble_hub_scan_active(NULL));
+    scan_params_error = ESP_OK;
+    CHECK(ble_hub_scan_start(BLE_HUB_APP_ELM327, &params, 10) == ESP_OK);
+    hub_gap(ESP_GAP_BLE_SCAN_PARAM_SET_COMPLETE_EVT, &p);
+    hub_gap(ESP_GAP_BLE_SCAN_START_COMPLETE_EVT, &p);
+    scan_stop_error = ESP_ERR_INVALID_STATE;
+    CHECK(ble_hub_scan_stop(BLE_HUB_APP_ELM327) == ESP_ERR_INVALID_STATE);
+    CHECK(ble_hub_scan_active(NULL)); /* controller may still be scanning */
+    CHECK(ble_hub_scan_start(BLE_HUB_APP_TPMS, &params, 10) == ESP_ERR_INVALID_STATE);
+    scan_stop_error = ESP_OK;
+    CHECK(ble_hub_scan_stop(BLE_HUB_APP_ELM327) == ESP_OK);
+    p.scan_stop_cmpl.status = ESP_BT_STATUS_FAIL;
+    hub_gap(ESP_GAP_BLE_SCAN_STOP_COMPLETE_EVT, &p);
+    CHECK(ble_hub_scan_active(NULL));
+    p = (esp_ble_gap_cb_param_t){0};
+    CHECK(ble_hub_scan_stop(BLE_HUB_APP_ELM327) == ESP_OK);
+    p.scan_rst.search_evt = ESP_GAP_SEARCH_INQ_CMPL_EVT;
+    hub_gap(ESP_GAP_BLE_SCAN_RESULT_EVT, &p);
+    CHECK(ble_hub_scan_active(NULL)); /* drain the outstanding stop first */
+    p.scan_stop_cmpl.status = ESP_BT_STATUS_FAIL;
+    hub_gap(ESP_GAP_BLE_SCAN_STOP_COMPLETE_EVT, &p);
+    CHECK(!ble_hub_scan_active(NULL)); /* natural completion already proved idle */
+    CHECK(p.scan_stop_cmpl.status == ESP_BT_STATUS_SUCCESS);
+    shutting_down = true;
+    CHECK(ble_hub_shutdown() == ESP_OK);
+    puts("scan control: async restart, cancellation, stop lease and failure isolation pass");
+}
 static void scan_observer_routing(void)
 {
     CHECK(ble_hub_init() == ESP_OK && hub_gap);
@@ -354,6 +459,11 @@ static void scan_observer_routing(void)
 
 int main(void)
 {
+    pid_t control_pid = fork(); CHECK(control_pid >= 0);
+    if (!control_pid) { scan_control_lifecycle(); exit(0); }
+    int control_status = 0;
+    CHECK(waitpid(control_pid, &control_status, 0) == control_pid);
+    CHECK(WIFEXITED(control_status) && WEXITSTATUS(control_status) == 0);
     pid_t observer_pid = fork(); CHECK(observer_pid >= 0);
     if (!observer_pid) { scan_observer_routing(); exit(0); }
     int observer_status = 0;

@@ -2649,7 +2649,8 @@ static void golden_one(const char *cat_path, const char *golden_dir, int *n_done
         if (!strcmp(jstr(it, "class"), "fast")) n_fast = gq_add(fast, n_fast, &q);
         else n_round = gq_add(round, n_round, &q);
     }
-    /* Legacy fixtures predate the additive generic MAP/vacuum request.
+    /* Legacy fixtures predate the additive generic boost source: PID 70 is
+     * preferred, with PID 0B as fallback. The first round probes 0170.
      * Check its exact wire request too; do not discard it from the trace. */
     bool has_boost = false;
     for (i = 0; i < n_round; i++) if (!strcmp(round[i].tx, "010B")) has_boost = true;
@@ -2657,7 +2658,7 @@ static void golden_one(const char *cat_path, const char *golden_dir, int *n_done
         int at = !strcmp(p->id, "obd2.generic") ? n_round - 1 : n_round;
         memmove(&round[at + 1], &round[at], (size_t)(n_round - at) * sizeof(round[0]));
         memset(&round[at], 0, sizeof(round[at]));
-        snprintf(round[at].tx, sizeof(round[at].tx), "010B");
+        snprintf(round[at].tx, sizeof(round[at].tx), "0170");
         wire_hdr(round[at].hdr, sizeof(round[at].hdr), p->hdr, p->proto);
         n_round++;
     }
